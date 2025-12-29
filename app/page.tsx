@@ -346,82 +346,84 @@ export default function BumpBotDashboard() {
                   {isActive ? "LIVE" : "IDLE"}
                 </span>
               </div>
-              {isConnected ? (
-                // State 3: Connected (Privy Smart Wallet ready) - Show PFP and Username
-                <div className="flex items-center gap-2 rounded-lg border border-border bg-card/50 backdrop-blur-sm px-3 py-1.5">
-                  {/* Connection Status Indicator - Green dot when connected */}
-                  <div className="h-2 w-2 rounded-full bg-green-500 shrink-0" />
-                  <div className="relative h-6 w-6 overflow-hidden rounded-full border border-primary/20 shrink-0 bg-secondary flex items-center justify-center">
-                    {userAvatar ? (
-                      <Image 
-                        src={userAvatar} 
-                        alt="User Avatar" 
-                        fill 
-                        className="object-cover rounded-full"
-                        unoptimized
-                        onError={() => {
-                          // Image will fallback to User icon via CSS or state
-                        }}
-                      />
-                    ) : null}
-                    {/* Fallback User icon - shown when no avatar or image fails */}
-                    {!userAvatar && (
-                      <User className="h-3.5 w-3.5 text-muted-foreground" />
-                    )}
-                  </div>
-                  <span className="font-mono text-sm font-medium text-foreground">{username}</span>
-                </div>
-              ) : isInitializing ? (
-                // State 2: Initializing or Activate Smart Account
-                authenticated && smartWallets.length === 0 ? (
-                  // State 2a: Activate Smart Account button
-                  <Button
-                    size="sm"
-                    onClick={handleActivateSmartAccount}
-                    disabled={isCreatingSmartWallet || !privyReady}
-                    className="px-3 py-1.5 h-auto bg-card/50 backdrop-blur-sm border border-border text-foreground hover:bg-card/70 font-medium text-sm"
-                  >
-                    <div className="flex items-center gap-2">
-                      {/* Pulsing dot indicator for creating state */}
-                      <div className={`h-2 w-2 rounded-full ${isCreatingSmartWallet ? "bg-primary animate-pulse" : "bg-muted"}`} />
-                      {isCreatingSmartWallet ? (
-                        <span className="text-sm">Loading...</span>
-                      ) : (
-                        <>
-                          <User className="h-4 w-4" />
-                          <span className="text-sm">Activate Smart Account</span>
-                        </>
+              <div className="flex items-center gap-2">
+                {/* Connection Status Indicator - Green dot when connected, pulsing when initializing */}
+                <div className={`h-2 w-2 rounded-full shrink-0 ${
+                  isConnected 
+                    ? "bg-green-500" 
+                    : (isInitializing || isCreatingSmartWallet)
+                    ? "bg-primary animate-pulse"
+                    : "bg-muted"
+                }`} />
+                {isConnected ? (
+                  // State 3: Connected (Privy Smart Wallet ready) - Show PFP and Username
+                  <div className="flex items-center gap-1.5 rounded-lg border border-border bg-card/50 backdrop-blur-sm px-2 py-1.5 h-8 max-w-[200px]">
+                    <div className="relative h-5 w-5 overflow-hidden rounded-full border border-primary/20 shrink-0 bg-secondary flex items-center justify-center">
+                      {userAvatar ? (
+                        <Image 
+                          src={userAvatar} 
+                          alt="User Avatar" 
+                          fill 
+                          className="object-cover rounded-full"
+                          unoptimized
+                          onError={() => {
+                            // Image will fallback to User icon via CSS or state
+                          }}
+                        />
+                      ) : null}
+                      {/* Fallback User icon - shown when no avatar or image fails */}
+                      {!userAvatar && (
+                        <User className="h-3 w-3 text-muted-foreground" />
                       )}
                     </div>
-                  </Button>
+                    <span className="font-mono text-xs font-medium text-foreground truncate">{username}</span>
+                  </div>
+                ) : isInitializing ? (
+                  // State 2: Initializing or Activate Smart Account
+                  authenticated && smartWallets.length === 0 ? (
+                    // State 2a: Activate Smart Account button
+                    <Button
+                      size="sm"
+                      onClick={handleActivateSmartAccount}
+                      disabled={isCreatingSmartWallet || !privyReady}
+                      className="h-8 px-2.5 py-1.5 bg-card/50 backdrop-blur-sm border border-border text-foreground hover:bg-card/70 font-medium text-xs"
+                    >
+                      <div className="flex items-center gap-1.5">
+                        {isCreatingSmartWallet ? (
+                          <span className="text-xs whitespace-nowrap">Loading...</span>
+                        ) : (
+                          <>
+                            <User className="h-3.5 w-3.5 shrink-0" />
+                            <span className="text-xs whitespace-nowrap">Activate</span>
+                          </>
+                        )}
+                      </div>
+                    </Button>
+                  ) : (
+                    // State 2b: Initializing (Privy Smart Wallet sedang dibuat)
+                    <Button
+                      size="sm"
+                      disabled
+                      className="h-8 px-2.5 py-1.5 bg-card/50 backdrop-blur-sm border border-border text-foreground font-medium text-xs"
+                    >
+                      <span className="text-xs whitespace-nowrap">Loading...</span>
+                    </Button>
+                  )
                 ) : (
-                  // State 2b: Initializing (Privy Smart Wallet sedang dibuat)
+                  // State 1: Not Connected
                   <Button
                     size="sm"
-                    disabled
-                    className="px-3 py-1.5 h-auto bg-card/50 backdrop-blur-sm border border-border text-foreground font-medium text-sm"
+                    onClick={handleConnect}
+                    disabled={isConnecting || !privyReady || !sdkReady}
+                    className="h-8 px-2.5 py-1.5 bg-primary text-primary-foreground hover:bg-primary/90 font-medium text-xs shadow-lg shadow-primary/50"
                   >
-                    <div className="flex items-center gap-2">
-                      {/* Pulsing dot indicator for initializing state */}
-                      <div className="h-2 w-2 rounded-full bg-primary animate-pulse" />
-                      <span className="text-sm">Loading...</span>
+                    <div className="flex items-center gap-1.5">
+                      <User className="h-3.5 w-3.5 shrink-0" />
+                      <span className="whitespace-nowrap">Connect</span>
                     </div>
                   </Button>
-                )
-              ) : (
-                // State 1: Not Connected
-                <Button
-                  size="sm"
-                  onClick={handleConnect}
-                  disabled={isConnecting || !privyReady || !sdkReady}
-                  className="px-3 py-1.5 h-auto bg-primary text-primary-foreground hover:bg-primary/90 font-medium text-sm shadow-lg shadow-primary/50"
-                >
-                  <div className="flex items-center gap-2">
-                    <User className="h-4 w-4" />
-                    <span>Connect</span>
-                  </div>
-                </Button>
-              )}
+                )}
+              </div>
             </div>
           </div>
         </header>
