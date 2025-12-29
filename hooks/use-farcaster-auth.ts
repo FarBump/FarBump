@@ -43,6 +43,7 @@ export function useFarcasterAuth() {
     isAuthenticated: authenticated,
     privyUser: user,
     privyReady: ready,
+    login, // Export login function for manual trigger
     
     // Combined state
     isLoading: !isReady || !ready,

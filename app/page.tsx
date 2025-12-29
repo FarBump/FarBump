@@ -47,7 +47,7 @@ export default function BumpBotDashboard() {
   const userFid = farcasterUser?.fid?.toString() || privyUser?.farcaster?.fid?.toString() || null
 
   const userAvatar = farcasterUser?.pfp?.url || 
-    privyUser?.farcaster?.profilePicture || 
+    (privyUser?.farcaster as any)?.profilePicture || 
     "/user-avatar.jpg"
 
   // Farcaster Embed Wallet address (untuk verifikasi di Step 3)
