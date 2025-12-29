@@ -42,11 +42,8 @@ export function MiniAppProvider({ children }: MiniAppProviderProps) {
         setContext(ctx)
         setIsReady(true)
         
-        // IMPORTANT: Call ready() to hide splash screen and display app
-        // Reference: https://miniapps.farcaster.xyz/docs/getting-started#making-your-app-display
-        // After your app loads, you must call sdk.actions.ready()
-        // If you don't call ready(), users will see an infinite loading screen
-        await sdk.actions.ready()
+        // Note: sdk.actions.ready() is called in page.tsx after component mounts
+        // This ensures the splash screen is hidden at the right time
       } catch (error) {
         // Not in Warpcast or SDK not available
         // Still allow app to run outside Warpcast

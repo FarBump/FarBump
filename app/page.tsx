@@ -37,21 +37,24 @@ export default function BumpBotDashboard() {
     }>
   >([])
 
+  // Call sdk.actions.ready() to hide splash screen in Farcaster Mini App
+  // This MUST be called in page.tsx, otherwise splash screen won't close
   useEffect(() => {
-    const initializeMiniApp = async () => {
-      try {
-        await sdk.actions.ready();
-        console.log("Farcaster MiniApp SDK initialized successfully");
-      } catch (error) {
-        console.error("Failed to initialize Farcaster MiniApp:", error);
-        
+    const callReady = async () => {
+      // Only call if in Warpcast and SDK is ready
+      if (isInWarpcast && isReady && typeof window !== 'undefined') {
+        try {
+          console.log("📱 Calling sdk.actions.ready() to hide splash screen...")
+          await sdk.actions.ready()
+          console.log("✅ sdk.actions.ready() called successfully")
+        } catch (error) {
+          console.error("❌ Failed to call sdk.actions.ready():", error)
+        }
       }
-    };
-
-    if (typeof window !== 'undefined') {
-      initializeMiniApp();
     }
-  }, []);
+
+    callReady()
+  }, [isInWarpcast, isReady])
   
   const handleToggle = () => {
     setIsActive(!isActive)
