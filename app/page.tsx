@@ -147,18 +147,35 @@ export default function BumpBotDashboard() {
   const [fuelBalance] = useState(1250.5)
   const [credits] = useState(0)
 
-  // Extract user data dari Farcaster context
-  const username = farcasterUser?.username 
-    ? `@${farcasterUser.username}` 
+  // Extract user data from Privy user object (prioritize Privy user data)
+  // Use user.farcaster.pfp and user.farcaster.username from Privy user object
+  const username = user?.farcaster?.username 
+    ? `@${user.farcaster.username}` 
     : privyUser?.farcaster?.username 
     ? `@${privyUser.farcaster.username}` 
+    : farcasterUser?.username 
+    ? `@${farcasterUser.username}` 
     : null
 
-  const userFid = farcasterUser?.fid?.toString() || privyUser?.farcaster?.fid?.toString() || null
+  const userFid = user?.farcaster?.fid?.toString() || 
+    privyUser?.farcaster?.fid?.toString() || 
+    farcasterUser?.fid?.toString() || 
+    null
 
-  const userAvatar = farcasterUser?.pfp?.url || 
-    (privyUser?.farcaster as any)?.profilePicture || 
-    "/user-avatar.jpg"
+  // Use user.farcaster.pfp from Privy user object with fallback
+  // pfp can be a string URL or an object with url property
+  const userAvatar = (typeof user?.farcaster?.pfp === 'string' 
+    ? user.farcaster.pfp 
+    : (user?.farcaster?.pfp as any)?.url) ||
+    (user?.farcaster as any)?.profilePicture ||
+    (typeof privyUser?.farcaster?.pfp === 'string'
+      ? privyUser.farcaster.pfp
+      : (privyUser?.farcaster?.pfp as any)?.url) ||
+    (privyUser?.farcaster as any)?.profilePicture ||
+    (typeof farcasterUser?.pfp === 'string'
+      ? farcasterUser.pfp
+      : farcasterUser?.pfp?.url) ||
+    null
 
   // Determine connection states
   // CRITICAL: Hanya gunakan Privy Smart Wallet untuk menentukan status koneksi
@@ -330,44 +347,65 @@ export default function BumpBotDashboard() {
                 </span>
               </div>
               {isConnected ? (
-                // State 3: Connected (Privy Smart Wallet ready)
-                <div className="flex items-center gap-2 rounded-lg border border-border bg-secondary px-3 py-2">
-                  <div className="relative h-6 w-6 overflow-hidden rounded-full border border-primary/20">
-                    <Image src={userAvatar || "/placeholder.svg"} alt="User Avatar" fill className="object-cover rounded-full" />
+                // State 3: Connected (Privy Smart Wallet ready) - Show PFP and Username
+                <div className="flex items-center gap-2 rounded-lg border border-border bg-card/50 backdrop-blur-sm px-3 py-1.5">
+                  {/* Connection Status Indicator - Green dot when connected */}
+                  <div className="h-2 w-2 rounded-full bg-green-500 shrink-0" />
+                  <div className="relative h-6 w-6 overflow-hidden rounded-full border border-primary/20 shrink-0 bg-secondary flex items-center justify-center">
+                    {userAvatar ? (
+                      <Image 
+                        src={userAvatar} 
+                        alt="User Avatar" 
+                        fill 
+                        className="object-cover rounded-full"
+                        unoptimized
+                        onError={() => {
+                          // Image will fallback to User icon via CSS or state
+                        }}
+                      />
+                    ) : null}
+                    {/* Fallback User icon - shown when no avatar or image fails */}
+                    {!userAvatar && (
+                      <User className="h-3.5 w-3.5 text-muted-foreground" />
+                    )}
                   </div>
-                  <span className="hidden font-mono text-xs font-medium text-foreground sm:inline">{username}</span>
+                  <span className="font-mono text-sm font-medium text-foreground">{username}</span>
                 </div>
               ) : isInitializing ? (
                 // State 2: Initializing or Activate Smart Account
-                // If authenticated but no Smart Wallet, show "Activate Smart Account" button
                 authenticated && smartWallets.length === 0 ? (
+                  // State 2a: Activate Smart Account button
                   <Button
                     size="sm"
                     onClick={handleActivateSmartAccount}
                     disabled={isCreatingSmartWallet || !privyReady}
-                    className="bg-primary text-primary-foreground hover:bg-primary/90 font-medium"
+                    className="px-3 py-1.5 h-auto bg-card/50 backdrop-blur-sm border border-border text-foreground hover:bg-card/70 font-medium text-sm"
                   >
-                    {isCreatingSmartWallet ? (
-                      <>
-                        <User className="mr-1.5 h-4 w-4 animate-spin" />
-                        ACTIVATING...
-                      </>
-                    ) : (
-                      <>
-                        <User className="mr-1.5 h-4 w-4" />
-                        ACTIVATE SMART ACCOUNT
-                      </>
-                    )}
+                    <div className="flex items-center gap-2">
+                      {/* Pulsing dot indicator for creating state */}
+                      <div className={`h-2 w-2 rounded-full ${isCreatingSmartWallet ? "bg-primary animate-pulse" : "bg-muted"}`} />
+                      {isCreatingSmartWallet ? (
+                        <span className="text-sm">Loading...</span>
+                      ) : (
+                        <>
+                          <User className="h-4 w-4" />
+                          <span className="text-sm">Activate Smart Account</span>
+                        </>
+                      )}
+                    </div>
                   </Button>
                 ) : (
-                  // State 2a: Initializing (Privy Smart Wallet sedang dibuat)
+                  // State 2b: Initializing (Privy Smart Wallet sedang dibuat)
                   <Button
                     size="sm"
                     disabled
-                    className="bg-primary text-primary-foreground hover:bg-primary/90 font-medium animate-pulse"
+                    className="px-3 py-1.5 h-auto bg-card/50 backdrop-blur-sm border border-border text-foreground font-medium text-sm"
                   >
-                    <User className="mr-1.5 h-4 w-4" />
-                    INITIALIZING...
+                    <div className="flex items-center gap-2">
+                      {/* Pulsing dot indicator for initializing state */}
+                      <div className="h-2 w-2 rounded-full bg-primary animate-pulse" />
+                      <span className="text-sm">Loading...</span>
+                    </div>
                   </Button>
                 )
               ) : (
@@ -376,10 +414,12 @@ export default function BumpBotDashboard() {
                   size="sm"
                   onClick={handleConnect}
                   disabled={isConnecting || !privyReady || !sdkReady}
-                  className="bg-primary text-primary-foreground hover:bg-primary/90 font-medium shadow-lg shadow-primary/50"
+                  className="px-3 py-1.5 h-auto bg-primary text-primary-foreground hover:bg-primary/90 font-medium text-sm shadow-lg shadow-primary/50"
                 >
-                  <User className="mr-1.5 h-4 w-4" />
-                  CONNECT
+                  <div className="flex items-center gap-2">
+                    <User className="h-4 w-4" />
+                    <span>Connect</span>
+                  </div>
                 </Button>
               )}
             </div>
