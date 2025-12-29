@@ -13,6 +13,16 @@ const nextConfig = {
   // Add empty turbopack config to silence the error
   // We're using webpack config instead
   turbopack: {},
+  // Redirect manifest to Farcaster Hosted Manifest
+  async redirects() {
+    return [
+      {
+        source: '/.well-known/farcaster.json',
+        destination: 'https://api.farcaster.xyz/miniapps/hosted-manifest/019b6904-aa9c-a5cf-d965-ccddf734f08e',
+        permanent: false, // 307 temporary redirect
+      },
+    ]
+  },
   webpack: (config, { isServer }) => {
     // Exclude problematic modules from client bundle
     if (!isServer) {

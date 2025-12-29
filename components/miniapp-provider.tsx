@@ -1,6 +1,7 @@
 "use client"
 
 import { createContext, useContext, useEffect, useState, ReactNode } from "react"
+import { sdk } from "@farcaster/miniapp-sdk"
 
 interface FarcasterMiniAppContextType {
   context: any
@@ -28,46 +29,33 @@ export function MiniAppProvider({ children }: MiniAppProviderProps) {
   const [isInWarpcast, setIsInWarpcast] = useState(false)
 
   useEffect(() => {
-    // Check if running in Warpcast
-    const checkWarpcast = () => {
-      if (typeof window !== "undefined") {
-        // Check for Farcaster Mini App context
-        const farcaster = (window as any).farcaster
-        if (farcaster) {
-          setIsInWarpcast(true)
-          
-          // Initialize Mini App context
-          farcaster
-            .context()
-            .then((ctx: any) => {
-              setContext(ctx)
-              setIsReady(true)
-            })
-            .catch((error: Error) => {
-              console.error("Failed to get Farcaster context:", error)
-              setIsReady(false)
-            })
-        } else {
-          // Not in Warpcast, but still allow app to run
-          setIsInWarpcast(false)
-          setIsReady(true)
-        }
+    // Check if running in Warpcast and initialize SDK
+    const initializeSDK = async () => {
+      if (typeof window === "undefined") return
+
+      try {
+        // Try to get context - if this succeeds, we're in Warpcast
+        const ctx = await sdk.context()
+        
+        // We're in Warpcast
+        setIsInWarpcast(true)
+        setContext(ctx)
+        setIsReady(true)
+        
+        // IMPORTANT: Call ready() to hide splash screen and display app
+        // This must be called after the app is fully loaded
+        await sdk.actions.ready()
+      } catch (error) {
+        // Not in Warpcast or SDK not available
+        // Still allow app to run outside Warpcast
+        console.log("Not running in Warpcast or SDK not available:", error)
+        setIsInWarpcast(false)
+        setIsReady(true)
       }
     }
 
-    checkWarpcast()
-
-    // Listen for context updates
-    if (typeof window !== "undefined" && (window as any).farcaster) {
-      const farcaster = (window as any).farcaster
-      
-      // Subscribe to context changes
-      if (farcaster.onContextChange) {
-        farcaster.onContextChange((newContext: any) => {
-          setContext(newContext)
-        })
-      }
-    }
+    // Initialize after component mounts
+    initializeSDK()
   }, [])
 
   return (
