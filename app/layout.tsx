@@ -39,6 +39,25 @@ export default function RootLayout({
 }: Readonly<{
   children: React.ReactNode
 }>) {
+  // Get app URL from environment variable or use default from manifest
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL || "https://farbump.vercel.app"
+  
+  // FrameEmbed JSON for sharing
+  const frameEmbed = {
+    version: "next",
+    imageUrl: `${appUrl}/farbump-logo.png`,
+    button: {
+      title: "Bump!",
+      action: {
+        type: "launch_frame",
+        url: appUrl,
+        name: "FarBump",
+        splashImageUrl: `${appUrl}/farbump-logo.png`,
+        splashBackgroundColor: "#000000"
+      }
+    }
+  }
+
   return (
     <html lang="en">
       <head>
@@ -47,6 +66,10 @@ export default function RootLayout({
         <meta name="apple-mobile-web-app-capable" content="yes" />
         <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
         <meta name="apple-mobile-web-app-title" content="FarBump" />
+        <meta 
+          name="fc:frame" 
+          content={JSON.stringify(frameEmbed)} 
+        />
       </head>
       <body className={`${jetbrainsMono.variable} font-mono antialiased`}>
         <MiniAppProvider>
