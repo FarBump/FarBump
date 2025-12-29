@@ -54,12 +54,8 @@ export function PrivyProvider({ children }: PrivyProviderProps) {
           enabled: true,
           createOnLogin: "all-users" as const,
         },
-        // Disable Solana completely untuk menghilangkan warning
-        externalWallets: {
-          solana: {
-            connectors: [],
-          },
-        },
+        // Note: externalWallets.solana removed to avoid errors
+        // Solana is not used in this app, so we don't configure it
         defaultChain: base,
       } as any}
     >
@@ -69,3 +65,4 @@ export function PrivyProvider({ children }: PrivyProviderProps) {
     </PrivyProviderBase>
   )
 }
+
