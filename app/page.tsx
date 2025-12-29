@@ -37,13 +37,16 @@ export default function BumpBotDashboard() {
   const { address: wagmiAddress, isConnected: wagmiConnected } = useAccount()
   
   // Farcaster Embed Wallet address (hanya untuk informasi, TIDAK digunakan untuk verifikasi atau transaksi)
-  // Kita tidak perlu fetch atau verifikasi Farcaster Embed Wallet untuk auth flow
-  // Hanya Privy Smart Wallet yang digunakan untuk transaksi
+  // Ini adalah wallet yang dibuat oleh Farcaster untuk user (custody address)
   const farcasterEmbedWallet = context?.user?.custodyAddress || null
   
   // Get Privy Smart Wallet address (Smart Wallet untuk transaksi di app)
-  // CRITICAL: Hanya gunakan wallet dengan walletClientType === 'smart_wallet'
-  // JANGAN gunakan Farcaster Embed Wallet (custodyAddress)
+  // CRITICAL: Berdasarkan dokumentasi Privy, Smart Wallet dikontrol oleh embedded signer (EOA)
+  // Privy akan membuat:
+  // 1. Embedded wallet (walletClientType: 'privy') sebagai SIGNER untuk Smart Wallet
+  // 2. Smart Wallet (walletClientType: 'smart_wallet') yang dikontrol oleh embedded signer
+  // 
+  // Hanya Smart Wallet yang digunakan untuk transaksi, BUKAN embedded wallet atau Farcaster Embed Wallet
   const smartWallet = wallets.find(w => {
     // Hanya ambil wallet dengan type 'smart_wallet'
     if (w.walletClientType !== 'smart_wallet') return false
@@ -56,6 +59,9 @@ export default function BumpBotDashboard() {
     
     return true
   })
+  
+  // Get embedded wallet (signer) untuk Smart Wallet (hanya untuk informasi/debugging)
+  const embeddedSigner = wallets.find(w => w.walletClientType === 'privy' || w.walletClientType === 'embedded')
   
   // Privy Smart Wallet address (HANYA dari smartWallet, BUKAN dari wagmiAddress atau Farcaster Embed Wallet)
   // wagmiAddress mungkin masih mengarah ke Farcaster Embed Wallet, jadi kita tidak menggunakannya
@@ -72,13 +78,20 @@ export default function BumpBotDashboard() {
         walletClientType: w.walletClientType,
         chainId: w.chainId,
         isSmartWallet: w.walletClientType === 'smart_wallet',
+        isEmbeddedSigner: w.walletClientType === 'privy' || w.walletClientType === 'embedded',
         isFarcasterEmbed: farcasterEmbedWallet && w.address?.toLowerCase() === farcasterEmbedWallet.toLowerCase()
       })))
+      console.log("  - Embedded Signers Found:", wallets.filter(w => w.walletClientType === 'privy' || w.walletClientType === 'embedded').length)
       console.log("  - Smart Wallets Found:", wallets.filter(w => w.walletClientType === 'smart_wallet').length)
       console.log("  - Selected Smart Wallet:", smartWallet ? {
         address: smartWallet.address,
-        walletClientType: smartWallet.walletClientType
+        walletClientType: smartWallet.walletClientType,
+        chainId: smartWallet.chainId
       } : "❌ NOT FOUND - Smart Wallet belum dibuat oleh Privy")
+      console.log("  - Embedded Signer (for Smart Wallet):", embeddedSigner ? {
+        address: embeddedSigner.address,
+        walletClientType: embeddedSigner.walletClientType
+      } : "Not found")
       console.log("  - Wagmi Address:", wagmiAddress)
       console.log("  - Wagmi Connected:", wagmiConnected)
       console.log("  - Final Privy Smart Wallet Address:", privySmartWalletAddress || "❌ NOT READY")
@@ -99,7 +112,7 @@ export default function BumpBotDashboard() {
         console.warn("    4. createOnLogin: 'all-users' not working as expected")
       }
     }
-  }, [wallets, smartWallet, wagmiAddress, wagmiConnected, privySmartWalletAddress, farcasterEmbedWallet, isAuthenticated, privyUser])
+  }, [wallets, smartWallet, wagmiAddress, wagmiConnected, privySmartWalletAddress, farcasterEmbedWallet, isAuthenticated, privyUser, embeddedSigner])
   
   const [isConnecting, setIsConnecting] = useState(false)
   const [isActive, setIsActive] = useState(false)
@@ -187,16 +200,17 @@ export default function BumpBotDashboard() {
   }
 
   // Handle login completion - Step 3: Verifikasi user data dan Smart Wallet setelah login
-  // CRITICAL: Karena kita menggunakan whitelabel login (useLoginToMiniApp), automatic wallet
-  // creation (createOnLogin) TIDAK bekerja. Kita HARUS manually create Smart Wallet setelah login.
-  // Referensi: https://docs.privy.io/basics/react/advanced/automatic-wallet-creation
-  //
-  // IMPORTANT: Privy membuat embedded wallet (walletType: 'privy') meskipun kita sudah set
-  // embeddedWallets.ethereum.createOnLogin: "off". Ini mungkin karena Privy membuat embedded wallet
-  // sebagai fallback atau karena konfigurasi di Privy Dashboard.
   // 
-  // Solusi: Kita perlu manually create Smart Wallet menggunakan useCreateWallet hook dengan
-  // parameter yang tepat untuk membuat Smart Wallet, bukan embedded wallet.
+  // BERDASARKAN DOKUMENTASI PRIVY (https://docs.privy.io/wallets/using-wallets/evm-smart-wallets/overview):
+  // - Smart wallets dikontrol oleh embedded signers (EOA) yang dibuat oleh Privy
+  // - Privy otomatis membuat embedded wallet sebagai signer untuk Smart Wallet
+  // - Privy otomatis membuat Smart Wallet yang dikontrol oleh embedded signer tersebut
+  // 
+  // IMPORTANT: Untuk whitelabel login (Farcaster Mini App), automatic creation mungkin tidak bekerja.
+  // Kita perlu:
+  // 1. Menunggu Privy membuat embedded wallet sebagai signer
+  // 2. Privy akan otomatis membuat Smart Wallet yang dikontrol oleh embedded signer
+  // 3. Jika Smart Wallet belum dibuat setelah beberapa detik, kita bisa trigger creation secara manual
   const [isCreatingSmartWallet, setIsCreatingSmartWallet] = useState(false)
   
   useEffect(() => {
@@ -224,18 +238,19 @@ export default function BumpBotDashboard() {
           
           try {
             // Create Smart Wallet manually
-            // NOTE: createWallet() tanpa parameter akan membuat embedded wallet jika embeddedWallets enabled
-            // Tapi karena kita sudah set embeddedWallets.createOnLogin: "off", Privy seharusnya
-            // membuat Smart Wallet jika smartWallets.enabled = true dan sudah dikonfigurasi di Dashboard
-            // 
-            // Jika createWallet() masih membuat embedded wallet, berarti konfigurasi di Privy Dashboard
-            // mungkin memaksa pembuatan embedded wallet. Dalam kasus ini, kita perlu:
-            // 1. Pastikan Smart Wallets enabled di Privy Dashboard
-            // 2. Pastikan Base Network (Chain ID: 8453) enabled di Smart Wallets
-            // 3. Pastikan embeddedWallets.createOnLogin: "off" di code (sudah dilakukan)
+            // BERDASARKAN DOKUMENTASI PRIVY:
+            // - Privy akan membuat embedded wallet sebagai signer untuk Smart Wallet
+            // - Privy akan otomatis membuat Smart Wallet yang dikontrol oleh embedded signer
+            // - createWallet() akan membuat embedded wallet jika belum ada, lalu Privy akan membuat Smart Wallet
             //
-            // Untuk sekarang, kita coba createWallet() dan lihat apakah Privy membuat Smart Wallet
-            // atau embedded wallet. Jika membuat embedded wallet, kita perlu konfigurasi di Dashboard.
+            // IMPORTANT: Pastikan Smart Wallets sudah dikonfigurasi di Privy Dashboard:
+            // 1. Settings → Wallets → Smart Wallets → Enabled
+            // 2. Settings → Wallets → Smart Wallets → Base Network (Chain ID: 8453) enabled
+            // 3. SmartWalletsProvider sudah ditambahkan di privy-provider.tsx (sudah dilakukan)
+            //
+            // Jika embedded wallet sudah ada, createWallet() mungkin akan error.
+            // Dalam kasus ini, Privy seharusnya sudah membuat Smart Wallet otomatis.
+            // Kita perlu menunggu dan check lagi.
             const newWallet = await createWallet()
             
             console.log("✅ Wallet created:", {
@@ -247,11 +262,31 @@ export default function BumpBotDashboard() {
             if (newWallet.walletClientType === 'smart_wallet') {
               console.log("✅ Smart Wallet created successfully!")
               setIsConnecting(false)
+            } else if (newWallet.walletClientType === 'privy' || newWallet.walletClientType === 'embedded') {
+              // Embedded wallet (signer) dibuat, Privy akan otomatis membuat Smart Wallet
+              console.log("✅ Embedded wallet (signer) created, waiting for Smart Wallet creation...")
+              console.log("  - Privy will automatically create Smart Wallet controlled by this signer")
+              
+              // Wait a bit more for Smart Wallet to be created automatically
+              setTimeout(() => {
+                const checkSmartWallet = wallets.find(w => w.walletClientType === 'smart_wallet')
+                if (checkSmartWallet) {
+                  console.log("✅ Smart Wallet created automatically:", checkSmartWallet.address)
+                  setIsConnecting(false)
+                } else {
+                  console.warn("⚠️ Smart Wallet not created automatically after embedded wallet creation")
+                  console.warn("  - Please check Privy Dashboard configuration:")
+                  console.warn("    1. Settings → Wallets → Smart Wallets → Enabled")
+                  console.warn("    2. Settings → Wallets → Smart Wallets → Base Network (Chain ID: 8453) enabled")
+                }
+                setIsCreatingSmartWallet(false)
+              }, 3000)
             } else {
-              console.warn("⚠️ Created wallet is not a Smart Wallet:", newWallet.walletClientType)
+              console.warn("⚠️ Created wallet is not a Smart Wallet or embedded wallet:", newWallet.walletClientType)
               console.warn("  - This might be because Smart Wallets are not properly configured in Privy Dashboard")
               console.warn("  - Please check: Settings → Wallets → Smart Wallets → Enabled")
               console.warn("  - And ensure Base Network (Chain ID: 8453) is enabled in Smart Wallets")
+              setIsCreatingSmartWallet(false)
             }
           } catch (error: any) {
             console.error("❌ Failed to create Smart Wallet:", error)
