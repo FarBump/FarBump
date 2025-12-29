@@ -23,14 +23,14 @@ Aplikasi ini menggunakan:
 
 Buat file `.env.local` di root project dengan variabel berikut:
 
-```env
+\`\`\`env
 # Privy Configuration
 NEXT_PUBLIC_PRIVY_APP_ID=your-privy-app-id-here
 
 # Supabase Configuration (jika diperlukan)
 NEXT_PUBLIC_SUPABASE_URL=your-supabase-url
 NEXT_PUBLIC_SUPABASE_ANON_KEY=your-supabase-anon-key
-```
+\`\`\`
 
 ## 🔧 Setup Privy Dashboard
 
@@ -74,20 +74,20 @@ Aplikasi sudah dioptimasi untuk mobile dengan:
 
 ### `useFarcasterAuth()`
 Hook untuk mengakses Farcaster context dan Privy authentication:
-```tsx
+\`\`\`tsx
 const { 
   isInWarpcast, 
   farcasterUser, 
   isAuthenticated, 
   user 
 } = useFarcasterAuth()
-```
+\`\`\`
 
 ### `useFarcasterMiniApp()`
 Hook untuk mengakses Farcaster Mini App context:
-```tsx
+\`\`\`tsx
 const { context, isReady, isInWarpcast } = useFarcasterMiniApp()
-```
+\`\`\`
 
 ## 🚢 Deployment
 
@@ -101,4 +101,3 @@ const { context, isReady, isInWarpcast } = useFarcasterMiniApp()
 - Aplikasi akan tetap berfungsi di browser biasa (non-Warpcast) untuk development
 - Smart Wallets harus diaktifkan di Privy Dashboard untuk Base Network
 - Pastikan domain production sudah di-whitelist di Privy Dashboard jika diperlukan
-

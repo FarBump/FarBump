@@ -82,4 +82,3 @@ export function MiniAppProvider({ children }: MiniAppProviderProps) {
     </FarcasterMiniAppContext.Provider>
   )
 }
-
