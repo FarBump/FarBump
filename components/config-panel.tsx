@@ -6,6 +6,7 @@ import { Slider } from "@/components/ui/slider"
 import { Input } from "@/components/ui/input"
 import { Clock, Coins, Fuel, ExternalLink, AlertCircle, ArrowRightLeft } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { useBumpBalance } from "@/hooks/use-bump-balance"
 
 interface ConfigPanelProps {
   fuelBalance?: number
@@ -14,6 +15,11 @@ interface ConfigPanelProps {
 }
 
 export function ConfigPanel({ fuelBalance = 0, credits = 0, smartWalletAddress }: ConfigPanelProps) {
+  // Fetch $BUMP token balance from Smart Wallet address (same as WalletCard)
+  const { formattedBalance, isLoading: isLoadingBalance } = useBumpBalance({
+    address: smartWalletAddress || null,
+    enabled: !!smartWalletAddress && smartWalletAddress !== "0x000...000",
+  })
   const [bumpSpeed, setBumpSpeed] = useState([5])
   const [amount, setAmount] = useState("0.0001")
 
@@ -31,13 +37,14 @@ export function ConfigPanel({ fuelBalance = 0, credits = 0, smartWalletAddress }
           <div className="space-y-3 rounded-lg bg-secondary border border-border p-3">
             <div className="space-y-1">
               <p className="text-xs font-medium text-foreground">Current Balance</p>
-              <p className="font-mono text-lg font-bold text-primary">{fuelBalance || "0"} $BUMP</p>
+              <p className="font-mono text-lg font-bold text-primary">
+                {isLoadingBalance ? (
+                  <span className="text-muted-foreground">Loading...</span>
+                ) : (
+                  `${formattedBalance} $BUMP`
+                )}
+              </p>
               <p className="text-[10px] text-muted-foreground leading-tight">This app runs ONLY on $BUMP tokens</p>
-              {smartWalletAddress && (
-                <p className="text-[9px] text-muted-foreground leading-tight mt-1">
-                  Smart Wallet: {smartWalletAddress.slice(0, 6)}...{smartWalletAddress.slice(-4)}
-                </p>
-              )}
             </div>
 
             <Button 

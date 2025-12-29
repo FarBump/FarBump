@@ -11,14 +11,14 @@ interface WalletCardProps {
   credits?: number
   walletAddress?: string | null
   isSmartAccountActive?: boolean
+  bumpBalance?: string // Pass formatted balance to ConfigPanel
 }
 
-export function WalletCard({ fuelBalance = 0, credits = 0, walletAddress, isSmartAccountActive = false }: WalletCardProps) {
+export function WalletCard({ fuelBalance = 0, credits = 0, walletAddress, isSmartAccountActive = false, bumpBalance }: WalletCardProps) {
   const [copied, setCopied] = useState(false)
   // Privy Smart Wallet address (PRIMARY ADDRESS - used for all $BUMP balance checks and transactions)
   // CRITICAL: This is the Smart Wallet address, NOT the Embedded Wallet (signer) address
   const smartWalletAddress = walletAddress || "0x000...000"
-  const ethBalance = 2.4567
 
   // Fetch $BUMP token balance from Smart Wallet address
   const { formattedBalance, isLoading: isLoadingBalance, refetch: refetchBalance } = useBumpBalance({
@@ -65,39 +65,36 @@ export function WalletCard({ fuelBalance = 0, credits = 0, walletAddress, isSmar
 
       <div className="mt-4 space-y-3">
         <div className="rounded-lg bg-secondary border border-border p-3">
-          <div className="flex items-center justify-between mb-1">
-            <p className="text-[10px] text-muted-foreground uppercase tracking-wide">Token Balance ($BUMP)</p>
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex-1">
+              <p className="text-[10px] text-muted-foreground uppercase tracking-wide mb-1">Token Balance ($BUMP)</p>
+              <p className="font-mono text-sm font-semibold text-primary">
+                {isLoadingBalance ? (
+                  <span className="text-muted-foreground">Loading...</span>
+                ) : (
+                  `${formattedBalance} $BUMP`
+                )}
+              </p>
+            </div>
             <Button
               size="sm"
               variant="ghost"
               onClick={handleRefreshBalance}
               disabled={isLoadingBalance || !isSmartAccountActive}
-              className="h-5 w-5 p-0 hover:bg-muted/50"
+              className="h-6 w-6 p-0 hover:bg-muted/50 shrink-0"
               title="Refresh balance"
             >
-              <RefreshCw className={`h-3 w-3 text-muted-foreground ${isLoadingBalance ? "animate-spin" : ""}`} />
+              <RefreshCw className={`h-3.5 w-3.5 text-muted-foreground ${isLoadingBalance ? "animate-spin" : ""}`} />
             </Button>
           </div>
-          <p className="mt-1 font-mono text-sm font-semibold text-primary">
-            {isLoadingBalance ? (
-              <span className="text-muted-foreground">Loading...</span>
-            ) : (
-              `${formattedBalance} $BUMP`
-            )}
-          </p>
-          <p className="text-[9px] text-muted-foreground mt-1">
-            Balance from Smart Wallet: {smartWalletAddress !== "0x000...000" ? smartWalletAddress.slice(0, 6) + "..." + smartWalletAddress.slice(-4) : "N/A"}
+          <p className="text-[9px] text-muted-foreground mt-2">
+            Balance from Smart Wallet
           </p>
         </div>
 
         <div className="rounded-lg bg-secondary border border-border p-3">
           <p className="text-[10px] text-muted-foreground uppercase tracking-wide">Credits</p>
           <p className="mt-1 font-mono text-sm font-semibold text-foreground">${credits.toFixed(2)}</p>
-        </div>
-
-        <div className="px-1 py-2">
-          <p className="text-[9px] text-muted-foreground uppercase tracking-wide">Gas (ETH)</p>
-          <p className="mt-0.5 font-mono text-xs font-medium text-foreground">{ethBalance}</p>
         </div>
       </div>
     </Card>
