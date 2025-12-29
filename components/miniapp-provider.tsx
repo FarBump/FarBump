@@ -35,8 +35,8 @@ export function MiniAppProvider({ children }: MiniAppProviderProps) {
 
       try {
         // Try to get context - if this succeeds, we're in Warpcast
-        // sdk.context is a function that returns a Promise
-        const ctx = await sdk.context()
+        // sdk.context is a Promise, await it directly
+        const ctx = await (sdk.context as unknown as Promise<any>)
         
         console.log("✅ Farcaster Mini App: Context loaded", ctx)
         
