@@ -6,6 +6,9 @@ const nextConfig = {
   images: {
     unoptimized: true,
   },
+  // Add empty turbopack config to silence the error
+  // We're using webpack config instead
+  turbopack: {},
   webpack: (config, { isServer }) => {
     // Exclude problematic modules from client bundle
     if (!isServer) {
