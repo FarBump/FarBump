@@ -1,0 +1,25 @@
+{
+  "accountAssociation": {
+    "header": "x-farcaster-account-association"
+  },
+  "miniapp": {
+    "version": "2.0",
+    "name": "FarBump",
+    "description": "Professional HFT Token Bump Bot on Base Network",
+    "icon": "https://your-domain.com/farbump-logo.png",
+    "splash": {
+      "imageUrl": "https://your-domain.com/farbump-logo.png",
+      "backgroundColor": "#000000"
+    },
+    "screenshots": [
+      {
+        "imageUrl": "https://your-domain.com/screenshot.png"
+      }
+    ],
+    "permissions": [
+      "user:read",
+      "cast:read"
+    ]
+  }
+}
+
