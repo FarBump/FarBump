@@ -17,7 +17,7 @@ import { User } from "lucide-react"
 import Image from "next/image"
 import { useFarcasterMiniApp } from "@/components/miniapp-provider"
 import { useFarcasterAuth } from "@/hooks/use-farcaster-auth"
-import { usePrivy, useWallets } from "@privy-io/react-auth"
+import { usePrivy, useWallets, useCreateWallet } from "@privy-io/react-auth"
 import { useAccount } from "wagmi"
 
 export default function BumpBotDashboard() {
@@ -32,6 +32,7 @@ export default function BumpBotDashboard() {
   
   const { ready: privyReady } = usePrivy()
   const { wallets } = useWallets()
+  const { createWallet } = useCreateWallet()
   const { address: wagmiAddress, isConnected: wagmiConnected } = useAccount()
   
   // Farcaster Embed Wallet address (hanya untuk informasi, TIDAK digunakan untuk verifikasi atau transaksi)
@@ -61,29 +62,43 @@ export default function BumpBotDashboard() {
   
   // Debug: Log wallet information untuk memastikan kita menggunakan Smart Wallet yang benar
   useEffect(() => {
-    if (wallets.length > 0 || farcasterEmbedWallet) {
+    if (wallets.length > 0 || isAuthenticated) {
       console.log("🔍 Wallet Debug Info:")
       console.log("  - Farcaster Embed Wallet (custodyAddress):", farcasterEmbedWallet)
-      console.log("  - All Privy Wallets:", wallets.map(w => ({
+      console.log("  - Total Wallets:", wallets.length)
+      console.log("  - All Privy Wallets (DETAILED):", wallets.map(w => ({
         address: w.address,
         walletClientType: w.walletClientType,
         chainId: w.chainId,
         isSmartWallet: w.walletClientType === 'smart_wallet',
-        isFarcasterEmbed: w.address?.toLowerCase() === farcasterEmbedWallet?.toLowerCase()
+        isFarcasterEmbed: farcasterEmbedWallet && w.address?.toLowerCase() === farcasterEmbedWallet.toLowerCase()
       })))
+      console.log("  - Smart Wallets Found:", wallets.filter(w => w.walletClientType === 'smart_wallet').length)
       console.log("  - Selected Smart Wallet:", smartWallet ? {
         address: smartWallet.address,
         walletClientType: smartWallet.walletClientType
       } : "❌ NOT FOUND - Smart Wallet belum dibuat oleh Privy")
-      console.log("  - Wagmi Address:", wagmiAddress, wagmiAddress?.toLowerCase() === farcasterEmbedWallet?.toLowerCase() ? "⚠️ WARNING: This is Farcaster Embed Wallet!" : "")
+      console.log("  - Wagmi Address:", wagmiAddress)
+      console.log("  - Wagmi Connected:", wagmiConnected)
       console.log("  - Final Privy Smart Wallet Address:", privySmartWalletAddress || "❌ NOT READY")
+      console.log("  - Is Authenticated:", isAuthenticated)
+      console.log("  - Privy User:", privyUser ? {
+        id: privyUser.id,
+        wallet: privyUser.wallet?.address,
+        walletType: privyUser.wallet?.walletClientType
+      } : "No user")
       
       // Warning jika Smart Wallet belum dibuat
       if (isAuthenticated && !privySmartWalletAddress) {
-        console.warn("⚠️ WARNING: User is authenticated but Privy Smart Wallet is not ready yet. Waiting for Smart Wallet creation...")
+        console.warn("⚠️ WARNING: User is authenticated but Privy Smart Wallet is not ready yet.")
+        console.warn("  - This might be because:")
+        console.warn("    1. Smart Wallet creation is still in progress (wait a few seconds)")
+        console.warn("    2. Smart Wallets not enabled in Privy Dashboard")
+        console.warn("    3. Base Network not configured in Smart Wallets")
+        console.warn("    4. createOnLogin: 'all-users' not working as expected")
       }
     }
-  }, [wallets, smartWallet, wagmiAddress, privySmartWalletAddress, farcasterEmbedWallet, isAuthenticated])
+  }, [wallets, smartWallet, wagmiAddress, wagmiConnected, privySmartWalletAddress, farcasterEmbedWallet, isAuthenticated, privyUser])
   
   const [isConnecting, setIsConnecting] = useState(false)
   const [isActive, setIsActive] = useState(false)
@@ -171,8 +186,9 @@ export default function BumpBotDashboard() {
   }
 
   // Handle login completion - Step 3: Verifikasi user data dan Smart Wallet setelah login
+  // Jika Smart Wallet belum dibuat, trigger creation secara eksplisit
   useEffect(() => {
-    if (isAuthenticated && username && userFid) {
+    if (isAuthenticated && username && userFid && !privySmartWalletAddress) {
       console.log("✅ User authenticated:", {
         username,
         fid: userFid,
@@ -180,14 +196,26 @@ export default function BumpBotDashboard() {
         farcasterEmbedWallet: farcasterEmbedWallet || "Not available (not needed for auth)"
       })
       
-      if (privySmartWalletAddress) {
-        console.log("✅ Privy Smart Wallet ready:", privySmartWalletAddress)
-        setIsConnecting(false)
-      } else {
-        console.log("⏳ Waiting for Privy Smart Wallet creation...")
-      }
+      // Jika Smart Wallet belum ada setelah beberapa detik, trigger creation
+      const timer = setTimeout(async () => {
+        if (!privySmartWalletAddress && createWallet) {
+          console.log("⏳ Smart Wallet not found, attempting to create...")
+          try {
+            // Create Smart Wallet - Privy will automatically create it based on config
+            await createWallet()
+            console.log("✅ Smart Wallet creation triggered")
+          } catch (error) {
+            console.error("❌ Failed to create Smart Wallet:", error)
+          }
+        }
+      }, 3000) // Wait 3 seconds for automatic creation, then trigger manually
+      
+      return () => clearTimeout(timer)
+    } else if (isAuthenticated && privySmartWalletAddress) {
+      console.log("✅ Privy Smart Wallet ready:", privySmartWalletAddress)
+      setIsConnecting(false)
     }
-  }, [isAuthenticated, username, userFid, privySmartWalletAddress, farcasterEmbedWallet])
+  }, [isAuthenticated, username, userFid, privySmartWalletAddress, farcasterEmbedWallet, createWallet])
   
   const handleToggle = () => {
     setIsActive(!isActive)
