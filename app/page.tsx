@@ -19,6 +19,7 @@ import { useFarcasterMiniApp } from "@/components/miniapp-provider"
 import { useFarcasterAuth } from "@/hooks/use-farcaster-auth"
 import { usePrivy, useWallets, useCreateWallet } from "@privy-io/react-auth"
 import { useAccount } from "wagmi"
+import { base } from "wagmi/chains"
 
 export default function BumpBotDashboard() {
   const { isInWarpcast, isReady, context } = useFarcasterMiniApp()
@@ -186,36 +187,47 @@ export default function BumpBotDashboard() {
   }
 
   // Handle login completion - Step 3: Verifikasi user data dan Smart Wallet setelah login
-  // Jika Smart Wallet belum dibuat, trigger creation secara eksplisit
+  // CRITICAL: Karena kita menggunakan whitelabel login (useLoginToMiniApp), automatic wallet
+  // creation (createOnLogin) TIDAK bekerja. Kita HARUS manually create Smart Wallet setelah login.
+  // Referensi: https://docs.privy.io/basics/react/advanced/automatic-wallet-creation
   useEffect(() => {
-    if (isAuthenticated && username && userFid && !privySmartWalletAddress) {
-      console.log("✅ User authenticated:", {
+    if (isAuthenticated && username && userFid && privyReady && !privySmartWalletAddress) {
+      console.log("✅ User authenticated, checking Smart Wallet...", {
         username,
         fid: userFid,
         hasPrivySmartWallet: !!privySmartWalletAddress,
-        farcasterEmbedWallet: farcasterEmbedWallet || "Not available (not needed for auth)"
+        privyReady
       })
       
-      // Jika Smart Wallet belum ada setelah beberapa detik, trigger creation
+      // Manual Smart Wallet creation (required for whitelabel login)
+      // Wait a short delay to ensure Privy has fully processed the login
       const timer = setTimeout(async () => {
-        if (!privySmartWalletAddress && createWallet) {
-          console.log("⏳ Smart Wallet not found, attempting to create...")
+        // Double-check Smart Wallet still doesn't exist
+        const currentSmartWallet = wallets.find(w => w.walletClientType === 'smart_wallet')
+        if (!currentSmartWallet && createWallet) {
+          console.log("⏳ Smart Wallet not found, creating manually (whitelabel login requires manual creation)...")
           try {
-            // Create Smart Wallet - Privy will automatically create it based on config
-            await createWallet()
-            console.log("✅ Smart Wallet creation triggered")
+            // Create Smart Wallet explicitly
+            // createWallet() without params should create a Smart Wallet if smartWallets.enabled = true
+            // If that doesn't work, we may need to check Privy documentation for Smart Wallet creation
+            const newWallet = await createWallet()
+            console.log("✅ Smart Wallet created successfully:", newWallet)
           } catch (error) {
             console.error("❌ Failed to create Smart Wallet:", error)
+            // Don't set isConnecting to false on error, let user retry
           }
+        } else if (currentSmartWallet) {
+          console.log("✅ Smart Wallet found after delay:", currentSmartWallet.address)
+          setIsConnecting(false)
         }
-      }, 3000) // Wait 3 seconds for automatic creation, then trigger manually
+      }, 2000) // 2 second delay to allow Privy to process login
       
       return () => clearTimeout(timer)
     } else if (isAuthenticated && privySmartWalletAddress) {
       console.log("✅ Privy Smart Wallet ready:", privySmartWalletAddress)
       setIsConnecting(false)
     }
-  }, [isAuthenticated, username, userFid, privySmartWalletAddress, farcasterEmbedWallet, createWallet])
+  }, [isAuthenticated, username, userFid, privySmartWalletAddress, privyReady, wallets, createWallet])
   
   const handleToggle = () => {
     setIsActive(!isActive)

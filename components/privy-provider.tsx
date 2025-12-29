@@ -47,12 +47,15 @@ export function PrivyProvider({ children }: PrivyProviderProps) {
             createOnLogin: "off" as const,
           },
         },
-        // Smart Wallets: Akan dibuat saat user login dengan Farcaster auth
-        // Smart Wallet ini yang digunakan untuk transaksi di app
-        // createOnLogin: "all-users" berarti Smart Wallet dibuat untuk semua user yang login
+        // Smart Wallets: Enabled untuk Account Abstraction
+        // NOTE: createOnLogin mungkin TIDAK bekerja dengan whitelabel login (Farcaster Mini App)
+        // Berdasarkan dokumentasi Privy: "Automatic wallet creation is currently not supported
+        // if your app uses Privy's whitelabel login interfaces."
+        // Karena kita menggunakan useLoginToMiniApp (whitelabel), kita perlu manually create
+        // Smart Wallet setelah login di page.tsx menggunakan useCreateWallet hook
         smartWallets: {
           enabled: true,
-          createOnLogin: "all-users" as const,
+          createOnLogin: "all-users" as const, // Mungkin tidak bekerja, manual creation di page.tsx
         },
         // Note: externalWallets.solana removed to avoid errors
         // Solana is not used in this app, so we don't configure it
@@ -65,4 +68,5 @@ export function PrivyProvider({ children }: PrivyProviderProps) {
     </PrivyProviderBase>
   )
 }
+
 
