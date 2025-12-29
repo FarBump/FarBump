@@ -2,6 +2,7 @@ import type React from "react"
 import type { Metadata } from "next"
 import { JetBrains_Mono } from "next/font/google"
 import { Analytics } from "@vercel/analytics/next"
+import { Toaster } from "sonner"
 import { PrivyProvider } from "@/components/privy-provider"
 import { MiniAppProvider } from "@/components/miniapp-provider"
 import "./globals.css"
@@ -75,6 +76,7 @@ export default function RootLayout({
         <MiniAppProvider>
           <PrivyProvider>
             {children}
+            <Toaster position="top-center" richColors />
             <Analytics />
           </PrivyProvider>
         </MiniAppProvider>
