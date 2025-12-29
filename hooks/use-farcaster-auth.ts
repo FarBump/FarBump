@@ -59,4 +59,3 @@ export function useFarcasterAuth() {
     user: authenticated ? user : null,
   }
 }
-
