@@ -1,25 +1,16 @@
 {
   "accountAssociation": {
-    "header": "x-farcaster-account-association"
+    "header": "x-farcaster-account-association",
+    "payload": "farbump.vercel.app wants you to sign in with your Farcaster account:\n\nURI: https://farbump.vercel.app\nVersion: 1\nChain ID: 8453\nNonce: YOUR_NONCE\nIssued At: 2024-01-01T00:00:00.000Z",
+    "signature": "YOUR_SIGNATURE_HERE"
   },
-  "miniapp": {
-    "version": "2.0",
+  "frame": {
+    "version": "next",
     "name": "FarBump",
-    "description": "Professional HFT Token Bump Bot on Base Network",
-    "icon": "https://your-domain.com/farbump-logo.png",
-    "splash": {
-      "imageUrl": "https://your-domain.com/farbump-logo.png",
-      "backgroundColor": "#000000"
-    },
-    "screenshots": [
-      {
-        "imageUrl": "https://your-domain.com/screenshot.png"
-      }
-    ],
-    "permissions": [
-      "user:read",
-      "cast:read"
-    ]
+    "iconUrl": "https://farbump.vercel.app/farbump-logo.png",
+    "homeUrl": "https://farbump.vercel.app",
+    "splashImageUrl": "https://farbump.vercel.app/farbump-logo.png",
+    "splashBackgroundColor": "#000000"
   }
 }
 
