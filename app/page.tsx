@@ -348,13 +348,14 @@ export default function BumpBotDashboard() {
               </div>
               <div className="flex items-center gap-2">
                 {/* Connection Status Indicator - Green dot when connected, pulsing when initializing */}
-                <div className={`h-2 w-2 rounded-full shrink-0 ${
-                  isConnected 
-                    ? "bg-green-500" 
-                    : (isInitializing || isCreatingSmartWallet)
-                    ? "bg-primary animate-pulse"
-                    : "bg-muted"
-                }`} />
+                {/* Only show dot when connected or initializing, hide when not connected */}
+                {(isConnected || isInitializing || isCreatingSmartWallet) && (
+                  <div className={`h-2 w-2 rounded-full shrink-0 ${
+                    isConnected 
+                      ? "bg-green-500" 
+                      : "bg-primary animate-pulse"
+                  }`} />
+                )}
                 {isConnected ? (
                   // State 3: Connected (Privy Smart Wallet ready) - Show PFP and Username
                   <div className="flex items-center gap-1.5 rounded-lg border border-border bg-card/50 backdrop-blur-sm px-2 py-1.5 h-8 max-w-[200px]">
