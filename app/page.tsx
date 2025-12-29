@@ -341,7 +341,6 @@ export default function BumpBotDashboard() {
             </div>
             <div className="flex items-center gap-3">
               <div className="flex items-center gap-2">
-                <div className={`h-2.5 w-2.5 rounded-full ${isActive ? "bg-primary pulse-glow" : "bg-muted"}`} />
                 <span className="hidden text-xs font-medium text-foreground sm:inline">
                   {isActive ? "LIVE" : "IDLE"}
                 </span>
