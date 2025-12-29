@@ -35,8 +35,10 @@ export function MiniAppProvider({ children }: MiniAppProviderProps) {
 
       try {
         // Try to get context - if this succeeds, we're in Warpcast
-        // sdk.context is a Promise, await it directly
-        const ctx = await (sdk.context as unknown as Promise<any>)
+        // sdk.context is a function that returns a Promise
+        const ctx = await sdk.context()
+        
+        console.log("✅ Farcaster Mini App: Context loaded", ctx)
         
         // We're in Warpcast
         setIsInWarpcast(true)
@@ -48,7 +50,7 @@ export function MiniAppProvider({ children }: MiniAppProviderProps) {
       } catch (error) {
         // Not in Warpcast or SDK not available
         // Still allow app to run outside Warpcast
-        console.log("Not running in Warpcast or SDK not available:", error)
+        console.log("⚠️ Farcaster Mini App: Not running in Warpcast or SDK not available:", error)
         setIsInWarpcast(false)
         setIsReady(true)
       }

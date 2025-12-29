@@ -42,8 +42,14 @@ export function PrivyProvider({ children }: PrivyProviderProps) {
             createOnLogin: "all-users",
           },
         },
+        // Disable Solana to remove warning
+        externalWallets: {
+          solana: {
+            connectors: [],
+          },
+        },
         defaultChain: base,
-      }}
+      } as any}
     >
       <QueryClientProvider client={queryClient}>
         <WagmiProvider config={wagmiConfig}>{children}</WagmiProvider>
