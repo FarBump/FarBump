@@ -1,4 +1,6 @@
-import webpack from 'webpack'
+import { createRequire } from 'module'
+const require = createRequire(import.meta.url)
+const webpack = require('webpack')
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
