@@ -34,28 +34,53 @@ export default function BumpBotDashboard() {
   const { wallets } = useWallets()
   const { address: wagmiAddress, isConnected: wagmiConnected } = useAccount()
   
-  // Get Smart Wallet address (Smart Wallet untuk transaksi di app)
-  // Smart Wallet memiliki walletClientType === 'smart_wallet'
-  const smartWallet = wallets.find(w => w.walletClientType === 'smart_wallet')
-  // Fallback ke wagmiAddress jika Smart Wallet belum ready (useAccount sudah terhubung dengan Smart Wallet)
-  const privySmartWalletAddress = smartWallet?.address || wagmiAddress || null
+  // Farcaster Embed Wallet address (untuk verifikasi, BUKAN untuk transaksi)
+  const farcasterEmbedWallet = context?.user?.custodyAddress || null
   
-  // Debug: Log wallet information
+  // Get Privy Smart Wallet address (Smart Wallet untuk transaksi di app)
+  // CRITICAL: Hanya gunakan wallet dengan walletClientType === 'smart_wallet'
+  // JANGAN gunakan Farcaster Embed Wallet (custodyAddress)
+  const smartWallet = wallets.find(w => {
+    // Hanya ambil wallet dengan type 'smart_wallet'
+    if (w.walletClientType !== 'smart_wallet') return false
+    
+    // Pastikan address tidak sama dengan Farcaster Embed Wallet
+    if (farcasterEmbedWallet && w.address?.toLowerCase() === farcasterEmbedWallet.toLowerCase()) {
+      return false
+    }
+    
+    return true
+  })
+  
+  // Privy Smart Wallet address (HANYA dari smartWallet, BUKAN dari wagmiAddress)
+  // wagmiAddress mungkin masih mengarah ke Farcaster Embed Wallet
+  const privySmartWalletAddress = smartWallet?.address || null
+  
+  // Debug: Log wallet information untuk memastikan kita menggunakan Smart Wallet yang benar
   useEffect(() => {
-    if (wallets.length > 0) {
-      console.log("🔍 Privy Wallets:", wallets.map(w => ({
+    if (wallets.length > 0 || farcasterEmbedWallet) {
+      console.log("🔍 Wallet Debug Info:")
+      console.log("  - Farcaster Embed Wallet (custodyAddress):", farcasterEmbedWallet)
+      console.log("  - All Privy Wallets:", wallets.map(w => ({
         address: w.address,
         walletClientType: w.walletClientType,
-        chainId: w.chainId
+        chainId: w.chainId,
+        isSmartWallet: w.walletClientType === 'smart_wallet',
+        isFarcasterEmbed: w.address?.toLowerCase() === farcasterEmbedWallet?.toLowerCase()
       })))
-      console.log("🔍 Smart Wallet:", smartWallet ? {
+      console.log("  - Selected Smart Wallet:", smartWallet ? {
         address: smartWallet.address,
         walletClientType: smartWallet.walletClientType
-      } : "Not found")
-      console.log("🔍 Wagmi Address:", wagmiAddress)
-      console.log("🔍 Final Smart Wallet Address:", privySmartWalletAddress)
+      } : "❌ NOT FOUND - Smart Wallet belum dibuat oleh Privy")
+      console.log("  - Wagmi Address:", wagmiAddress, wagmiAddress?.toLowerCase() === farcasterEmbedWallet?.toLowerCase() ? "⚠️ WARNING: This is Farcaster Embed Wallet!" : "")
+      console.log("  - Final Privy Smart Wallet Address:", privySmartWalletAddress || "❌ NOT READY")
+      
+      // Warning jika Smart Wallet belum dibuat
+      if (isAuthenticated && !privySmartWalletAddress) {
+        console.warn("⚠️ WARNING: User is authenticated but Privy Smart Wallet is not ready yet. Waiting for Smart Wallet creation...")
+      }
     }
-  }, [wallets, smartWallet, wagmiAddress, privySmartWalletAddress])
+  }, [wallets, smartWallet, wagmiAddress, privySmartWalletAddress, farcasterEmbedWallet, isAuthenticated])
   
   const [isConnecting, setIsConnecting] = useState(false)
   const [isActive, setIsActive] = useState(false)
@@ -75,11 +100,11 @@ export default function BumpBotDashboard() {
     (privyUser?.farcaster as any)?.profilePicture || 
     "/user-avatar.jpg"
 
-  // Farcaster Embed Wallet address (untuk verifikasi di Step 3)
-  const farcasterEmbedWallet = context?.user?.custodyAddress || null
-
   // Determine connection states
-  const isWalletReady = wagmiConnected && !!wagmiAddress
+  // Note: farcasterEmbedWallet sudah dideklarasikan di atas (line 38)
+  // CRITICAL: isWalletReady harus menggunakan privySmartWalletAddress, BUKAN wagmiAddress
+  // karena wagmiAddress mungkin masih mengarah ke Farcaster Embed Wallet
+  const isWalletReady = !!privySmartWalletAddress
   const isConnected = isAuthenticated && username && userFid && farcasterEmbedWallet && isWalletReady
   const isInitializing = isAuthenticated && username && userFid && farcasterEmbedWallet && !isWalletReady
 
