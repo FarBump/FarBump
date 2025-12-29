@@ -10,9 +10,10 @@ import { Button } from "@/components/ui/button"
 interface ConfigPanelProps {
   fuelBalance?: number
   credits?: number
+  smartWalletAddress?: string | null
 }
 
-export function ConfigPanel({ fuelBalance = 0, credits = 0 }: ConfigPanelProps) {
+export function ConfigPanel({ fuelBalance = 0, credits = 0, smartWalletAddress }: ConfigPanelProps) {
   const [bumpSpeed, setBumpSpeed] = useState([5])
   const [amount, setAmount] = useState("0.0001")
 
@@ -32,9 +33,19 @@ export function ConfigPanel({ fuelBalance = 0, credits = 0 }: ConfigPanelProps) 
               <p className="text-xs font-medium text-foreground">Current Balance</p>
               <p className="font-mono text-lg font-bold text-primary">{fuelBalance || "0"} $BUMP</p>
               <p className="text-[10px] text-muted-foreground leading-tight">This app runs ONLY on $BUMP tokens</p>
+              {smartWalletAddress && (
+                <p className="text-[9px] text-muted-foreground leading-tight mt-1">
+                  Smart Wallet: {smartWalletAddress.slice(0, 6)}...{smartWalletAddress.slice(-4)}
+                </p>
+              )}
             </div>
 
-            <Button size="sm" className="w-full bg-primary text-primary-foreground hover:bg-primary/90 font-semibold">
+            <Button 
+              size="sm" 
+              className="w-full bg-primary text-primary-foreground hover:bg-primary/90 font-semibold"
+              disabled={!smartWalletAddress}
+              title={!smartWalletAddress ? "Smart Wallet not ready" : "Convert $BUMP to Credit using Smart Wallet"}
+            >
               <ArrowRightLeft className="mr-2 h-4 w-4" />
               Convert $BUMP to Credit
             </Button>
@@ -44,8 +55,14 @@ export function ConfigPanel({ fuelBalance = 0, credits = 0 }: ConfigPanelProps) 
               variant="outline"
               className="w-full border-primary/20 text-primary hover:bg-primary/10 font-medium bg-transparent"
               asChild
+              disabled={!smartWalletAddress}
             >
-              <a href="https://farbump.vercel.app/token" target="_blank" rel="noopener noreferrer">
+              <a 
+                href={`https://farbump.vercel.app/token?wallet=${smartWalletAddress || ''}`} 
+                target="_blank" 
+                rel="noopener noreferrer"
+                title={!smartWalletAddress ? "Smart Wallet not ready" : `Buy $BUMP for Smart Wallet: ${smartWalletAddress}`}
+              >
                 <ExternalLink className="mr-1.5 h-3.5 w-3.5" />
                 Buy $BUMP
               </a>

@@ -9,11 +9,13 @@ interface WalletCardProps {
   fuelBalance?: number
   credits?: number
   walletAddress?: string | null
+  isSmartAccountActive?: boolean
 }
 
-export function WalletCard({ fuelBalance = 0, credits = 0, walletAddress }: WalletCardProps) {
+export function WalletCard({ fuelBalance = 0, credits = 0, walletAddress, isSmartAccountActive = false }: WalletCardProps) {
   const [copied, setCopied] = useState(false)
-  // Privy Smart Wallet address (untuk display)
+  // Privy Smart Wallet address (PRIMARY ADDRESS - used for all $BUMP balance checks and transactions)
+  // CRITICAL: This is the Smart Wallet address, NOT the Embedded Wallet (signer) address
   const smartWalletAddress = walletAddress || "0x000...000"
   const ethBalance = 2.4567
 
@@ -31,7 +33,14 @@ export function WalletCard({ fuelBalance = 0, credits = 0, walletAddress }: Wall
             <Shield className="h-5 w-5 text-primary" />
           </div>
           <div className="flex-1 space-y-1">
-            <p className="text-xs font-medium text-foreground">Privy Smart Wallet</p>
+            <div className="flex items-center gap-2">
+              <p className="text-xs font-medium text-foreground">Privy Smart Wallet</p>
+              {isSmartAccountActive && (
+                <span className="inline-flex items-center rounded-full bg-primary/20 border border-primary/30 px-2 py-0.5 text-[10px] font-semibold text-primary">
+                  Smart Account Active
+                </span>
+              )}
+            </div>
             <p className="font-mono text-xs text-foreground break-all">{smartWalletAddress || "0x000...000"}</p>
             <p className="text-[10px] leading-tight text-muted-foreground pt-0.5">
               Dedicated secure wallet for FarBump automation on Base Network.
@@ -47,6 +56,9 @@ export function WalletCard({ fuelBalance = 0, credits = 0, walletAddress }: Wall
         <div className="rounded-lg bg-secondary border border-border p-3">
           <p className="text-[10px] text-muted-foreground uppercase tracking-wide">Token Balance ($BUMP)</p>
           <p className="mt-1 font-mono text-sm font-semibold text-primary">{fuelBalance || "0"}</p>
+          <p className="text-[9px] text-muted-foreground mt-1">
+            Balance from Smart Wallet: {smartWalletAddress !== "0x000...000" ? smartWalletAddress.slice(0, 6) + "..." + smartWalletAddress.slice(-4) : "N/A"}
+          </p>
         </div>
 
         <div className="rounded-lg bg-secondary border border-border p-3">

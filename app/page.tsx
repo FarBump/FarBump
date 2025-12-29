@@ -18,6 +18,7 @@ import Image from "next/image"
 import { useFarcasterMiniApp } from "@/components/miniapp-provider"
 import { useFarcasterAuth } from "@/hooks/use-farcaster-auth"
 import { usePrivy, useWallets } from "@privy-io/react-auth"
+import { useSmartWallets } from "@privy-io/react-auth/smart-wallets"
 import { useAccount } from "wagmi"
 import { base } from "wagmi/chains"
 
@@ -31,71 +32,115 @@ export default function BumpBotDashboard() {
     loginToMiniApp
   } = useFarcasterAuth()
   
-  const { ready: privyReady, user } = usePrivy()
+  const { ready: privyReady, user, authenticated, login, createWallet } = usePrivy()
   const { wallets } = useWallets()
   const { address: wagmiAddress, isConnected: wagmiConnected } = useAccount()
+  
+  // Use useSmartWallets hook to detect Smart Account
+  // This is the recommended way to access Smart Wallets in Privy
+  const { client: smartWalletClient } = useSmartWallets()
+  
+  // State to store Smart Wallet address (detected via useEffect when ready)
+  const [privySmartWalletAddress, setPrivySmartWalletAddress] = useState<string | null>(null)
+  const [smartWallet, setSmartWallet] = useState<any>(null)
+  const [sdkReady, setSdkReady] = useState(false)
+  const [isCreatingSmartWallet, setIsCreatingSmartWallet] = useState(false)
   
   // Farcaster Embed Wallet address (hanya untuk informasi, TIDAK digunakan untuk verifikasi atau transaksi)
   // Ini adalah wallet yang dibuat oleh Farcaster untuk user (custody address)
   const farcasterEmbedWallet = context?.user?.custodyAddress || null
   
-  // Cara benar mendeteksi Smart Wallet dan Embedded Wallet
-  // CRITICAL: Gunakan w.type untuk Smart Wallet, bukan w.walletClientType
-  // Note: Type assertion needed karena TypeScript types may not include all wallet types
-  const smartWallet = wallets.find((w) => (w as any).type === 'smart_wallet' || w.walletClientType === 'smart_wallet')
-  const embeddedWallet = wallets.find((w) => w.walletClientType === 'privy')
+  // Embedded Wallet (signer) - hanya untuk informasi, tidak digunakan untuk transaksi
+  const embeddedWallet = privyReady 
+    ? wallets.find((w) => w.walletClientType === 'privy')
+    : null
   
-  // Privy Smart Wallet address (HANYA dari smartWallet, BUKAN dari wagmiAddress atau Farcaster Embed Wallet)
-  // wagmiAddress mungkin masih mengarah ke Farcaster Embed Wallet, jadi kita tidak menggunakannya
-  const privySmartWalletAddress = smartWallet?.address || null
+  // Get smartWallets array for UI logic (used in JSX and useEffect)
+  // Filter Smart Wallets from wallets array
+  const smartWallets = privyReady 
+    ? wallets.filter((w) => (w as any).type === 'smart_wallet' || w.walletClientType === 'smart_wallet')
+    : []
   
-  // Debug: Log wallet information untuk memastikan kita menggunakan Smart Wallet yang benar
+  // Smart Wallet Detection using useSmartWallets hook
+  // CRITICAL: Wrap detection in useEffect that triggers when ready is true
   useEffect(() => {
-    if (wallets.length > 0 || isAuthenticated) {
-      console.log("🔍 Wallet Debug Info:")
-      console.log("  - Farcaster Embed Wallet (custodyAddress):", farcasterEmbedWallet)
-      console.log("  - Total Wallets:", wallets.length)
-      console.log("  - All Privy Wallets (DETAILED):", wallets.map(w => ({
-        address: w.address,
-        type: w.type,
-        walletClientType: w.walletClientType,
-        chainId: w.chainId,
-        isSmartWallet: (w as any).type === 'smart_wallet' || w.walletClientType === 'smart_wallet',
-        isEmbeddedSigner: w.walletClientType === 'privy',
-        isFarcasterEmbed: farcasterEmbedWallet && w.address?.toLowerCase() === farcasterEmbedWallet.toLowerCase()
-      })))
-      console.log("  - Embedded Wallets Found:", wallets.filter(w => w.walletClientType === 'privy').length)
-      console.log("  - Smart Wallets Found:", wallets.filter(w => (w as any).type === 'smart_wallet' || w.walletClientType === 'smart_wallet').length)
-      console.log("  - Selected Smart Wallet:", smartWallet ? {
-        address: smartWallet.address,
-        type: smartWallet.type,
-        chainId: smartWallet.chainId
-      } : "❌ NOT FOUND - Smart Wallet belum dibuat oleh Privy")
-      console.log("  - Embedded Wallet (signer):", embeddedWallet ? {
-        address: embeddedWallet.address,
-        walletClientType: embeddedWallet.walletClientType
-      } : "Not found")
-      console.log("  - Wagmi Address:", wagmiAddress)
-      console.log("  - Wagmi Connected:", wagmiConnected)
-      console.log("  - Final Privy Smart Wallet Address:", privySmartWalletAddress || "❌ NOT READY")
-      console.log("  - Is Authenticated:", isAuthenticated)
-      console.log("  - Privy User:", privyUser ? {
-        id: privyUser.id,
-        wallet: privyUser.wallet?.address,
-        walletType: privyUser.wallet?.walletClientType
-      } : "No user")
+    if (!privyReady) {
+      console.log("⏳ Waiting for Privy to be ready before checking Smart Wallets...")
+      setPrivySmartWalletAddress(null)
+      setSmartWallet(null)
+      return
+    }
+
+    console.log("🔍 Smart Wallet Detection (Privy Ready):")
+    console.log("  - Privy Ready:", privyReady, "✅")
+    console.log("  - Is Authenticated:", authenticated)
+    console.log("  - Total Wallets:", wallets.length)
+    
+    // Use the smartWallets array defined outside useEffect
+    console.log("  - Smart Wallets Found (from wallets array):", smartWallets.length)
+    console.log("  - Smart Wallets Array:", smartWallets)
+    console.log("  - Smart Wallets Details:", smartWallets.map(w => ({
+      address: w.address,
+      type: w.type,
+      walletClientType: w.walletClientType,
+      chainId: w.chainId
+    })))
+    
+    // Check smartWalletClient from useSmartWallets hook
+    const clientAddress = smartWalletClient?.account?.address as string | undefined
+    console.log("  - Smart Wallet Client (from useSmartWallets hook):", clientAddress || "❌ Not available")
+    
+    // If smartWallets.length === 0 but authenticated is true, log user.linkedAccounts
+    if (smartWallets.length === 0 && authenticated && user) {
+      console.warn("⚠️ WARNING: No Smart Wallets found but user is authenticated!")
+      console.warn("  - Checking user.linkedAccounts for smart_wallet type...")
+      console.log("  - User ID:", user.id)
+      console.log("  - User linkedAccounts (FULL):", JSON.stringify(user.linkedAccounts, null, 2))
       
-      // Warning jika Smart Wallet belum dibuat
-      if (isAuthenticated && !privySmartWalletAddress) {
-        console.warn("⚠️ WARNING: User is authenticated but Privy Smart Wallet is not ready yet.")
-        console.warn("  - This might be because:")
-        console.warn("    1. Smart Wallet creation is still in progress (wait a few seconds)")
-        console.warn("    2. Smart Wallets not enabled in Privy Dashboard")
-        console.warn("    3. Base Network not configured in Smart Wallets")
-        console.warn("    4. createOnLogin: 'all-users' not working as expected")
+      // Check if smart_wallet exists in linkedAccounts
+      const smartWalletInLinkedAccounts = user.linkedAccounts?.filter((account: any) => 
+        account.type === 'smart_wallet' || account.walletClientType === 'smart_wallet'
+      )
+      
+      if (smartWalletInLinkedAccounts && smartWalletInLinkedAccounts.length > 0) {
+        console.warn("  - ⚠️ Smart Wallet EXISTS in user.linkedAccounts but NOT in wallets array!")
+        console.warn("  - Smart Wallet in linkedAccounts:", smartWalletInLinkedAccounts)
+        console.warn("  - This suggests the Smart Wallet exists in Privy Dashboard but is not being loaded by useWallets() hook")
+      } else {
+        console.warn("  - ❌ No smart_wallet type found in user.linkedAccounts either")
       }
     }
-  }, [wallets, smartWallet, wagmiAddress, wagmiConnected, privySmartWalletAddress, farcasterEmbedWallet, isAuthenticated, privyUser, embeddedWallet])
+    
+    // Determine Smart Wallet address
+    // Priority: 1. smartWalletClient.account.address, 2. smartWallets[0].address, 3. null
+    const detectedSmartWallet = smartWallets[0] || null
+    const detectedAddress = clientAddress || detectedSmartWallet?.address || null
+    
+    setSmartWallet(detectedSmartWallet)
+    setPrivySmartWalletAddress(detectedAddress)
+    
+    if (detectedAddress) {
+      console.log("✅ Smart Wallet detected:", detectedAddress)
+      console.log("  - Source:", clientAddress ? "useSmartWallets hook (client)" : "wallets array")
+    } else {
+      console.warn("❌ Smart Wallet NOT detected")
+    }
+    
+    // Additional debug info
+    console.log("  - All Wallets:", wallets.map(w => ({
+      address: w.address,
+      type: w.type,
+      walletClientType: w.walletClientType,
+      chainId: w.chainId
+    })))
+    console.log("  - Embedded Wallet (signer):", embeddedWallet ? {
+      address: embeddedWallet.address,
+      walletClientType: embeddedWallet.walletClientType
+    } : "Not found")
+    console.log("  - Wagmi Address:", wagmiAddress, "(NOT USED - may point to Farcaster Embed Wallet)")
+    console.log("  - ✅ PRIMARY ADDRESS (Smart Wallet):", detectedAddress || "❌ NOT READY")
+    
+  }, [privyReady, authenticated, wallets, smartWalletClient, user, embeddedWallet, wagmiAddress, smartWallets])
   
   const [isConnecting, setIsConnecting] = useState(false)
   const [isActive, setIsActive] = useState(false)
@@ -136,49 +181,83 @@ export default function BumpBotDashboard() {
     }>
   >([])
 
-  // Call sdk.actions.ready() to hide splash screen in Farcaster Mini App
+  // CRITICAL: Call sdk.actions.ready() FIRST before any Privy action
   // This MUST be called in page.tsx, otherwise splash screen won't close
+  // This must complete before any Privy login or wallet operations
   useEffect(() => {
     const callReady = async () => {
       // Only call if in Warpcast and SDK is ready
       if (isInWarpcast && isReady && typeof window !== 'undefined') {
         try {
-          console.log("📱 Calling sdk.actions.ready() to hide splash screen...")
+          console.log("📱 Calling sdk.actions.ready() to hide splash screen (BEFORE Privy actions)...")
           await sdk.actions.ready()
           console.log("✅ sdk.actions.ready() called successfully")
+          setSdkReady(true)
         } catch (error) {
           console.error("❌ Failed to call sdk.actions.ready():", error)
+          // Still set ready to true to allow app to continue
+          setSdkReady(true)
         }
+      } else {
+        // Not in Warpcast, allow app to continue
+        setSdkReady(true)
       }
     }
 
     callReady()
   }, [isInWarpcast, isReady])
 
-  // Handle Connect button click - Step 2: User login dengan Farcaster Mini App flow
-  // Flow: initLoginToMiniApp() -> sdk.actions.signIn({nonce}) -> loginToMiniApp({message, signature})
+  // Handle Connect button click - Manual login using Privy login()
+  // CRITICAL: Only call login() after sdk.actions.ready() has completed
   const handleConnect = async () => {
+    // Ensure sdk.actions.ready() has been called first
+    if (!sdkReady) {
+      console.warn("⏳ Waiting for sdk.actions.ready() to complete before login...")
+      return
+    }
+
     setIsConnecting(true)
     try {
-      console.log("🔘 Connect Button: Clicked, initiating Farcaster Mini App login...")
+      console.log("🔘 Connect Button: Clicked, calling Privy login() manually...")
       
-      // Step 1: Initialize login to get nonce
-      const { nonce } = await initLoginToMiniApp()
-      console.log("✅ Step 1: Login initialized, nonce received:", nonce)
+      // Use Privy's login() function directly
+      // This will open the login modal for Farcaster authentication
+      login()
       
-      // Step 2: Sign in with Farcaster Mini App SDK
-      // This returns { message, signature }
-      const { message, signature } = await sdk.actions.signIn({ nonce })
-      console.log("✅ Step 2: Signed in with Farcaster, signature received")
-      
-      // Step 3: Complete login with Privy using message and signature
-      await loginToMiniApp({ message, signature })
-      console.log("✅ Step 3: Login completed with Privy")
-      
-      // Setelah ini, Privy akan otomatis create Smart Wallet
+      // Note: login() is async but doesn't return a promise
+      // The authentication state will be updated via usePrivy hook
+      // Smart Wallet creation will happen automatically if createOnLogin: 'all-users' is set
     } catch (error) {
       console.error("❌ Connect Button: Login failed:", error)
       setIsConnecting(false)
+    }
+  }
+
+  // Handle Smart Wallet activation - Create Smart Wallet manually if authenticated but no Smart Wallet
+  const handleActivateSmartAccount = async () => {
+    if (!authenticated || !privyReady) {
+      console.warn("⚠️ Cannot activate Smart Account: User not authenticated or Privy not ready")
+      return
+    }
+
+    setIsCreatingSmartWallet(true)
+    try {
+      console.log("🔘 Activate Smart Account: Creating Smart Wallet manually...")
+      
+      // Create Smart Wallet using Privy's createWallet function
+      // This will create a Smart Wallet for the authenticated user
+      const wallet = await createWallet()
+      
+      console.log("✅ Smart Wallet created:", wallet.address)
+      console.log("  - Wallet Type:", (wallet as any).type)
+      console.log("  - Wallet Client Type:", wallet.walletClientType)
+      
+      // The Smart Wallet detection useEffect will pick up the new wallet
+      // No need to manually update state, it will be detected automatically
+    } catch (error) {
+      console.error("❌ Failed to create Smart Wallet:", error)
+    } finally {
+      setIsCreatingSmartWallet(false)
     }
   }
 
@@ -189,52 +268,26 @@ export default function BumpBotDashboard() {
   // - Privy otomatis membuat embedded wallet sebagai signer untuk Smart Wallet
   // - Privy otomatis membuat Smart Wallet yang dikontrol oleh embedded signer tersebut
   // 
-  // IMPORTANT: Jika user sudah login tapi smartWallet belum ada,
-  // kita hanya perlu menunggu proses background Privy selesai.
-  // Tidak perlu manual creation karena Privy akan membuat Smart Wallet otomatis.
+  // IMPORTANT: 
+  // 1. Wait for privyReady before checking for Smart Wallets
+  // 2. Use useSmartWallets hook (smartWalletClient) as primary source
+  // 3. Fallback to wallets array if client is not available
+  // 4. If user already has Smart Wallet in Dashboard, it should appear after privyReady
   
+  // Handle login completion - Wait for Smart Wallet to be detected
+  // The Smart Wallet detection is now handled in the main useEffect above
+  // This effect just manages the connecting state
   useEffect(() => {
-    if (isAuthenticated && username && userFid && privyReady && !privySmartWalletAddress) {
-      console.log("✅ User authenticated, waiting for Smart Wallet creation...", {
-        username,
-        fid: userFid,
-        hasPrivySmartWallet: !!privySmartWalletAddress,
-        privyReady,
-        totalWallets: wallets.length,
-        embeddedWallet: embeddedWallet?.address,
-        smartWallet: smartWallet?.address
-      })
-      
-      // Polling untuk check apakah Smart Wallet dibuat otomatis oleh Privy
-      // Privy akan membuat Smart Wallet di background setelah embedded wallet dibuat
-      let pollCount = 0
-      const maxPolls = 15 // Poll selama 15 detik (1 detik per poll)
-      const pollInterval = setInterval(() => {
-        pollCount++
-        const currentSmartWallet = wallets.find(w => (w as any).type === 'smart_wallet' || w.walletClientType === 'smart_wallet')
-        
-        if (currentSmartWallet) {
-          console.log("✅ Smart Wallet created automatically (found via polling):", currentSmartWallet.address)
-          clearInterval(pollInterval)
-          setIsConnecting(false)
-        } else if (pollCount >= maxPolls) {
-          console.warn("⚠️ Smart Wallet still not found after polling")
-          console.warn("  - Embedded wallet (signer):", embeddedWallet?.address || "Not found")
-          console.warn("  - Please verify Privy Dashboard configuration:")
-          console.warn("    1. Settings → Wallets → Smart Wallets → Enabled (ON)")
-          console.warn("    2. Settings → Wallets → Smart Wallets → Base Network (Chain ID: 8453) → Enabled (ON)")
-          console.warn("    3. Smart Wallet implementation selected (Kernel, Safe, LightAccount, Biconomy, etc.)")
-          clearInterval(pollInterval)
-        }
-      }, 1000) // Poll setiap 1 detik
-      
-      // Cleanup interval
-      return () => clearInterval(pollInterval)
-    } else if (isAuthenticated && privySmartWalletAddress) {
-      console.log("✅ Privy Smart Wallet ready:", privySmartWalletAddress)
+    if (isAuthenticated && username && userFid && privySmartWalletAddress) {
+      console.log("✅ Privy Smart Wallet ready (Primary Address):", privySmartWalletAddress)
       setIsConnecting(false)
+    } else if (isAuthenticated && username && userFid && !privySmartWalletAddress && privyReady) {
+      // User is authenticated but Smart Wallet not found yet
+      // The main useEffect will handle detection and logging
+      // Keep connecting state active until Smart Wallet is found
+      console.log("⏳ User authenticated, waiting for Smart Wallet detection...")
     }
-  }, [isAuthenticated, username, userFid, privySmartWalletAddress, privyReady, wallets, smartWallet, embeddedWallet])
+  }, [isAuthenticated, username, userFid, privySmartWalletAddress, privyReady])
   
   const handleToggle = () => {
     setIsActive(!isActive)
@@ -285,21 +338,44 @@ export default function BumpBotDashboard() {
                   <span className="hidden font-mono text-xs font-medium text-foreground sm:inline">{username}</span>
                 </div>
               ) : isInitializing ? (
-                // State 2: Initializing (Privy Smart Wallet sedang dibuat)
-                <Button
-                  size="sm"
-                  disabled
-                  className="bg-primary text-primary-foreground hover:bg-primary/90 font-medium animate-pulse"
-                >
-                  <User className="mr-1.5 h-4 w-4" />
-                  INITIALIZING...
-                </Button>
+                // State 2: Initializing or Activate Smart Account
+                // If authenticated but no Smart Wallet, show "Activate Smart Account" button
+                authenticated && smartWallets.length === 0 ? (
+                  <Button
+                    size="sm"
+                    onClick={handleActivateSmartAccount}
+                    disabled={isCreatingSmartWallet || !privyReady}
+                    className="bg-primary text-primary-foreground hover:bg-primary/90 font-medium"
+                  >
+                    {isCreatingSmartWallet ? (
+                      <>
+                        <User className="mr-1.5 h-4 w-4 animate-spin" />
+                        ACTIVATING...
+                      </>
+                    ) : (
+                      <>
+                        <User className="mr-1.5 h-4 w-4" />
+                        ACTIVATE SMART ACCOUNT
+                      </>
+                    )}
+                  </Button>
+                ) : (
+                  // State 2a: Initializing (Privy Smart Wallet sedang dibuat)
+                  <Button
+                    size="sm"
+                    disabled
+                    className="bg-primary text-primary-foreground hover:bg-primary/90 font-medium animate-pulse"
+                  >
+                    <User className="mr-1.5 h-4 w-4" />
+                    INITIALIZING...
+                  </Button>
+                )
               ) : (
                 // State 1: Not Connected
                 <Button
                   size="sm"
                   onClick={handleConnect}
-                  disabled={isConnecting || !privyReady}
+                  disabled={isConnecting || !privyReady || !sdkReady}
                   className="bg-primary text-primary-foreground hover:bg-primary/90 font-medium shadow-lg shadow-primary/50"
                 >
                   <User className="mr-1.5 h-4 w-4" />
@@ -335,9 +411,18 @@ export default function BumpBotDashboard() {
           <TabsContent value="control" className="mt-4 space-y-4">
             <AnalyticsCards isActive={isActive} />
             <PriceChart />
-            <WalletCard fuelBalance={fuelBalance} credits={credits} walletAddress={privySmartWalletAddress} />
+            <WalletCard 
+              fuelBalance={fuelBalance} 
+              credits={credits} 
+              walletAddress={privySmartWalletAddress}
+              isSmartAccountActive={!!privySmartWalletAddress}
+            />
             <TokenInput />
-            <ConfigPanel fuelBalance={fuelBalance} credits={credits} />
+            <ConfigPanel 
+              fuelBalance={fuelBalance} 
+              credits={credits} 
+              smartWalletAddress={privySmartWalletAddress}
+            />
             <ActionButton isActive={isActive} onToggle={handleToggle} credits={credits} />
             <ActivityFeed activities={activities} isActive={isActive} />
           </TabsContent>
