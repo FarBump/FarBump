@@ -38,34 +38,32 @@ export function PrivyProvider({ children }: PrivyProviderProps) {
           accentColor: "#676FFF",
           logo: "/farbump-logo.png",
         },
-        // Embedded Wallets: IMPORTANT - Privy memerlukan embedded wallet sebagai SIGNER untuk Smart Wallet
+        // Embedded Wallets: CRITICAL - Privy memerlukan embedded wallet sebagai SIGNER untuk Smart Wallet
         // Berdasarkan dokumentasi Privy: "Smart wallets are controlled by embedded signers (EOA) secured by Privy"
-        // Jadi Privy akan membuat embedded wallet sebagai signer untuk mengontrol Smart Wallet.
         // 
-        // NOTE: Embedded wallet ini BUKAN wallet yang digunakan untuk transaksi.
-        // Smart Wallet yang dikontrol oleh embedded signer ini yang digunakan untuk transaksi.
-        // 
-        // Untuk whitelabel login (Farcaster Mini App), kita perlu:
-        // 1. Membiarkan Privy membuat embedded wallet sebagai signer (createOnLogin: "users-without-wallets" atau "all-users")
-        // 2. Privy akan otomatis membuat Smart Wallet yang dikontrol oleh embedded signer tersebut
-        // 3. Smart Wallet akan muncul di wallets array dengan walletClientType: 'smart_wallet'
+        // IMPORTANT CONFIGURATION:
+        // - createOnLogin: 'all-users' - Create embedded wallet for all users as signer for Smart Wallet
+        // - requireUserPasswordOnCreate: false - CRITICAL for Farcaster Mini App to avoid password prompt
+        //   This ensures Smart Wallet can be deployed seamlessly inside the Farcaster Mini App webview
         embeddedWallets: {
           ethereum: {
-            createOnLogin: "users-without-wallets" as const, // Create embedded wallet as signer for Smart Wallet
+            createOnLogin: "all-users" as const,
+            requireUserPasswordOnCreate: false, // CRITICAL: No password prompt in Farcaster Mini App
           },
         },
         // Smart Wallets: Enabled untuk Account Abstraction
-        // Berdasarkan dokumentasi Privy: Smart wallets dikontrol oleh embedded signers.
-        // Privy akan otomatis membuat Smart Wallet yang dikontrol oleh embedded signer.
-        // 
-        // IMPORTANT: Untuk whitelabel login, automatic creation mungkin tidak bekerja.
-        // Kita perlu menggunakan SmartWalletsProvider dan manually trigger creation jika perlu.
+        // Configuration:
+        // - enabled: true - Enable Smart Wallets
+        // - createOnLogin: "all-users" - Create Smart Wallet for all users
+        // - provider: 'light-account' or 'kernel' (default is fine, will use dashboard setting)
         smartWallets: {
           enabled: true,
-          createOnLogin: "all-users" as const, // Create Smart Wallet for all users
+          createOnLogin: "all-users" as const,
+          // provider: 'light-account' as const, // Optional: explicitly set provider (default uses dashboard setting)
         },
         // Note: externalWallets.solana removed to avoid errors
         // Solana is not used in this app, so we don't configure it
+        // CRITICAL: Base must be set as defaultChain for smart wallets
         defaultChain: base,
       } as any}
     >

@@ -17,7 +17,7 @@ import { User } from "lucide-react"
 import Image from "next/image"
 import { useFarcasterMiniApp } from "@/components/miniapp-provider"
 import { useFarcasterAuth } from "@/hooks/use-farcaster-auth"
-import { usePrivy, useWallets, useCreateWallet } from "@privy-io/react-auth"
+import { usePrivy, useWallets } from "@privy-io/react-auth"
 import { useAccount } from "wagmi"
 import { base } from "wagmi/chains"
 
@@ -31,37 +31,19 @@ export default function BumpBotDashboard() {
     loginToMiniApp
   } = useFarcasterAuth()
   
-  const { ready: privyReady } = usePrivy()
+  const { ready: privyReady, user } = usePrivy()
   const { wallets } = useWallets()
-  const { createWallet } = useCreateWallet()
   const { address: wagmiAddress, isConnected: wagmiConnected } = useAccount()
   
   // Farcaster Embed Wallet address (hanya untuk informasi, TIDAK digunakan untuk verifikasi atau transaksi)
   // Ini adalah wallet yang dibuat oleh Farcaster untuk user (custody address)
   const farcasterEmbedWallet = context?.user?.custodyAddress || null
   
-  // Get Privy Smart Wallet address (Smart Wallet untuk transaksi di app)
-  // CRITICAL: Berdasarkan dokumentasi Privy, Smart Wallet dikontrol oleh embedded signer (EOA)
-  // Privy akan membuat:
-  // 1. Embedded wallet (walletClientType: 'privy') sebagai SIGNER untuk Smart Wallet
-  // 2. Smart Wallet (walletClientType: 'smart_wallet') yang dikontrol oleh embedded signer
-  // 
-  // Hanya Smart Wallet yang digunakan untuk transaksi, BUKAN embedded wallet atau Farcaster Embed Wallet
-  const smartWallet = wallets.find(w => {
-    // Hanya ambil wallet dengan type 'smart_wallet'
-    if (w.walletClientType !== 'smart_wallet') return false
-    
-    // Pastikan address tidak sama dengan Farcaster Embed Wallet (jika ada)
-    if (farcasterEmbedWallet && w.address?.toLowerCase() === farcasterEmbedWallet.toLowerCase()) {
-      console.warn("⚠️ WARNING: Found wallet with same address as Farcaster Embed Wallet, skipping...")
-      return false
-    }
-    
-    return true
-  })
-  
-  // Get embedded wallet (signer) untuk Smart Wallet (hanya untuk informasi/debugging)
-  const embeddedSigner = wallets.find(w => w.walletClientType === 'privy' || w.walletClientType === 'embedded')
+  // Cara benar mendeteksi Smart Wallet dan Embedded Wallet
+  // CRITICAL: Gunakan w.type untuk Smart Wallet, bukan w.walletClientType
+  // Note: Type assertion needed karena TypeScript types may not include all wallet types
+  const smartWallet = wallets.find((w) => (w as any).type === 'smart_wallet' || w.walletClientType === 'smart_wallet')
+  const embeddedWallet = wallets.find((w) => w.walletClientType === 'privy')
   
   // Privy Smart Wallet address (HANYA dari smartWallet, BUKAN dari wagmiAddress atau Farcaster Embed Wallet)
   // wagmiAddress mungkin masih mengarah ke Farcaster Embed Wallet, jadi kita tidak menggunakannya
@@ -75,22 +57,23 @@ export default function BumpBotDashboard() {
       console.log("  - Total Wallets:", wallets.length)
       console.log("  - All Privy Wallets (DETAILED):", wallets.map(w => ({
         address: w.address,
+        type: w.type,
         walletClientType: w.walletClientType,
         chainId: w.chainId,
-        isSmartWallet: w.walletClientType === 'smart_wallet',
-        isEmbeddedSigner: w.walletClientType === 'privy' || w.walletClientType === 'embedded',
+        isSmartWallet: (w as any).type === 'smart_wallet' || w.walletClientType === 'smart_wallet',
+        isEmbeddedSigner: w.walletClientType === 'privy',
         isFarcasterEmbed: farcasterEmbedWallet && w.address?.toLowerCase() === farcasterEmbedWallet.toLowerCase()
       })))
-      console.log("  - Embedded Signers Found:", wallets.filter(w => w.walletClientType === 'privy' || w.walletClientType === 'embedded').length)
-      console.log("  - Smart Wallets Found:", wallets.filter(w => w.walletClientType === 'smart_wallet').length)
+      console.log("  - Embedded Wallets Found:", wallets.filter(w => w.walletClientType === 'privy').length)
+      console.log("  - Smart Wallets Found:", wallets.filter(w => (w as any).type === 'smart_wallet' || w.walletClientType === 'smart_wallet').length)
       console.log("  - Selected Smart Wallet:", smartWallet ? {
         address: smartWallet.address,
-        walletClientType: smartWallet.walletClientType,
+        type: smartWallet.type,
         chainId: smartWallet.chainId
       } : "❌ NOT FOUND - Smart Wallet belum dibuat oleh Privy")
-      console.log("  - Embedded Signer (for Smart Wallet):", embeddedSigner ? {
-        address: embeddedSigner.address,
-        walletClientType: embeddedSigner.walletClientType
+      console.log("  - Embedded Wallet (signer):", embeddedWallet ? {
+        address: embeddedWallet.address,
+        walletClientType: embeddedWallet.walletClientType
       } : "Not found")
       console.log("  - Wagmi Address:", wagmiAddress)
       console.log("  - Wagmi Connected:", wagmiConnected)
@@ -112,7 +95,7 @@ export default function BumpBotDashboard() {
         console.warn("    4. createOnLogin: 'all-users' not working as expected")
       }
     }
-  }, [wallets, smartWallet, wagmiAddress, wagmiConnected, privySmartWalletAddress, farcasterEmbedWallet, isAuthenticated, privyUser, embeddedSigner])
+  }, [wallets, smartWallet, wagmiAddress, wagmiConnected, privySmartWalletAddress, farcasterEmbedWallet, isAuthenticated, privyUser, embeddedWallet])
   
   const [isConnecting, setIsConnecting] = useState(false)
   const [isActive, setIsActive] = useState(false)
@@ -201,190 +184,57 @@ export default function BumpBotDashboard() {
 
   // Handle login completion - Step 3: Verifikasi user data dan Smart Wallet setelah login
   // 
-  // BERDASARKAN DOKUMENTASI PRIVY (https://docs.privy.io/wallets/using-wallets/evm-smart-wallets/overview):
+  // BERDASARKAN DOKUMENTASI PRIVY:
   // - Smart wallets dikontrol oleh embedded signers (EOA) yang dibuat oleh Privy
   // - Privy otomatis membuat embedded wallet sebagai signer untuk Smart Wallet
   // - Privy otomatis membuat Smart Wallet yang dikontrol oleh embedded signer tersebut
   // 
-  // IMPORTANT: Untuk whitelabel login (Farcaster Mini App), automatic creation mungkin tidak bekerja.
-  // Kita perlu:
-  // 1. Menunggu Privy membuat embedded wallet sebagai signer
-  // 2. Privy akan otomatis membuat Smart Wallet yang dikontrol oleh embedded signer
-  // 3. Jika Smart Wallet belum dibuat setelah beberapa detik, kita bisa trigger creation secara manual
-  const [isCreatingSmartWallet, setIsCreatingSmartWallet] = useState(false)
+  // IMPORTANT: Jika user sudah login tapi smartWallet belum ada,
+  // kita hanya perlu menunggu proses background Privy selesai.
+  // Tidak perlu manual creation karena Privy akan membuat Smart Wallet otomatis.
   
   useEffect(() => {
-    if (isAuthenticated && username && userFid && privyReady && !privySmartWalletAddress && !isCreatingSmartWallet) {
-      console.log("✅ User authenticated, checking Smart Wallet...", {
+    if (isAuthenticated && username && userFid && privyReady && !privySmartWalletAddress) {
+      console.log("✅ User authenticated, waiting for Smart Wallet creation...", {
         username,
         fid: userFid,
         hasPrivySmartWallet: !!privySmartWalletAddress,
         privyReady,
         totalWallets: wallets.length,
-        walletTypes: wallets.map(w => w.walletClientType),
-        privyUserWallet: privyUser?.wallet
+        embeddedWallet: embeddedWallet?.address,
+        smartWallet: smartWallet?.address
       })
       
-      // Check if embedded wallet (signer) already exists
-      const hasEmbeddedSigner = wallets.some(w => w.walletClientType === 'privy' || w.walletClientType === 'embedded')
-      
-      // Wait a bit to see if Smart Wallet is created automatically
-      const timer = setTimeout(async () => {
-        const currentSmartWallet = wallets.find(w => w.walletClientType === 'smart_wallet')
+      // Polling untuk check apakah Smart Wallet dibuat otomatis oleh Privy
+      // Privy akan membuat Smart Wallet di background setelah embedded wallet dibuat
+      let pollCount = 0
+      const maxPolls = 15 // Poll selama 15 detik (1 detik per poll)
+      const pollInterval = setInterval(() => {
+        pollCount++
+        const currentSmartWallet = wallets.find(w => (w as any).type === 'smart_wallet' || w.walletClientType === 'smart_wallet')
+        
         if (currentSmartWallet) {
-          console.log("✅ Smart Wallet found after delay:", currentSmartWallet.address)
+          console.log("✅ Smart Wallet created automatically (found via polling):", currentSmartWallet.address)
+          clearInterval(pollInterval)
           setIsConnecting(false)
-        } else if (hasEmbeddedSigner) {
-          // Embedded wallet (signer) sudah ada, tapi Smart Wallet belum dibuat
-          // Privy seharusnya membuat Smart Wallet otomatis setelah embedded wallet dibuat
-          // Jika belum dibuat, berarti konfigurasi di Privy Dashboard belum benar
-          console.warn("⚠️ Embedded wallet (signer) exists but Smart Wallet not found")
-          console.warn("  - Embedded signer:", embeddedSigner?.address)
-          console.warn("  - Privy should automatically create Smart Wallet controlled by this signer")
-          console.warn("  - If Smart Wallet is not created, please check Privy Dashboard configuration:")
+        } else if (pollCount >= maxPolls) {
+          console.warn("⚠️ Smart Wallet still not found after polling")
+          console.warn("  - Embedded wallet (signer):", embeddedWallet?.address || "Not found")
+          console.warn("  - Please verify Privy Dashboard configuration:")
           console.warn("    1. Settings → Wallets → Smart Wallets → Enabled (ON)")
           console.warn("    2. Settings → Wallets → Smart Wallets → Base Network (Chain ID: 8453) → Enabled (ON)")
-          console.warn("    3. Ensure SmartWalletsProvider is configured (already done in code)")
-          console.warn("  - Polling for Smart Wallet creation...")
-          
-          // Polling untuk check apakah Smart Wallet dibuat otomatis
-          let pollCount = 0
-          const maxPolls = 10 // Poll selama 10 detik (1 detik per poll)
-          const pollInterval = setInterval(() => {
-            pollCount++
-            const checkSmartWallet = wallets.find(w => w.walletClientType === 'smart_wallet')
-            
-            if (checkSmartWallet) {
-              console.log("✅ Smart Wallet created automatically (found via polling):", checkSmartWallet.address)
-              clearInterval(pollInterval)
-              setIsConnecting(false)
-              setIsCreatingSmartWallet(false)
-            } else if (pollCount >= maxPolls) {
-              console.error("❌ Smart Wallet still not found after polling")
-              console.error("  - Please verify Privy Dashboard configuration:")
-              console.error("    1. Settings → Wallets → Smart Wallets → Enabled")
-              console.error("    2. Settings → Wallets → Smart Wallets → Base Network (Chain ID: 8453) enabled")
-              console.error("    3. Smart Wallet implementation selected (Kernel, Safe, LightAccount, etc.)")
-              clearInterval(pollInterval)
-              setIsCreatingSmartWallet(false)
-            }
-          }, 1000) // Poll setiap 1 detik
-          
-          // Cleanup interval setelah 10 detik
-          setTimeout(() => {
-            clearInterval(pollInterval)
-          }, maxPolls * 1000)
-        } else {
-          // Embedded wallet belum ada, coba buat
-          // Tapi ini seharusnya tidak terjadi karena embedded wallet dibuat saat login
-          console.log("🔧 No embedded wallet found, attempting to create...")
-          setIsCreatingSmartWallet(true)
-          
-          try {
-            // Create embedded wallet (signer) - Privy will automatically create Smart Wallet after this
-            const newWallet = await createWallet()
-            
-            console.log("✅ Wallet created:", {
-              address: newWallet.address,
-              type: newWallet.walletClientType || 'unknown'
-            })
-            
-            // Check if it's a Smart Wallet
-            if (newWallet.walletClientType === 'smart_wallet') {
-              console.log("✅ Smart Wallet created successfully!")
-              setIsConnecting(false)
-              setIsCreatingSmartWallet(false)
-            } else if (newWallet.walletClientType === 'privy' || newWallet.walletClientType === 'embedded') {
-              // Embedded wallet (signer) dibuat, Privy akan otomatis membuat Smart Wallet
-              console.log("✅ Embedded wallet (signer) created, waiting for Smart Wallet creation...")
-              console.log("  - Privy will automatically create Smart Wallet controlled by this signer")
-              
-              // Polling untuk check apakah Smart Wallet dibuat otomatis
-              let pollCount = 0
-              const maxPolls = 10
-              const pollInterval = setInterval(() => {
-                pollCount++
-                const checkSmartWallet = wallets.find(w => w.walletClientType === 'smart_wallet')
-                
-                if (checkSmartWallet) {
-                  console.log("✅ Smart Wallet created automatically:", checkSmartWallet.address)
-                  clearInterval(pollInterval)
-                  setIsConnecting(false)
-                  setIsCreatingSmartWallet(false)
-                } else if (pollCount >= maxPolls) {
-                  console.warn("⚠️ Smart Wallet not created automatically after embedded wallet creation")
-                  console.warn("  - Please check Privy Dashboard configuration:")
-                  console.warn("    1. Settings → Wallets → Smart Wallets → Enabled")
-                  console.warn("    2. Settings → Wallets → Smart Wallets → Base Network (Chain ID: 8453) enabled")
-                  clearInterval(pollInterval)
-                  setIsCreatingSmartWallet(false)
-                }
-              }, 1000)
-              
-              setTimeout(() => clearInterval(pollInterval), maxPolls * 1000)
-            } else {
-              console.warn("⚠️ Created wallet is not a Smart Wallet or embedded wallet:", newWallet.walletClientType)
-              console.warn("  - This might be because Smart Wallets are not properly configured in Privy Dashboard")
-              console.warn("  - Please check: Settings → Wallets → Smart Wallets → Enabled")
-              console.warn("  - And ensure Base Network (Chain ID: 8453) is enabled in Smart Wallets")
-              setIsCreatingSmartWallet(false)
-            }
-          } catch (error: any) {
-            console.error("❌ Failed to create wallet:", error)
-            
-            // Check if error is because wallet already exists
-            if (error?.message?.includes('already has') || error?.message?.includes('already exists') || error?.message?.includes('already have')) {
-              console.warn("⚠️ Wallet already exists. Embedded wallet (signer) is already created.")
-              console.warn("  - Privy User wallet:", privyUser?.wallet?.address, "Type:", privyUser?.wallet?.walletClientType)
-              console.warn("  - Privy should automatically create Smart Wallet controlled by this signer")
-              console.warn("  - Polling for Smart Wallet creation...")
-              
-              // Polling untuk check apakah Smart Wallet dibuat otomatis
-              let pollCount = 0
-              const maxPolls = 10
-              const pollInterval = setInterval(() => {
-                pollCount++
-                const checkWallet = wallets.find(w => w.walletClientType === 'smart_wallet')
-                
-                if (checkWallet) {
-                  console.log("✅ Smart Wallet found after error (via polling):", checkWallet.address)
-                  clearInterval(pollInterval)
-                  setIsConnecting(false)
-                  setIsCreatingSmartWallet(false)
-                } else if (pollCount >= maxPolls) {
-                  console.error("❌ Smart Wallet still not found after polling")
-                  console.error("  - Current wallets:", wallets.map(w => ({
-                    address: w.address,
-                    type: w.walletClientType,
-                    chainId: w.chainId
-                  })))
-                  console.error("  - Privy User has wallet:", privyUser?.wallet?.address, "Type:", privyUser?.wallet?.walletClientType)
-                  console.error("  - Please verify Privy Dashboard configuration:")
-                  console.error("    1. Settings → Wallets → Smart Wallets → Enabled (ON)")
-                  console.error("    2. Settings → Wallets → Smart Wallets → Base Network (Chain ID: 8453) → Enabled (ON)")
-                  console.error("    3. Smart Wallet implementation selected (Kernel, Safe, LightAccount, Biconomy, etc.)")
-                  console.error("    4. SmartWalletsProvider is configured (already done in code)")
-                  clearInterval(pollInterval)
-                  setIsCreatingSmartWallet(false)
-                }
-              }, 1000)
-              
-              setTimeout(() => clearInterval(pollInterval), maxPolls * 1000)
-            } else {
-              console.error("❌ Unexpected error creating wallet:", error)
-              setIsCreatingSmartWallet(false)
-            }
-          }
+          console.warn("    3. Smart Wallet implementation selected (Kernel, Safe, LightAccount, Biconomy, etc.)")
+          clearInterval(pollInterval)
         }
-      }, 3000) // Wait 3 seconds before attempting manual creation
+      }, 1000) // Poll setiap 1 detik
       
-      return () => clearTimeout(timer)
+      // Cleanup interval
+      return () => clearInterval(pollInterval)
     } else if (isAuthenticated && privySmartWalletAddress) {
       console.log("✅ Privy Smart Wallet ready:", privySmartWalletAddress)
       setIsConnecting(false)
-      setIsCreatingSmartWallet(false)
     }
-  }, [isAuthenticated, username, userFid, privySmartWalletAddress, privyReady, wallets, createWallet, isCreatingSmartWallet, privyUser])
+  }, [isAuthenticated, username, userFid, privySmartWalletAddress, privyReady, wallets, smartWallet, embeddedWallet])
   
   const handleToggle = () => {
     setIsActive(!isActive)
