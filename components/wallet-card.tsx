@@ -3,7 +3,8 @@
 import { useState } from "react"
 import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { Copy, Check, Shield } from "lucide-react"
+import { Copy, Check, Shield, RefreshCw } from "lucide-react"
+import { useBumpBalance } from "@/hooks/use-bump-balance"
 
 interface WalletCardProps {
   fuelBalance?: number
@@ -19,10 +20,20 @@ export function WalletCard({ fuelBalance = 0, credits = 0, walletAddress, isSmar
   const smartWalletAddress = walletAddress || "0x000...000"
   const ethBalance = 2.4567
 
+  // Fetch $BUMP token balance from Smart Wallet address
+  const { formattedBalance, isLoading: isLoadingBalance, refetch: refetchBalance } = useBumpBalance({
+    address: smartWalletAddress !== "0x000...000" ? smartWalletAddress : null,
+    enabled: isSmartAccountActive && smartWalletAddress !== "0x000...000",
+  })
+
   const handleCopy = () => {
     navigator.clipboard.writeText(smartWalletAddress)
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
+  }
+
+  const handleRefreshBalance = () => {
+    refetchBalance()
   }
 
   return (
@@ -54,8 +65,26 @@ export function WalletCard({ fuelBalance = 0, credits = 0, walletAddress, isSmar
 
       <div className="mt-4 space-y-3">
         <div className="rounded-lg bg-secondary border border-border p-3">
-          <p className="text-[10px] text-muted-foreground uppercase tracking-wide">Token Balance ($BUMP)</p>
-          <p className="mt-1 font-mono text-sm font-semibold text-primary">{fuelBalance || "0"}</p>
+          <div className="flex items-center justify-between mb-1">
+            <p className="text-[10px] text-muted-foreground uppercase tracking-wide">Token Balance ($BUMP)</p>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={handleRefreshBalance}
+              disabled={isLoadingBalance || !isSmartAccountActive}
+              className="h-5 w-5 p-0 hover:bg-muted/50"
+              title="Refresh balance"
+            >
+              <RefreshCw className={`h-3 w-3 text-muted-foreground ${isLoadingBalance ? "animate-spin" : ""}`} />
+            </Button>
+          </div>
+          <p className="mt-1 font-mono text-sm font-semibold text-primary">
+            {isLoadingBalance ? (
+              <span className="text-muted-foreground">Loading...</span>
+            ) : (
+              `${formattedBalance} $BUMP`
+            )}
+          </p>
           <p className="text-[9px] text-muted-foreground mt-1">
             Balance from Smart Wallet: {smartWalletAddress !== "0x000...000" ? smartWalletAddress.slice(0, 6) + "..." + smartWalletAddress.slice(-4) : "N/A"}
           </p>
