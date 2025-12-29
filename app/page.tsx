@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useEffect } from "react"
+import { sdk } from "@farcaster/miniapp-sdk"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/button"
 import { WalletCard } from "@/components/wallet-card"
@@ -36,6 +37,22 @@ export default function BumpBotDashboard() {
     }>
   >([])
 
+  useEffect(() => {
+    const initializeMiniApp = async () => {
+      try {
+        await sdk.actions.ready();
+        console.log("Farcaster MiniApp SDK initialized successfully");
+      } catch (error) {
+        console.error("Failed to initialize Farcaster MiniApp:", error);
+        
+      }
+    };
+
+    if (typeof window !== 'undefined') {
+      initializeMiniApp();
+    }
+  }, []);
+  
   const handleToggle = () => {
     setIsActive(!isActive)
 
