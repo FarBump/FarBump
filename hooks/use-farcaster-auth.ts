@@ -2,6 +2,7 @@
 
 import { useFarcasterMiniApp } from "@/components/miniapp-provider"
 import { usePrivy } from "@privy-io/react-auth"
+import { useLoginToMiniApp } from "@privy-io/react-auth/farcaster"
 import { useEffect, useState } from "react"
 
 interface FarcasterUser {
@@ -15,7 +16,8 @@ interface FarcasterUser {
 
 export function useFarcasterAuth() {
   const { context, isReady, isInWarpcast } = useFarcasterMiniApp()
-  const { ready, authenticated, user, login } = usePrivy()
+  const { ready, authenticated, user } = usePrivy()
+  const { initLoginToMiniApp, loginToMiniApp } = useLoginToMiniApp()
   const [farcasterUser, setFarcasterUser] = useState<FarcasterUser | null>(null)
 
   useEffect(() => {
@@ -43,7 +45,10 @@ export function useFarcasterAuth() {
     isAuthenticated: authenticated,
     privyUser: user,
     privyReady: ready,
-    login, // Export login function for manual trigger
+    
+    // Farcaster Mini App login functions
+    initLoginToMiniApp, // Initialize login to get nonce
+    loginToMiniApp, // Complete login with message and signature
     
     // Combined state
     isLoading: !isReady || !ready,

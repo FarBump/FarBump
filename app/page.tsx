@@ -26,7 +26,8 @@ export default function BumpBotDashboard() {
     isAuthenticated,
     farcasterUser,
     privyUser,
-    login
+    initLoginToMiniApp,
+    loginToMiniApp
   } = useFarcasterAuth()
   
   const { ready: privyReady } = usePrivy()
@@ -111,12 +112,26 @@ export default function BumpBotDashboard() {
     callReady()
   }, [isInWarpcast, isReady])
 
-  // Handle Connect button click - Step 2: User login dengan Farcaster flow
+  // Handle Connect button click - Step 2: User login dengan Farcaster Mini App flow
+  // Flow: initLoginToMiniApp() -> sdk.actions.signIn({nonce}) -> loginToMiniApp({message, signature})
   const handleConnect = async () => {
     setIsConnecting(true)
     try {
-      console.log("🔘 Connect Button: Clicked, initiating Farcaster login...")
-      await login({ loginMethods: ["farcaster"] })
+      console.log("🔘 Connect Button: Clicked, initiating Farcaster Mini App login...")
+      
+      // Step 1: Initialize login to get nonce
+      const { nonce } = await initLoginToMiniApp()
+      console.log("✅ Step 1: Login initialized, nonce received:", nonce)
+      
+      // Step 2: Sign in with Farcaster Mini App SDK
+      // This returns { message, signature }
+      const { message, signature } = await sdk.actions.signIn({ nonce })
+      console.log("✅ Step 2: Signed in with Farcaster, signature received")
+      
+      // Step 3: Complete login with Privy using message and signature
+      await loginToMiniApp({ message, signature })
+      console.log("✅ Step 3: Login completed with Privy")
+      
       // Setelah ini, Privy akan otomatis create Smart Wallet
     } catch (error) {
       console.error("❌ Connect Button: Login failed:", error)
