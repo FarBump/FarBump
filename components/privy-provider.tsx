@@ -47,11 +47,12 @@ export function PrivyProvider({ children }: PrivyProviderProps) {
             createOnLogin: "off" as const,
           },
         },
-        // Smart Wallets: Akan otomatis dibuat saat user login dengan Farcaster auth
+        // Smart Wallets: Akan dibuat saat user login dengan Farcaster auth
         // Smart Wallet ini yang digunakan untuk transaksi di app
-        // enabled: true berarti Smart Wallet akan dibuat otomatis saat login
+        // createOnLogin: "all-users" berarti Smart Wallet dibuat untuk semua user yang login
         smartWallets: {
           enabled: true,
+          createOnLogin: "all-users" as const,
         },
         // Disable Solana completely untuk menghilangkan warning
         externalWallets: {
