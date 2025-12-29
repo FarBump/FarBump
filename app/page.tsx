@@ -16,16 +16,50 @@ import { GlobalFeed } from "@/components/global-feed"
 import { User } from "lucide-react"
 import Image from "next/image"
 import { useFarcasterMiniApp } from "@/components/miniapp-provider"
+import { useFarcasterAuth } from "@/hooks/use-farcaster-auth"
+import { usePrivy } from "@privy-io/react-auth"
+import { useAccount } from "wagmi"
 
 export default function BumpBotDashboard() {
-  const { isInWarpcast, isReady } = useFarcasterMiniApp()
+  const { isInWarpcast, isReady, context } = useFarcasterMiniApp()
+  const { 
+    isAuthenticated,
+    farcasterUser,
+    privyUser,
+    login
+  } = useFarcasterAuth()
+  
+  const { ready: privyReady } = usePrivy()
+  const { address: wagmiAddress, isConnected: wagmiConnected } = useAccount()
+  
+  const [isConnecting, setIsConnecting] = useState(false)
   const [isActive, setIsActive] = useState(false)
-  const [isConnected, setIsConnected] = useState(true)
-  const [userFid] = useState("12345")
-  const [username] = useState("@faruser")
-  const [userAvatar] = useState("/user-avatar.jpg")
   const [fuelBalance] = useState(1250.5)
   const [credits] = useState(0)
+
+  // Extract user data dari Farcaster context
+  const username = farcasterUser?.username 
+    ? `@${farcasterUser.username}` 
+    : privyUser?.farcaster?.username 
+    ? `@${privyUser.farcaster.username}` 
+    : null
+
+  const userFid = farcasterUser?.fid?.toString() || privyUser?.farcaster?.fid?.toString() || null
+
+  const userAvatar = farcasterUser?.pfp?.url || 
+    privyUser?.farcaster?.profilePicture || 
+    "/user-avatar.jpg"
+
+  // Farcaster Embed Wallet address (untuk verifikasi di Step 3)
+  const farcasterEmbedWallet = context?.user?.custodyAddress || null
+
+  // Privy Smart Wallet address (untuk display di Wallet Card)
+  const privySmartWalletAddress = wagmiAddress || privyUser?.wallet?.address || null
+
+  // Determine connection states
+  const isWalletReady = wagmiConnected && !!wagmiAddress
+  const isConnected = isAuthenticated && username && userFid && farcasterEmbedWallet && isWalletReady
+  const isInitializing = isAuthenticated && username && userFid && farcasterEmbedWallet && !isWalletReady
 
   const [activities, setActivities] = useState<
     Array<{
@@ -55,6 +89,41 @@ export default function BumpBotDashboard() {
 
     callReady()
   }, [isInWarpcast, isReady])
+
+  // Handle Connect button click - Step 2: User login dengan Farcaster flow
+  const handleConnect = async () => {
+    setIsConnecting(true)
+    try {
+      console.log("🔘 Connect Button: Clicked, initiating Farcaster login...")
+      await login({ loginMethods: ["farcaster"] })
+      // Setelah ini, Privy akan otomatis create Smart Wallet
+    } catch (error) {
+      console.error("❌ Connect Button: Login failed:", error)
+      setIsConnecting(false)
+    }
+  }
+
+  // Handle login completion - Step 3: Verifikasi user data setelah login
+  useEffect(() => {
+    if (isAuthenticated && username && userFid) {
+      // Verifikasi: username, FID, dan Farcaster Embed Wallet
+      if (farcasterEmbedWallet) {
+        console.log("✅ User data verified:", {
+          username,
+          fid: userFid,
+          farcasterEmbedWallet, // Farcaster Embed Wallet untuk verifikasi
+          hasPrivySmartWallet: !!privySmartWalletAddress
+        })
+        
+        if (privySmartWalletAddress) {
+          console.log("✅ Privy Smart Wallet ready:", privySmartWalletAddress)
+          setIsConnecting(false)
+        } else {
+          console.log("⏳ Waiting for Privy Smart Wallet creation...")
+        }
+      }
+    }
+  }, [isAuthenticated, username, userFid, farcasterEmbedWallet, privySmartWalletAddress])
   
   const handleToggle = () => {
     setIsActive(!isActive)
@@ -97,20 +166,33 @@ export default function BumpBotDashboard() {
                 </span>
               </div>
               {isConnected ? (
+                // State 3: Connected (Privy Smart Wallet ready)
                 <div className="flex items-center gap-2 rounded-lg border border-border bg-secondary px-3 py-2">
                   <div className="relative h-6 w-6 overflow-hidden rounded-full border border-primary/20">
-                    <Image src={userAvatar || "/placeholder.svg"} alt="User Avatar" fill className="object-cover" />
+                    <Image src={userAvatar || "/placeholder.svg"} alt="User Avatar" fill className="object-cover rounded-full" />
                   </div>
                   <span className="hidden font-mono text-xs font-medium text-foreground sm:inline">{username}</span>
                 </div>
-              ) : (
+              ) : isInitializing ? (
+                // State 2: Initializing (Privy Smart Wallet sedang dibuat)
                 <Button
                   size="sm"
-                  onClick={() => setIsConnected(true)}
-                  className="bg-primary text-primary-foreground hover:bg-primary/90 font-medium"
+                  disabled
+                  className="bg-primary text-primary-foreground hover:bg-primary/90 font-medium animate-pulse"
                 >
                   <User className="mr-1.5 h-4 w-4" />
-                  Connect
+                  INITIALIZING...
+                </Button>
+              ) : (
+                // State 1: Not Connected
+                <Button
+                  size="sm"
+                  onClick={handleConnect}
+                  disabled={isConnecting || !privyReady}
+                  className="bg-primary text-primary-foreground hover:bg-primary/90 font-medium shadow-lg shadow-primary/50"
+                >
+                  <User className="mr-1.5 h-4 w-4" />
+                  CONNECT
                 </Button>
               )}
             </div>
@@ -142,7 +224,7 @@ export default function BumpBotDashboard() {
           <TabsContent value="control" className="mt-4 space-y-4">
             <AnalyticsCards isActive={isActive} />
             <PriceChart />
-            <WalletCard fuelBalance={fuelBalance} credits={credits} />
+            <WalletCard fuelBalance={fuelBalance} credits={credits} walletAddress={privySmartWalletAddress} />
             <TokenInput />
             <ConfigPanel fuelBalance={fuelBalance} credits={credits} />
             <ActionButton isActive={isActive} onToggle={handleToggle} credits={credits} />

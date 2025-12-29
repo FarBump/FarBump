@@ -31,17 +31,7 @@ export function useFarcasterAuth() {
     }
   }, [context, isReady, isInWarpcast])
 
-  // Auto-login with Privy if in Warpcast and not authenticated
-  useEffect(() => {
-    if (isInWarpcast && isReady && ready && !authenticated && context?.user) {
-      // Auto-login with Farcaster when in Warpcast
-      login({
-        method: "farcaster",
-      }).catch((error) => {
-        console.error("Auto-login failed:", error)
-      })
-    }
-  }, [isInWarpcast, isReady, ready, authenticated, context, login])
+  // ❌ Auto-login removed - User must click Connect button to login
 
   return {
     // Farcaster context

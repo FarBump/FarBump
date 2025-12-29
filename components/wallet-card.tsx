@@ -8,11 +8,13 @@ import { Copy, Check, Shield } from "lucide-react"
 interface WalletCardProps {
   fuelBalance?: number
   credits?: number
+  walletAddress?: string | null
 }
 
-export function WalletCard({ fuelBalance = 0, credits = 0 }: WalletCardProps) {
+export function WalletCard({ fuelBalance = 0, credits = 0, walletAddress }: WalletCardProps) {
   const [copied, setCopied] = useState(false)
-  const smartWalletAddress = "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb"
+  // Privy Smart Wallet address (untuk display)
+  const smartWalletAddress = walletAddress || "0x000...000"
   const ethBalance = 2.4567
 
   const handleCopy = () => {
