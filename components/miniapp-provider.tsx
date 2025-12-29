@@ -41,10 +41,6 @@ export function MiniAppProvider({ children }: MiniAppProviderProps) {
         setIsInWarpcast(true)
         setContext(ctx)
         setIsReady(true)
-        
-        // IMPORTANT: Call ready() to hide splash screen and display app
-        // This must be called after the app is fully loaded
-        await sdk.actions.ready()
       } catch (error) {
         // Not in Warpcast or SDK not available
         // Still allow app to run outside Warpcast

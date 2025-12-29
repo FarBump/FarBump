@@ -15,20 +15,9 @@ import { GlobalFeed } from "@/components/global-feed"
 import { User } from "lucide-react"
 import Image from "next/image"
 import { useFarcasterMiniApp } from "@/components/miniapp-provider"
-import { sdk } from "@farcaster/miniapp-sdk"
 
 export default function BumpBotDashboard() {
   const { isInWarpcast, isReady } = useFarcasterMiniApp()
-
-  // Ensure ready() is called after component mounts
-  useEffect(() => {
-    if (isReady && isInWarpcast) {
-      // Call ready() to hide splash screen
-      sdk.actions.ready().catch((error) => {
-        console.error("Failed to call ready():", error)
-      })
-    }
-  }, [isReady, isInWarpcast])
   const [isActive, setIsActive] = useState(false)
   const [isConnected, setIsConnected] = useState(true)
   const [userFid] = useState("12345")
