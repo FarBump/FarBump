@@ -4,7 +4,6 @@ import { JetBrains_Mono } from "next/font/google"
 import { Analytics } from "@vercel/analytics/next"
 import { PrivyProvider } from "@/components/privy-provider"
 import { MiniAppProvider } from "@/components/miniapp-provider"
-import { SDKReady } from "@/components/sdk-ready"
 import "./globals.css"
 
 const jetbrainsMono = JetBrains_Mono({
@@ -75,7 +74,6 @@ export default function RootLayout({
       <body className={`${jetbrainsMono.variable} font-mono antialiased`}>
         <MiniAppProvider>
           <PrivyProvider>
-            <SDKReady />
             {children}
             <Analytics />
           </PrivyProvider>
