@@ -1,3 +1,5 @@
+import webpack from 'webpack'
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   typescript: {
@@ -33,7 +35,6 @@ const nextConfig = {
       })
       
       // Use webpack's IgnorePlugin to ignore test files
-      const webpack = require('webpack')
       config.plugins.push(
         new webpack.IgnorePlugin({
           resourceRegExp: /\.(test|spec)\.(js|ts|mjs|cjs)$/,
