@@ -17,7 +17,7 @@ import { User } from "lucide-react"
 import Image from "next/image"
 import { useFarcasterMiniApp } from "@/components/miniapp-provider"
 import { useFarcasterAuth } from "@/hooks/use-farcaster-auth"
-import { usePrivy } from "@privy-io/react-auth"
+import { usePrivy, useWallets } from "@privy-io/react-auth"
 import { useAccount } from "wagmi"
 
 export default function BumpBotDashboard() {
@@ -30,7 +30,31 @@ export default function BumpBotDashboard() {
   } = useFarcasterAuth()
   
   const { ready: privyReady } = usePrivy()
+  const { wallets } = useWallets()
   const { address: wagmiAddress, isConnected: wagmiConnected } = useAccount()
+  
+  // Get Smart Wallet address (Smart Wallet untuk transaksi di app)
+  // Smart Wallet memiliki walletClientType === 'smart_wallet'
+  const smartWallet = wallets.find(w => w.walletClientType === 'smart_wallet')
+  // Fallback ke wagmiAddress jika Smart Wallet belum ready (useAccount sudah terhubung dengan Smart Wallet)
+  const privySmartWalletAddress = smartWallet?.address || wagmiAddress || null
+  
+  // Debug: Log wallet information
+  useEffect(() => {
+    if (wallets.length > 0) {
+      console.log("🔍 Privy Wallets:", wallets.map(w => ({
+        address: w.address,
+        walletClientType: w.walletClientType,
+        chainId: w.chainId
+      })))
+      console.log("🔍 Smart Wallet:", smartWallet ? {
+        address: smartWallet.address,
+        walletClientType: smartWallet.walletClientType
+      } : "Not found")
+      console.log("🔍 Wagmi Address:", wagmiAddress)
+      console.log("🔍 Final Smart Wallet Address:", privySmartWalletAddress)
+    }
+  }, [wallets, smartWallet, wagmiAddress, privySmartWalletAddress])
   
   const [isConnecting, setIsConnecting] = useState(false)
   const [isActive, setIsActive] = useState(false)
@@ -52,9 +76,6 @@ export default function BumpBotDashboard() {
 
   // Farcaster Embed Wallet address (untuk verifikasi di Step 3)
   const farcasterEmbedWallet = context?.user?.custodyAddress || null
-
-  // Privy Smart Wallet address (untuk display di Wallet Card)
-  const privySmartWalletAddress = wagmiAddress || privyUser?.wallet?.address || null
 
   // Determine connection states
   const isWalletReady = wagmiConnected && !!wagmiAddress

@@ -37,10 +37,17 @@ export function PrivyProvider({ children }: PrivyProviderProps) {
           accentColor: "#676FFF",
           logo: "/farbump-logo.png",
         },
+        // Embedded Wallets: User Farcaster sudah punya embed wallet,
+        // tapi kita tetap create untuk kompatibilitas
         embeddedWallets: {
           ethereum: {
             createOnLogin: "all-users",
           },
+        },
+        // Smart Wallets: Ini yang akan dibuat untuk setiap user
+        // dan digunakan untuk transaksi di app
+        smartWallets: {
+          enabled: true,
         },
         // Disable Solana to remove warning
         externalWallets: {
