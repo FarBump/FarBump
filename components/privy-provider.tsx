@@ -27,6 +27,12 @@ export function PrivyProvider({ children }: PrivyProviderProps) {
     throw new Error("NEXT_PUBLIC_PRIVY_APP_ID environment variable is required")
   }
 
+  // Disable Embedded Wallets sepenuhnya karena:
+  // 1. CSP restrictions di Farcaster Mini App webview
+  // 2. User Farcaster sudah punya embed wallet dari Farcaster
+  // 3. Hanya Smart Wallets yang digunakan untuk transaksi di app
+  // Embedded Wallets tidak diperlukan untuk aplikasi ini
+
   return (
     <PrivyProviderBase
       appId={appId}
@@ -37,11 +43,11 @@ export function PrivyProvider({ children }: PrivyProviderProps) {
           accentColor: "#676FFF",
           logo: "/farbump-logo.png",
         },
-        // Embedded Wallets: User Farcaster sudah punya embed wallet,
-        // tapi kita tetap create untuk kompatibilitas
+        // Disable Embedded Wallets: Tidak diperlukan karena CSP restrictions
+        // dan kita hanya menggunakan Smart Wallets untuk transaksi
         embeddedWallets: {
           ethereum: {
-            createOnLogin: "all-users",
+            createOnLogin: "off" as const,
           },
         },
         // Smart Wallets: Ini yang akan dibuat untuk setiap user
@@ -49,7 +55,7 @@ export function PrivyProvider({ children }: PrivyProviderProps) {
         smartWallets: {
           enabled: true,
         },
-        // Disable Solana to remove warning
+        // Disable Solana completely untuk menghilangkan warning
         externalWallets: {
           solana: {
             connectors: [],
