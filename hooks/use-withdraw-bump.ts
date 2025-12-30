@@ -50,14 +50,51 @@ export function useWithdrawBump({ enabled = true }: UseWithdrawBumpProps = {}) {
     setError(null)
 
     try {
-      // Get Smart Wallet from wallets array (more reliable than client)
-      const smartWallet = wallets.find(
+      // Debug: Log all wallets to understand what's available
+      console.log("🔍 Withdraw: Checking for Smart Wallet...")
+      console.log("  - Total wallets:", wallets.length)
+      console.log("  - All wallets:", wallets.map(w => ({
+        address: w.address,
+        walletClientType: w.walletClientType,
+        type: (w as any).type,
+        chainId: w.chainId
+      })))
+      console.log("  - Smart Wallet Client available:", !!smartWalletClient)
+      console.log("  - Smart Wallet Client address:", smartWalletClient?.account?.address)
+
+      // Try to get Smart Wallet from wallets array first
+      let smartWallet = wallets.find(
         (w) => w.walletClientType === 'smart_wallet' || (w as any).type === 'smart_wallet'
       )
 
+      // If not found in wallets array, try to use smartWalletClient
+      if (!smartWallet && smartWalletClient) {
+        console.log("⚠️ Smart Wallet not found in wallets array, trying to use smartWalletClient...")
+        // Try to find wallet by matching address with smartWalletClient
+        const clientAddress = smartWalletClient.account.address
+        smartWallet = wallets.find(w => w.address.toLowerCase() === clientAddress.toLowerCase())
+        
+        if (!smartWallet) {
+          console.log("⚠️ Smart Wallet not found by address match, will try using smartWalletClient directly")
+        }
+      }
+
       // Validate Smart Wallet is available
-      if (!smartWallet) {
-        const error = new Error("Smart Wallet not available. Please ensure your Smart Wallet is connected.")
+      if (!smartWallet && !smartWalletClient) {
+        const error = new Error(
+          "Smart Wallet not available. Please ensure your Smart Wallet is connected. " +
+          `Found ${wallets.length} wallet(s) but none are Smart Wallets.`
+        )
+        console.error("❌ Smart Wallet validation failed:", error.message)
+        setError(error)
+        setIsPending(false)
+        throw error
+      }
+
+      // Use smartWalletClient if smartWallet is not available
+      const walletToUse = smartWallet || smartWalletClient
+      if (!walletToUse) {
+        const error = new Error("Unable to access Smart Wallet. Please try reconnecting.")
         setError(error)
         setIsPending(false)
         throw error
@@ -83,11 +120,13 @@ export function useWithdrawBump({ enabled = true }: UseWithdrawBumpProps = {}) {
       // Convert amount to wei
       const amountWei = parseUnits(amount, BUMP_DECIMALS)
 
+      const walletAddress = smartWallet?.address || smartWalletClient?.account?.address
       console.log("🔄 Withdrawing $BUMP via Smart Wallet (User Operation):")
       console.log("  - To:", to)
       console.log("  - Amount:", amount, "$BUMP")
       console.log("  - Amount (wei):", amountWei.toString())
-      console.log("  - Smart Wallet Address:", smartWallet.address)
+      console.log("  - Smart Wallet Address:", walletAddress)
+      console.log("  - Using wallet from:", smartWallet ? "wallets array" : "smartWalletClient")
       console.log("  - Using Paymaster for gas sponsorship ✅")
 
       // Encode the function call
@@ -100,21 +139,38 @@ export function useWithdrawBump({ enabled = true }: UseWithdrawBumpProps = {}) {
       // Use Smart Wallet's sendTransaction method
       // This will send a User Operation, allowing Paymaster to sponsor gas fees
       // The Smart Wallet automatically handles User Operation creation and submission
-      const txHash = await smartWallet.sendTransaction({
-        to: BUMP_TOKEN_ADDRESS as Address,
-        data,
-        chain: base,
-      })
+      let txHash: `0x${string}`
+      
+      if (smartWallet) {
+        // Use wallet from wallets array
+        txHash = await smartWallet.sendTransaction({
+          to: BUMP_TOKEN_ADDRESS as Address,
+          data,
+          chain: base,
+        }) as `0x${string}`
+      } else if (smartWalletClient) {
+        // Fallback: Use smartWalletClient's writeContract method
+        console.log("⚠️ Using smartWalletClient.writeContract as fallback")
+        txHash = await smartWalletClient.writeContract({
+          address: BUMP_TOKEN_ADDRESS as Address,
+          abi: ERC20_ABI,
+          functionName: "transfer",
+          args: [to as Address, amountWei],
+          chain: base,
+        }) as `0x${string}`
+      } else {
+        throw new Error("No Smart Wallet available for transaction")
+      }
 
       console.log("✅ Transaction hash (User Operation):", txHash)
-      setHash(txHash as `0x${string}`)
+      setHash(txHash)
 
       // Wait for transaction confirmation
       // Smart Wallet handles User Operation execution and confirmation
       // The receipt will be available once the User Operation is executed on-chain
-      const receipt = await smartWallet.waitForTransactionReceipt({
-        hash: txHash as `0x${string}`,
-      })
+      const receipt = smartWallet
+        ? await smartWallet.waitForTransactionReceipt({ hash: txHash })
+        : await smartWalletClient!.waitForTransactionReceipt({ hash: txHash })
 
       console.log("✅ Transaction confirmed! Receipt:", receipt)
       setIsSuccess(true)
