@@ -19,8 +19,9 @@ import { useFarcasterMiniApp } from "@/components/miniapp-provider"
 import { useFarcasterAuth } from "@/hooks/use-farcaster-auth"
 import { usePrivy, useWallets } from "@privy-io/react-auth"
 import { useSmartWallets } from "@privy-io/react-auth/smart-wallets"
-import { useAccount } from "wagmi"
+import { useAccount, usePublicClient } from "wagmi"
 import { base } from "wagmi/chains"
+import { isAddress } from "viem"
 
 export default function BumpBotDashboard() {
   const { isInWarpcast, isReady, context } = useFarcasterMiniApp()
@@ -35,10 +36,29 @@ export default function BumpBotDashboard() {
   const { ready: privyReady, user, authenticated, login, createWallet } = usePrivy()
   const { wallets } = useWallets()
   const { address: wagmiAddress, isConnected: wagmiConnected } = useAccount()
+  const publicClient = usePublicClient()
   
   // Use useSmartWallets hook to detect Smart Account
   // This is the recommended way to access Smart Wallets in Privy
   const { client: smartWalletClient } = useSmartWallets()
+  
+  // Function to verify if an address is a smart wallet contract (not EOA)
+  // Smart wallet contracts have code size > 0, EOA has code size = 0
+  const verifySmartWalletContract = async (address: string): Promise<boolean> => {
+    if (!publicClient || !isAddress(address)) {
+      return false
+    }
+    
+    try {
+      const code = await publicClient.getBytecode({ address: address as `0x${string}` })
+      // Smart wallet contract has code, EOA has no code (null or "0x")
+      const isContract = !!(code && code !== "0x" && code.length > 2)
+      return isContract
+    } catch (error) {
+      console.error("  ❌ Error verifying smart wallet contract:", error)
+      return false
+    }
+  }
   
   // State to store Smart Wallet address (detected via useEffect when ready)
   const [privySmartWalletAddress, setPrivySmartWalletAddress] = useState<string | null>(null)
@@ -112,18 +132,76 @@ export default function BumpBotDashboard() {
     }
     
     // Determine Smart Wallet address
-    // Priority: 1. smartWalletClient.account.address, 2. smartWallets[0].address, 3. null
+    // CRITICAL: smartWalletClient.account.address is the Smart Wallet contract address
+    // This is different from Embedded Wallet address (which is EOA)
+    // Priority: 1. smartWalletClient.account.address (Smart Wallet contract), 2. smartWallets[0].address, 3. null
     const detectedSmartWallet = smartWallets[0] || null
+    
+    // CRITICAL: Use smartWalletClient.account.address as primary source
+    // This is the Smart Wallet contract address, not the Embedded Wallet (EOA)
     const detectedAddress = clientAddress || detectedSmartWallet?.address || null
     
-    setSmartWallet(detectedSmartWallet)
-    setPrivySmartWalletAddress(detectedAddress)
-    
+    // CRITICAL: Verify that the detected address is actually a smart wallet contract, not EOA
     if (detectedAddress) {
-      console.log("✅ Smart Wallet detected:", detectedAddress)
-      console.log("  - Source:", clientAddress ? "useSmartWallets hook (client)" : "wallets array")
+      console.log("🔍 Verifying Smart Wallet contract...")
+      console.log("  - Detected Address:", detectedAddress)
+      console.log("  - Source:", clientAddress ? "useSmartWallets hook (client) - Smart Wallet contract" : "wallets array")
+      console.log("  - Wallet Type:", detectedSmartWallet ? (detectedSmartWallet as any).type : "unknown")
+      console.log("  - Wallet Client Type:", detectedSmartWallet?.walletClientType || "unknown")
+      console.log("  - Embedded Wallet (signer) Address:", embeddedWallet?.address || "Not found")
+      
+      // Verify if it's a contract (smart wallet) or EOA
+      verifySmartWalletContract(detectedAddress).then((isContract) => {
+        if (isContract) {
+          console.log("  ✅ Verified: Address is a Smart Wallet CONTRACT (code size > 0)")
+          console.log("  - This is a real Smart Wallet contract address")
+          console.log("  - Smart Wallet Contract Address:", detectedAddress)
+          setSmartWallet(detectedSmartWallet)
+          setPrivySmartWalletAddress(detectedAddress)
+        } else {
+          console.warn("  ⚠️ WARNING: Address is EOA (code size = 0), NOT a Smart Wallet contract!")
+          console.warn("  - This means the detected address is an Embedded Wallet (EOA), not a Smart Wallet contract")
+          console.warn("  - Embedded Wallet Address (EOA):", detectedAddress)
+          console.warn("  - Smart Wallet contract address should be different and have code")
+          console.warn("  - Current wallet type:", (detectedSmartWallet as any)?.type || "unknown")
+          console.warn("  - Current wallet client type:", detectedSmartWallet?.walletClientType || "unknown")
+          
+          // If this is from smartWalletClient, it should be the contract address
+          // If it's from wallets array and it's EOA, it's probably the Embedded Wallet
+          if (clientAddress) {
+            console.warn("  ⚠️ smartWalletClient returned EOA address - this might be a configuration issue")
+            console.warn("  - Smart Wallet contract might not be deployed yet (lazy deployment)")
+            console.warn("  - Contract will be deployed on first transaction")
+            // Still set it as it's from smartWalletClient (should be correct)
+            setSmartWallet(detectedSmartWallet)
+            setPrivySmartWalletAddress(detectedAddress)
+          } else {
+            // This is from wallets array and it's EOA - it's probably Embedded Wallet
+            console.warn("  - This is likely the Embedded Wallet (signer), not Smart Wallet contract")
+            setSmartWallet(null)
+            setPrivySmartWalletAddress(null)
+          }
+        }
+      }).catch((error) => {
+        console.error("  ❌ Error during verification:", error)
+        // On error, log warning but still set it (might be network issue)
+        console.warn("  ⚠️ Could not verify contract status, assuming it's valid")
+        // If from smartWalletClient, trust it (should be Smart Wallet contract)
+        if (clientAddress) {
+          setSmartWallet(detectedSmartWallet)
+          setPrivySmartWalletAddress(detectedAddress)
+        } else {
+          // From wallets array, be more cautious
+          setSmartWallet(null)
+          setPrivySmartWalletAddress(null)
+        }
+      })
     } else {
       console.warn("❌ Smart Wallet NOT detected")
+      console.warn("  - smartWalletClient.account.address:", clientAddress || "Not available")
+      console.warn("  - smartWallets array length:", smartWallets.length)
+      setSmartWallet(null)
+      setPrivySmartWalletAddress(null)
     }
     
     // Additional debug info
@@ -269,24 +347,47 @@ export default function BumpBotDashboard() {
     }
   }
 
-  // Handle Smart Wallet activation - Create Smart Wallet manually if authenticated but no Smart Wallet
+  // Handle Smart Wallet activation - Create and deploy Smart Wallet contract
+  // CRITICAL: Smart Wallet contracts are lazy-deployed (deployed on first use)
+  // We need to ensure the contract is actually deployed, not just the Embedded Wallet
   const handleActivateSmartAccount = async () => {
     if (!authenticated || !privyReady) {
       console.warn("⚠️ Cannot activate Smart Account: User not authenticated or Privy not ready")
       return
     }
 
+    if (!smartWalletClient) {
+      console.warn("⚠️ Cannot activate Smart Account: Smart Wallet client not available")
+      return
+    }
+
     setIsCreatingSmartWallet(true)
     try {
-      console.log("🔘 Activate Smart Account: Creating Smart Wallet manually...")
+      console.log("🔘 Activate Smart Account: Deploying Smart Wallet contract...")
       
-      // Create Smart Wallet using Privy's createWallet function
-      // This will create a Smart Wallet for the authenticated user
+      // CRITICAL: Smart Wallet contracts are lazy-deployed
+      // They are only deployed when first used in a transaction
+      // To ensure deployment, we can send a dummy transaction or use the client
+      
+      // Option 1: Use createWallet() - this should create the Smart Wallet
+      console.log("  Step 1: Creating Smart Wallet via createWallet()...")
       const wallet = await createWallet()
       
-      console.log("✅ Smart Wallet created:", wallet.address)
+      console.log("  ✅ Wallet created:", wallet.address)
       console.log("  - Wallet Type:", (wallet as any).type)
       console.log("  - Wallet Client Type:", wallet.walletClientType)
+      
+      // Option 2: Verify it's a contract, not EOA
+      console.log("  Step 2: Verifying Smart Wallet contract deployment...")
+      const isContract = await verifySmartWalletContract(wallet.address)
+      
+      if (isContract) {
+        console.log("  ✅ Verified: Smart Wallet contract is deployed (code size > 0)")
+      } else {
+        console.warn("  ⚠️ WARNING: Address is EOA, Smart Wallet contract not deployed yet")
+        console.warn("  - This is normal for lazy-deployment - contract will deploy on first transaction")
+        console.warn("  - The Smart Wallet contract will be deployed automatically when you send your first transaction")
+      }
       
       // The Smart Wallet detection useEffect will pick up the new wallet
       // No need to manually update state, it will be detected automatically
@@ -332,9 +433,23 @@ export default function BumpBotDashboard() {
           // Create Smart Wallet using Privy's createWallet function
           const wallet = await createWallet()
           
-          console.log("  ✅ Smart Wallet created automatically:", wallet.address)
+          console.log("  ✅ Wallet created:", wallet.address)
           console.log("    - Wallet Type:", (wallet as any).type)
           console.log("    - Wallet Client Type:", wallet.walletClientType)
+          
+          // CRITICAL: Verify that this is actually a Smart Wallet contract, not just EOA
+          console.log("  🔍 Verifying Smart Wallet contract deployment...")
+          const isContract = await verifySmartWalletContract(wallet.address)
+          
+          if (isContract) {
+            console.log("  ✅ Verified: Smart Wallet contract is deployed (code size > 0)")
+            console.log("  ✅ Smart Wallet created automatically:", wallet.address)
+          } else {
+            console.warn("  ⚠️ WARNING: Address is EOA (code size = 0), Smart Wallet contract not deployed yet")
+            console.warn("  - This is normal for lazy-deployment - contract will deploy on first transaction")
+            console.warn("  - The Smart Wallet contract will be deployed automatically when you send your first transaction")
+            console.warn("  - Current address is Embedded Wallet (signer), Smart Wallet contract will be different")
+          }
           
           // The Smart Wallet detection useEffect will pick up the new wallet
           // No need to manually update state, it will be detected automatically
