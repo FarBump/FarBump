@@ -42,28 +42,28 @@ export function PrivyProvider({ children }: PrivyProviderProps) {
         },
         /**
          * EOA Signer Configuration
-         * Kita butuh EOA sebagai 'kunci' untuk mengontrol Smart Wallet.
+         * Menggunakan ethereum.createOnLogin untuk memastikan 
+         * signer (kunci) dibuat otomatis untuk user Farcaster.
          */
         embeddedWallets: {
-          createOnLogin: "all-users",
-          requireUserPasswordOnCreate: false, // Menghindari prompt di dalam Warpcast
+          createOnLogin: "users-without-wallets",
+          requireUserPasswordOnCreate: false, // Penting agar tidak ada popup password di Farcaster
         },
         /**
-         * Smart Wallets (ERC-4337) Configuration
-         * Ini akan membuat 'Smart Wallet' yang bisa menggunakan Paymaster.
+         * Smart Wallets (Account Abstraction ERC-4337)
+         * Ini yang memungkinkan transaksi gasless via Paymaster Coinbase.
          */
         smartWallets: {
           enabled: true,
-          createOnLogin: "all-users",
+          createOnLogin: "users-without-wallets",
         },
-        // Base adalah chain utama untuk Smart Wallets
+        // Base Mainnet sebagai default
         defaultChain: base,
         supportedChains: [base],
       }}
     >
-      {/** * URUTAN PENTING: 
-       * SmartWalletsProvider harus berada di atas Wagmi & QueryClient 
-       * agar client smart wallet tersedia di seluruh hook aplikasi.
+      {/** * URUTAN PENTING: SmartWalletsProvider membungkus provider data lainnya 
+       * agar transaksi via Wagmi/SmartWalletClient tersinkronisasi dengan baik.
        */}
       <SmartWalletsProvider>
         <QueryClientProvider client={queryClient}>
