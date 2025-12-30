@@ -251,26 +251,46 @@ export default function BumpBotDashboard() {
     try {
       console.log("🔘 Connect Button: Starting Farcaster Mini App login flow...")
       
-      // Step 1: Initialize login to get message
-      console.log("  Step 1: Initializing login to get message...")
-      const { message } = await initLoginToMiniApp()
-      console.log("  ✅ Message received:", message)
+      // Step 1: Initialize login to get nonce from Privy
+      console.log("  Step 1: Initializing login to get nonce...")
+      const initResult = await initLoginToMiniApp()
+      console.log("  ✅ Init result:", initResult)
       
-      // Step 2: Sign message with Farcaster SDK
-      console.log("  Step 2: Signing message with Farcaster SDK...")
-      const signature = await sdk.actions.signMessage({ message })
-      console.log("  ✅ Message signed:", signature)
+      // Extract nonce from initResult (could be in nonce or message field)
+      const nonce = initResult.nonce || initResult.message || (typeof initResult === 'string' ? initResult : null)
       
-      // Step 3: Complete login with message and signature
+      if (!nonce) {
+        throw new Error("Failed to get nonce from initLoginToMiniApp")
+      }
+      
+      console.log("  ✅ Nonce extracted:", nonce)
+      
+      // Step 2: Sign in with Farcaster SDK using signIn
+      // This will prompt user to sign in with Farcaster
+      console.log("  Step 2: Signing in with Farcaster SDK...")
+      const signInResult = await sdk.actions.signIn({ 
+        nonce: nonce, 
+        acceptAuthAddress: true 
+      })
+      console.log("  ✅ Sign in completed:", signInResult)
+      
+      // Step 3: Complete login with Privy using the signIn result
+      // Privy expects message and signature from Farcaster SDK
       console.log("  Step 3: Completing login with Privy...")
-      await loginToMiniApp({ message, signature })
+      await loginToMiniApp({ 
+        message: signInResult.message, 
+        signature: signInResult.signature 
+      })
       console.log("  ✅ Login completed successfully!")
       
       // Note: Smart Wallet creation will be handled in useEffect after authentication
       // Privy does NOT automatically create Smart Wallets for Farcaster Mini App logins
       // We need to create it manually after login succeeds
-    } catch (error) {
+    } catch (error: any) {
       console.error("❌ Connect Button: Farcaster Mini App login failed:", error)
+      if (error.name === 'RejectedByUser') {
+        console.log("  ℹ️ User rejected the sign in request")
+      }
       setIsConnecting(false)
     }
   }
