@@ -5,7 +5,7 @@ import { useSmartWallets } from "@privy-io/react-auth/smart-wallets"
 import { useWallets } from "@privy-io/react-auth"
 import { usePublicClient } from "wagmi"
 import { base } from "wagmi/chains"
-import { parseUnits, isAddress, type Address, encodeFunctionData } from "viem"
+import { parseUnits, isAddress, type Address, encodeFunctionData, numberToHex } from "viem"
 
 // $BUMP Token Contract Address on Base Network
 const BUMP_TOKEN_ADDRESS = "0x94ce728849431818ec9a0cf29bdb24fe413bbb07" as const
@@ -138,10 +138,10 @@ export function useWithdrawBump({ enabled = true }: UseWithdrawBumpProps = {}) {
         args: [to as Address, amountWei],
       })
 
-      // CRITICAL: Use Smart Wallet client to send User Operation with Paymaster sponsorship
+      // CRITICAL: Use wallet_sendCalls with Paymaster capabilities
       // Based on Base Paymaster documentation: https://docs.base.org/base-account/improve-ux/sponsor-gas/paymasters
-      // Privy Smart Wallets automatically use the Paymaster configured in Privy Dashboard (Coinbase CDP)
-      // The transaction will be sent as a User Operation, allowing gasless transactions (0 ETH required)
+      // This method explicitly uses Paymaster sponsorship via wallet_sendCalls RPC method
+      // Privy Smart Wallets support wallet_sendCalls with Paymaster capabilities
       
       // Validate Smart Wallet client is available
       if (!smartWalletClient) {
@@ -152,6 +152,54 @@ export function useWithdrawBump({ enabled = true }: UseWithdrawBumpProps = {}) {
       if (!publicClient) {
         throw new Error("Public client not available. Please ensure Wagmi is properly configured.")
       }
+      
+      // Get Ethereum provider for wallet_sendCalls
+      // Privy injects provider to window.ethereum or we can use provider from Smart Wallet client
+      // For wallet_sendCalls, we need a provider that supports this RPC method
+      let provider: any = null
+      
+      // Try to get provider from window.ethereum (Privy injects this)
+      if (typeof window !== 'undefined' && (window as any).ethereum) {
+        provider = (window as any).ethereum
+      } else if (smartWalletClient && (smartWalletClient as any).transport) {
+        // Try to get provider from Smart Wallet client transport
+        provider = (smartWalletClient as any).transport
+      } else {
+        // Fallback: Try to get provider from Smart Wallet in wallets array
+        const smartWallet = wallets.find(
+          (w) => w.walletClientType === 'smart_wallet' || (w as any).type === 'smart_wallet'
+        )
+        if (smartWallet && (smartWallet as any).provider) {
+          provider = (smartWallet as any).provider
+        }
+      }
+      
+      if (!provider || !provider.request) {
+        throw new Error("Ethereum provider not available. Please ensure your Smart Wallet is connected.")
+      }
+      
+      // Get Paymaster service URL from environment or use Privy's configured Paymaster
+      // Note: If Paymaster is configured in Privy Dashboard, Privy will handle it automatically
+      // But we can also explicitly pass the Paymaster URL if needed
+      // If not provided, Privy will use the Paymaster configured in Dashboard
+      const paymasterServiceUrl = process.env.NEXT_PUBLIC_PAYMASTER_SERVICE_URL || undefined
+      
+      // Prepare the transaction call according to Base Paymaster documentation
+      // Format: { to, value, data }
+      const calls = [
+        {
+          to: BUMP_TOKEN_ADDRESS as Address,
+          value: '0x0' as `0x${string}`,
+          data: data as `0x${string}`,
+        }
+      ]
+      
+      console.log("🔄 Using wallet_sendCalls with Paymaster sponsorship:")
+      console.log("  - Method: wallet_sendCalls")
+      console.log("  - Chain ID:", base.id)
+      console.log("  - From:", walletAddress)
+      console.log("  - To:", BUMP_TOKEN_ADDRESS)
+      console.log("  - Paymaster Service URL:", paymasterServiceUrl || "Using Privy Dashboard config")
       
       // Retry logic for Paymaster API calls (in case of network timeouts)
       const maxRetries = 2
@@ -166,21 +214,43 @@ export function useWithdrawBump({ enabled = true }: UseWithdrawBumpProps = {}) {
             await new Promise(resolve => setTimeout(resolve, 1000 * attempt))
           }
           
-          // PREFERRED: Use smartWalletClient.writeContract() - This is the recommended method
-          // It automatically sends User Operations through Privy's Paymaster
-          // Based on Base Paymaster docs: Smart Wallet transactions are automatically sponsored
-          console.log("✅ Using smartWalletClient.writeContract (recommended for Paymaster)")
-          txHash = await smartWalletClient.writeContract({
-            address: BUMP_TOKEN_ADDRESS as Address,
-            abi: ERC20_ABI,
-            functionName: "transfer",
-            args: [to as Address, amountWei],
-            chain: base,
-            // Note: Paymaster sponsorship is handled automatically by Privy
-            // Privy uses the Paymaster configured in Dashboard (Coinbase CDP)
-            // The transaction will be sent as a User Operation with Paymaster sponsorship
-            // No need to specify paymasterAndData - Privy handles this automatically
-          }) as `0x${string}`
+          // Use wallet_sendCalls with Paymaster capabilities
+          // Based on Base Paymaster docs: https://docs.base.org/base-account/improve-ux/sponsor-gas/paymasters
+          const result = await provider.request({
+            method: 'wallet_sendCalls',
+            params: [{
+              version: '1.0',
+              chainId: numberToHex(base.id),
+              from: walletAddress as Address,
+              calls: calls,
+              capabilities: paymasterServiceUrl ? {
+                paymasterService: {
+                  url: paymasterServiceUrl
+                }
+              } : undefined, // If not provided, Privy will use Dashboard Paymaster config
+            }]
+          })
+          
+          // Extract transaction hash from result
+          // wallet_sendCalls returns an object with transaction identifiers
+          if (result && typeof result === 'object') {
+            // The result should contain transaction hash(es)
+            // For single transaction, it might be in result[0] or result.hash
+            txHash = (result as any).hash || (result as any)[0] || (Array.isArray(result) ? result[0] : null)
+            if (!txHash) {
+              // If hash is not directly available, try to get it from the result structure
+              console.log("⚠️ Transaction result structure:", result)
+              // For wallet_sendCalls, the result might be a string or an array
+              txHash = (typeof result === 'string' ? result : null) as `0x${string}` | null
+            }
+          } else if (typeof result === 'string') {
+            txHash = result as `0x${string}`
+          }
+          
+          if (!txHash) {
+            throw new Error("Failed to extract transaction hash from wallet_sendCalls result")
+          }
+          
           break // Success, exit retry loop
         } catch (retryErr: any) {
           lastError = retryErr
