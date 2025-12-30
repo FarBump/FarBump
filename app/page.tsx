@@ -224,8 +224,9 @@ export default function BumpBotDashboard() {
     callReady()
   }, [isInWarpcast, isReady])
 
-  // Handle Connect button click - Manual login using Privy login()
-  // CRITICAL: Only call login() after sdk.actions.ready() has completed
+  // Handle Connect button click - Farcaster Mini App login flow
+  // CRITICAL: Use loginToMiniApp() for Farcaster Mini App, not login()
+  // Flow: initLoginToMiniApp → sign message with Farcaster SDK → loginToMiniApp
   const handleConnect = async () => {
     // Ensure sdk.actions.ready() has been called first
     if (!sdkReady) {
@@ -233,19 +234,43 @@ export default function BumpBotDashboard() {
       return
     }
 
+    // If not in Warpcast, fallback to regular login
+    if (!isInWarpcast) {
+      console.log("⚠️ Not in Warpcast, using regular Privy login()...")
+      setIsConnecting(true)
+      try {
+        login()
+      } catch (error) {
+        console.error("❌ Connect Button: Login failed:", error)
+        setIsConnecting(false)
+      }
+      return
+    }
+
     setIsConnecting(true)
     try {
-      console.log("🔘 Connect Button: Clicked, calling Privy login() manually...")
+      console.log("🔘 Connect Button: Starting Farcaster Mini App login flow...")
       
-      // Use Privy's login() function directly
-      // This will open the login modal for Farcaster authentication
-      login()
+      // Step 1: Initialize login to get message
+      console.log("  Step 1: Initializing login to get message...")
+      const { message } = await initLoginToMiniApp()
+      console.log("  ✅ Message received:", message)
       
-      // Note: login() is async but doesn't return a promise
-      // The authentication state will be updated via usePrivy hook
-      // Smart Wallet creation will happen automatically if createOnLogin: 'all-users' is set
+      // Step 2: Sign message with Farcaster SDK
+      console.log("  Step 2: Signing message with Farcaster SDK...")
+      const signature = await sdk.actions.signMessage({ message })
+      console.log("  ✅ Message signed:", signature)
+      
+      // Step 3: Complete login with message and signature
+      console.log("  Step 3: Completing login with Privy...")
+      await loginToMiniApp({ message, signature })
+      console.log("  ✅ Login completed successfully!")
+      
+      // Note: Smart Wallet creation will be handled in useEffect after authentication
+      // Privy does NOT automatically create Smart Wallets for Farcaster Mini App logins
+      // We need to create it manually after login succeeds
     } catch (error) {
-      console.error("❌ Connect Button: Login failed:", error)
+      console.error("❌ Connect Button: Farcaster Mini App login failed:", error)
       setIsConnecting(false)
     }
   }
@@ -291,20 +316,50 @@ export default function BumpBotDashboard() {
   // 3. Fallback to wallets array if client is not available
   // 4. If user already has Smart Wallet in Dashboard, it should appear after privyReady
   
-  // Handle login completion - Wait for Smart Wallet to be detected
-  // The Smart Wallet detection is now handled in the main useEffect above
-  // This effect just manages the connecting state
+  // Handle login completion - Auto-create Smart Wallet after Farcaster login
+  // CRITICAL: Privy does NOT automatically create Smart Wallets for Farcaster Mini App logins
+  // We need to create it manually after authentication succeeds
   useEffect(() => {
     if (isAuthenticated && username && userFid && privySmartWalletAddress) {
+      // Smart Wallet already exists
       console.log("✅ Privy Smart Wallet ready (Primary Address):", privySmartWalletAddress)
       setIsConnecting(false)
-    } else if (isAuthenticated && username && userFid && !privySmartWalletAddress && privyReady) {
-      // User is authenticated but Smart Wallet not found yet
-      // The main useEffect will handle detection and logging
-      // Keep connecting state active until Smart Wallet is found
-      console.log("⏳ User authenticated, waiting for Smart Wallet detection...")
+    } else if (isAuthenticated && username && userFid && !privySmartWalletAddress && privyReady && !isCreatingSmartWallet) {
+      // User is authenticated but Smart Wallet not found
+      // CRITICAL: Auto-create Smart Wallet for Farcaster Mini App users
+      console.log("⏳ User authenticated via Farcaster, but Smart Wallet not found")
+      console.log("  → Auto-creating Smart Wallet...")
+      
+      const createSmartWalletAfterLogin = async () => {
+        try {
+          setIsCreatingSmartWallet(true)
+          console.log("  🔄 Creating Smart Wallet automatically...")
+          
+          // Create Smart Wallet using Privy's createWallet function
+          const wallet = await createWallet()
+          
+          console.log("  ✅ Smart Wallet created automatically:", wallet.address)
+          console.log("    - Wallet Type:", (wallet as any).type)
+          console.log("    - Wallet Client Type:", wallet.walletClientType)
+          
+          // The Smart Wallet detection useEffect will pick up the new wallet
+          // No need to manually update state, it will be detected automatically
+        } catch (error) {
+          console.error("  ❌ Failed to auto-create Smart Wallet:", error)
+          // Don't set isConnecting to false, let user manually activate
+        } finally {
+          setIsCreatingSmartWallet(false)
+        }
+      }
+      
+      // Small delay to ensure Privy is fully ready
+      const timeoutId = setTimeout(() => {
+        createSmartWalletAfterLogin()
+      }, 500)
+      
+      return () => clearTimeout(timeoutId)
     }
-  }, [isAuthenticated, username, userFid, privySmartWalletAddress, privyReady])
+  }, [isAuthenticated, username, userFid, privySmartWalletAddress, privyReady, isCreatingSmartWallet, createWallet])
   
   const handleToggle = () => {
     setIsActive(!isActive)

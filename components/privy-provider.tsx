@@ -44,34 +44,50 @@ export function PrivyProvider({ children }: PrivyProviderProps) {
          * EOA Signer Configuration
          * Menggunakan ethereum.createOnLogin untuk memastikan 
          * signer (kunci) dibuat otomatis untuk user Farcaster.
+         * CRITICAL: Embedded wallet diperlukan sebagai SIGNER untuk Smart Wallet
          */
         embeddedWallets: {
-          createOnLogin: "users-without-wallets",
-          requireUserPasswordOnCreate: false, // Penting agar tidak ada popup password di Farcaster
+          ethereum: {
+            createOnLogin: "all-users" as const,
+            requireUserPasswordOnCreate: false, // CRITICAL: No password prompt in Farcaster Mini App
+          },
         },
         /**
          * Smart Wallets (Account Abstraction ERC-4337)
          * Ini yang memungkinkan transaksi gasless via Paymaster Coinbase.
+         * 
+         * ⚠️ CRITICAL ISSUE: Privy does NOT automatically create Smart Wallets for Farcaster Mini App logins
+         * Even with createOnLogin: "all-users", Smart Wallets are NOT created automatically when using loginToMiniApp()
+         * 
+         * SOLUTION: We need to manually create Smart Wallet after login succeeds
+         * This is handled in page.tsx useEffect that watches for authenticated state
+         * 
+         * PAYMASTER CONFIGURATION:
+         * Paymaster is configured in Privy Dashboard (Settings → Wallets → Smart Wallets → Paymaster)
+         * When using Coinbase CDP Paymaster, Privy automatically handles:
+         * - User Operation creation with Paymaster sponsorship
+         * - pm_getPaymasterStubData calls to Coinbase CDP API
+         * - Gas fee sponsorship for transactions
+         * 
+         * The Smart Wallet client (from useSmartWallets hook) automatically uses Paymaster
+         * for all transactions, allowing users to transact with 0 ETH balance
          */
         smartWallets: {
           enabled: true,
-          createOnLogin: "users-without-wallets",
+          createOnLogin: "all-users" as const,
         },
         // Base Mainnet sebagai default
         defaultChain: base,
         supportedChains: [base],
       }}
     >
-      {/** * URUTAN PENTING: SmartWalletsProvider membungkus provider data lainnya 
-       * agar transaksi via Wagmi/SmartWalletClient tersinkronisasi dengan baik.
-       */}
-      <SmartWalletsProvider>
-        <QueryClientProvider client={queryClient}>
-          <WagmiProvider config={wagmiConfig}>
+      <QueryClientProvider client={queryClient}>
+        <WagmiProvider config={wagmiConfig}>
+          <SmartWalletsProvider>
             {children}
-          </WagmiProvider>
-        </QueryClientProvider>
-      </SmartWalletsProvider>
+          </SmartWalletsProvider>
+        </WagmiProvider>
+      </QueryClientProvider>
     </PrivyProviderBase>
   )
 }

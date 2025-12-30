@@ -2,7 +2,6 @@
 
 import { useState } from "react"
 import { useSmartWallets } from "@privy-io/react-auth/smart-wallets"
-import { useWallets } from "@privy-io/react-auth" // Tambahkan ini
 import { usePublicClient } from "wagmi"
 import { parseUnits, isAddress, type Address, encodeFunctionData } from "viem"
 
@@ -24,7 +23,6 @@ const ERC20_ABI = [
 
 export function useWithdrawBump() {
   const { client: smartWalletClient } = useSmartWallets()
-  const { wallets } = useWallets() // Ambil daftar wallet
   const publicClient = usePublicClient()
   
   const [hash, setHash] = useState<`0x${string}` | null>(null)
@@ -42,54 +40,77 @@ export function useWithdrawBump() {
   const withdraw = async (to: string, amount: string) => {
     reset()
     setIsPending(true)
-    setError(null)
 
     try {
-      if (!smartWalletClient) throw new Error("Smart Wallet belum siap.")
-      if (!isAddress(to)) throw new Error("Alamat tujuan tidak valid.")
+      // 1. Validasi Smart Wallet
+      if (!smartWalletClient) {
+        throw new Error("Smart Wallet client not found. Please login again.")
+      }
 
-      // 1. Cari wallet yang sesuai dengan smartWalletClient
-      const wallet = wallets.find((w) => w.address === smartWalletClient.account.address) || wallets[0];
-      if (!wallet) throw new Error("Wallet provider tidak ditemukan.");
+      // 2. Validasi Alamat & Amount
+      if (!isAddress(to)) throw new Error("Invalid destination address")
+      const amountNum = parseFloat(amount)
+      if (isNaN(amountNum) || amountNum <= 0) throw new Error("Invalid amount")
 
+      // 3. Encode Data Transaksi
       const amountWei = parseUnits(amount, BUMP_DECIMALS)
-      const callData = encodeFunctionData({
+      const data = encodeFunctionData({
         abi: ERC20_ABI,
         functionName: "transfer",
         args: [to as Address, amountWei],
       })
 
-      console.log("🚀 Menggunakan provider dari:", wallet.address);
+      console.log("🚀 Starting Gasless Withdrawal...")
+      console.log(`📍 Destination: ${to}`)
+      console.log(`💰 Amount: ${amount} $BUMP`)
 
-      // 2. Dapatkan provider dengan cara yang lebih kompatibel
-      const provider = await wallet.getEthereumProvider();
-      
-      // 3. Kirim Transaksi
-      const txHash = await provider.request({
-        method: 'eth_sendTransaction',
-        params: [{
-          from: smartWalletClient.account.address as `0x${string}`,
-          to: BUMP_TOKEN_ADDRESS,
-          data: callData,
-          value: '0x0',
-        }],
+      /**
+       * CRITICAL: Menggunakan smartWalletClient.sendTransaction
+       * Privy akan otomatis mendeteksi konfigurasi Paymaster di Dashboard
+       * dan mengirimkan ini sebagai Sponsored User Operation.
+       */
+      const txHash = await smartWalletClient.sendTransaction({
+        to: BUMP_TOKEN_ADDRESS,
+        data: data,
+        value: BigInt(0),
       })
 
-      console.log("✅ Transaksi terkirim! Hash:", txHash)
-      setHash(txHash as `0x${string}`)
+      console.log("✅ Transaction Sent! Hash:", txHash)
+      setHash(txHash)
 
+      // 4. Tunggu Konfirmasi Transaksi
       if (publicClient) {
-        await publicClient.waitForTransactionReceipt({ hash: txHash as `0x${string}` })
+        console.log("⏳ Waiting for on-chain confirmation...")
+        const receipt = await publicClient.waitForTransactionReceipt({ 
+          hash: txHash 
+        })
+        console.log("🎉 Transaction Confirmed:", receipt)
       }
 
       setIsSuccess(true)
     } catch (err: any) {
       console.error("❌ Withdrawal Error:", err)
-      setError(new Error(err.message || "Withdrawal failed"))
+      
+      // Menangani pesan error umum agar lebih user-friendly
+      let friendlyMessage = err.message || "Transaction failed"
+      if (friendlyMessage.includes("insufficient funds")) {
+        friendlyMessage = "Insufficient ETH for gas. Check if Paymaster is correctly configured in Privy Dashboard."
+      } else if (friendlyMessage.includes("Failed to fetch")) {
+        friendlyMessage = "Network error. Please check your internet or Coinbase CDP domain whitelist."
+      }
+
+      setError(new Error(friendlyMessage))
     } finally {
       setIsPending(false)
     }
   }
 
-  return { withdraw, hash, isPending, isSuccess, error, reset }
+  return {
+    withdraw,
+    hash,
+    isPending,
+    isSuccess,
+    error,
+    reset,
+  }
 }
