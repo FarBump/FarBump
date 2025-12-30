@@ -253,30 +253,63 @@ export default function BumpBotDashboard() {
       
       // Step 1: Initialize login to get nonce from Privy
       console.log("  Step 1: Initializing login to get nonce...")
-      const initResult = await initLoginToMiniApp()
+      const initResult = await initLoginToMiniApp() as { nonce?: string; message?: string; expiresAt?: string } | string | null
       console.log("  ✅ Init result:", initResult)
       
-      // Extract nonce from initResult (could be in nonce or message field)
-      const nonce = initResult.nonce || initResult.message || (typeof initResult === 'string' ? initResult : null)
+      // Extract nonce from initResult
+      // initResult can be { nonce: string, expiresAt: string } or string
+      let nonce: string | null = null
+      if (typeof initResult === 'string') {
+        nonce = initResult
+      } else if (initResult && typeof initResult === 'object') {
+        nonce = initResult.nonce || initResult.message || null
+      }
       
       if (!nonce) {
-        throw new Error("Failed to get nonce from initLoginToMiniApp")
+        throw new Error("Failed to get nonce from initLoginToMiniApp. Result: " + JSON.stringify(initResult))
       }
       
       console.log("  ✅ Nonce extracted:", nonce)
       
       // Step 2: Sign in with Farcaster SDK using signIn
       // This will prompt user to sign in with Farcaster
+      // Based on: https://miniapps.farcaster.xyz/docs/sdk/quick-auth
       console.log("  Step 2: Signing in with Farcaster SDK...")
-      const signInResult = await sdk.actions.signIn({ 
-        nonce: nonce, 
-        acceptAuthAddress: true 
-      })
-      console.log("  ✅ Sign in completed:", signInResult)
+      console.log("    - Calling sdk.actions.signIn with nonce:", nonce)
+      
+      let signInResult: { message: string; signature: string } | null = null
+      try {
+        const result = await Promise.race([
+          sdk.actions.signIn({ 
+            nonce: nonce, 
+            acceptAuthAddress: true 
+          }) as Promise<{ message: string; signature: string }>,
+          // Timeout after 30 seconds
+          new Promise<never>((_, reject) => 
+            setTimeout(() => reject(new Error("Sign in timeout after 30 seconds")), 30000)
+          )
+        ])
+        signInResult = result
+        console.log("  ✅ Sign in completed:", signInResult)
+      } catch (signInError: any) {
+        console.error("  ❌ Sign in error:", signInError)
+        if (signInError.name === 'RejectedByUser') {
+          throw new Error("User rejected the sign in request")
+        }
+        throw signInError
+      }
+      
+      // Validate signInResult
+      if (!signInResult || !signInResult.message || !signInResult.signature) {
+        throw new Error("Invalid signIn result. Expected { message, signature }, got: " + JSON.stringify(signInResult))
+      }
       
       // Step 3: Complete login with Privy using the signIn result
       // Privy expects message and signature from Farcaster SDK
       console.log("  Step 3: Completing login with Privy...")
+      console.log("    - Message:", signInResult.message.substring(0, 50) + "...")
+      console.log("    - Signature:", signInResult.signature.substring(0, 20) + "...")
+      
       await loginToMiniApp({ 
         message: signInResult.message, 
         signature: signInResult.signature 
@@ -288,7 +321,11 @@ export default function BumpBotDashboard() {
       // We need to create it manually after login succeeds
     } catch (error: any) {
       console.error("❌ Connect Button: Farcaster Mini App login failed:", error)
-      if (error.name === 'RejectedByUser') {
+      console.error("  - Error name:", error?.name)
+      console.error("  - Error message:", error?.message)
+      console.error("  - Error stack:", error?.stack)
+      
+      if (error.name === 'RejectedByUser' || error.message?.includes('rejected')) {
         console.log("  ℹ️ User rejected the sign in request")
       }
       setIsConnecting(false)
