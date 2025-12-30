@@ -347,9 +347,9 @@ export default function BumpBotDashboard() {
     }
   }
 
-  // Handle Smart Wallet activation - Create and deploy Smart Wallet contract
-  // CRITICAL: Smart Wallet contracts are lazy-deployed (deployed on first use)
-  // We need to ensure the contract is actually deployed, not just the Embedded Wallet
+  // Handle Smart Wallet activation - Deploy Smart Wallet contract
+  // CRITICAL: Don't use createWallet() - it creates Embedded Wallet, not Smart Wallet
+  // Smart Wallet contract is deployed via smartWalletClient on first transaction
   const handleActivateSmartAccount = async () => {
     if (!authenticated || !privyReady) {
       console.warn("⚠️ Cannot activate Smart Account: User not authenticated or Privy not ready")
@@ -358,41 +358,43 @@ export default function BumpBotDashboard() {
 
     if (!smartWalletClient) {
       console.warn("⚠️ Cannot activate Smart Account: Smart Wallet client not available")
+      console.warn("  - Make sure Smart Wallets are enabled in Privy Dashboard")
+      return
+    }
+
+    if (!embeddedWallet) {
+      console.warn("⚠️ Cannot activate Smart Account: Embedded Wallet (signer) not found")
+      console.warn("  - Embedded Wallet is required as signer for Smart Wallet")
       return
     }
 
     setIsCreatingSmartWallet(true)
     try {
-      console.log("🔘 Activate Smart Account: Deploying Smart Wallet contract...")
+      console.log("🔘 Activate Smart Account: Checking Smart Wallet status...")
       
-      // CRITICAL: Smart Wallet contracts are lazy-deployed
-      // They are only deployed when first used in a transaction
-      // To ensure deployment, we can send a dummy transaction or use the client
+      // Get Smart Wallet address from smartWalletClient
+      const smartWalletAddress = smartWalletClient.account.address
+      console.log("  - Smart Wallet Contract Address:", smartWalletAddress)
+      console.log("  - Embedded Wallet (signer) Address:", embeddedWallet.address)
       
-      // Option 1: Use createWallet() - this should create the Smart Wallet
-      console.log("  Step 1: Creating Smart Wallet via createWallet()...")
-      const wallet = await createWallet()
-      
-      console.log("  ✅ Wallet created:", wallet.address)
-      console.log("  - Wallet Type:", (wallet as any).type)
-      console.log("  - Wallet Client Type:", wallet.walletClientType)
-      
-      // Option 2: Verify it's a contract, not EOA
-      console.log("  Step 2: Verifying Smart Wallet contract deployment...")
-      const isContract = await verifySmartWalletContract(wallet.address)
+      // Verify if Smart Wallet contract is deployed
+      console.log("  🔍 Verifying Smart Wallet contract deployment...")
+      const isContract = await verifySmartWalletContract(smartWalletAddress)
       
       if (isContract) {
-        console.log("  ✅ Verified: Smart Wallet contract is deployed (code size > 0)")
+        console.log("  ✅ Smart Wallet contract is already deployed (code size > 0)")
+        console.log("  ✅ Smart Wallet is ready to use!")
       } else {
-        console.warn("  ⚠️ WARNING: Address is EOA, Smart Wallet contract not deployed yet")
-        console.warn("  - This is normal for lazy-deployment - contract will deploy on first transaction")
-        console.warn("  - The Smart Wallet contract will be deployed automatically when you send your first transaction")
+        console.log("  ⚠️ Smart Wallet contract not deployed yet (lazy deployment)")
+        console.log("  - Contract will be deployed automatically on first transaction")
+        console.log("  - Smart Wallet address is:", smartWalletAddress)
+        console.log("  - You can use this address - contract will deploy when needed")
       }
       
-      // The Smart Wallet detection useEffect will pick up the new wallet
+      // The Smart Wallet detection useEffect will pick up the address
       // No need to manually update state, it will be detected automatically
     } catch (error) {
-      console.error("❌ Failed to create Smart Wallet:", error)
+      console.error("❌ Failed to activate Smart Account:", error)
     } finally {
       setIsCreatingSmartWallet(false)
     }
@@ -413,62 +415,66 @@ export default function BumpBotDashboard() {
   
   // Handle login completion - Auto-create Smart Wallet after Farcaster login
   // CRITICAL: Privy does NOT automatically create Smart Wallets for Farcaster Mini App logins
-  // We need to create it manually after authentication succeeds
+  // We need to ensure Smart Wallet contract is deployed after authentication succeeds
   useEffect(() => {
     if (isAuthenticated && username && userFid && privySmartWalletAddress) {
-      // Smart Wallet already exists
+      // Smart Wallet already exists and verified
       console.log("✅ Privy Smart Wallet ready (Primary Address):", privySmartWalletAddress)
       setIsConnecting(false)
     } else if (isAuthenticated && username && userFid && !privySmartWalletAddress && privyReady && !isCreatingSmartWallet) {
       // User is authenticated but Smart Wallet not found
-      // CRITICAL: Auto-create Smart Wallet for Farcaster Mini App users
-      console.log("⏳ User authenticated via Farcaster, but Smart Wallet not found")
-      console.log("  → Auto-creating Smart Wallet...")
+      // CRITICAL: Check if embedded wallet exists first
+      // If embedded wallet exists, Smart Wallet contract should be deployable via smartWalletClient
+      console.log("⏳ User authenticated via Farcaster, checking wallet status...")
+      console.log("  - Embedded Wallet exists:", !!embeddedWallet)
+      console.log("  - Embedded Wallet address:", embeddedWallet?.address || "Not found")
+      console.log("  - Smart Wallet Client available:", !!smartWalletClient)
+      console.log("  - Smart Wallet Client address:", smartWalletClient?.account?.address || "Not available")
       
-      const createSmartWalletAfterLogin = async () => {
-        try {
-          setIsCreatingSmartWallet(true)
-          console.log("  🔄 Creating Smart Wallet automatically...")
-          
-          // Create Smart Wallet using Privy's createWallet function
-          const wallet = await createWallet()
-          
-          console.log("  ✅ Wallet created:", wallet.address)
-          console.log("    - Wallet Type:", (wallet as any).type)
-          console.log("    - Wallet Client Type:", wallet.walletClientType)
-          
-          // CRITICAL: Verify that this is actually a Smart Wallet contract, not just EOA
-          console.log("  🔍 Verifying Smart Wallet contract deployment...")
-          const isContract = await verifySmartWalletContract(wallet.address)
-          
-          if (isContract) {
-            console.log("  ✅ Verified: Smart Wallet contract is deployed (code size > 0)")
-            console.log("  ✅ Smart Wallet created automatically:", wallet.address)
+      // CRITICAL: Don't call createWallet() - it creates Embedded Wallet, not Smart Wallet
+      // Smart Wallet contract address is available via smartWalletClient.account.address
+      // Smart Wallet contracts use lazy deployment - deployed on first transaction
+      
+      if (embeddedWallet && smartWalletClient) {
+        // Both embedded wallet and smart wallet client are available
+        const smartWalletAddress = smartWalletClient.account.address
+        console.log("  ✅ Embedded Wallet exists:", embeddedWallet.address)
+        console.log("  ✅ Smart Wallet Client available, contract address:", smartWalletAddress)
+        console.log("  - Smart Wallet contract will be deployed on first transaction (lazy deployment)")
+        console.log("  - No need to call createWallet() - it would create duplicate embedded wallet")
+        setIsConnecting(false)
+      } else if (embeddedWallet && !smartWalletClient) {
+        // Embedded wallet exists but smart wallet client not available
+        console.log("  ✅ Embedded Wallet exists:", embeddedWallet.address)
+        console.log("  ⚠️ Smart Wallet Client not available yet")
+        console.log("  - This might be normal - Smart Wallet client initializes after embedded wallet")
+        console.log("  - Smart Wallet contract address will be available once client is ready")
+        // Wait a bit for smart wallet client to initialize
+        const timeoutId = setTimeout(() => {
+          if (smartWalletClient) {
+            console.log("  ✅ Smart Wallet Client is now available")
           } else {
-            console.warn("  ⚠️ WARNING: Address is EOA (code size = 0), Smart Wallet contract not deployed yet")
-            console.warn("  - This is normal for lazy-deployment - contract will deploy on first transaction")
-            console.warn("  - The Smart Wallet contract will be deployed automatically when you send your first transaction")
-            console.warn("  - Current address is Embedded Wallet (signer), Smart Wallet contract will be different")
+            console.log("  ⚠️ Smart Wallet Client still not available - may need manual activation")
           }
-          
-          // The Smart Wallet detection useEffect will pick up the new wallet
-          // No need to manually update state, it will be detected automatically
-        } catch (error) {
-          console.error("  ❌ Failed to auto-create Smart Wallet:", error)
-          // Don't set isConnecting to false, let user manually activate
-        } finally {
-          setIsCreatingSmartWallet(false)
-        }
+        }, 1000)
+        return () => clearTimeout(timeoutId)
+      } else {
+        // No embedded wallet - this shouldn't happen with createOnLogin: "all-users"
+        console.log("  ⚠️ No Embedded Wallet found yet")
+        console.log("  - This might be normal if Privy is still initializing")
+        console.log("  - Don't create wallet manually - let Privy handle it via createOnLogin config")
+        // Wait a bit for embedded wallet to be created
+        const timeoutId = setTimeout(() => {
+          if (embeddedWallet) {
+            console.log("  ✅ Embedded Wallet is now available")
+          } else {
+            console.log("  ⚠️ Embedded Wallet still not found - check Privy Dashboard configuration")
+          }
+        }, 1000)
+        return () => clearTimeout(timeoutId)
       }
-      
-      // Small delay to ensure Privy is fully ready
-      const timeoutId = setTimeout(() => {
-        createSmartWalletAfterLogin()
-      }, 500)
-      
-      return () => clearTimeout(timeoutId)
     }
-  }, [isAuthenticated, username, userFid, privySmartWalletAddress, privyReady, isCreatingSmartWallet, createWallet])
+  }, [isAuthenticated, username, userFid, privySmartWalletAddress, privyReady, isCreatingSmartWallet, embeddedWallet, smartWalletClient])
   
   const handleToggle = () => {
     setIsActive(!isActive)

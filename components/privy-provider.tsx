@@ -45,6 +45,9 @@ export function PrivyProvider({ children }: PrivyProviderProps) {
          * Menggunakan ethereum.createOnLogin untuk memastikan 
          * signer (kunci) dibuat otomatis untuk user Farcaster.
          * CRITICAL: Embedded wallet diperlukan sebagai SIGNER untuk Smart Wallet
+         * 
+         * IMPORTANT: "all-users" ensures embedded wallet is created for all users
+         * We should NOT call createWallet() manually if embedded wallet already exists
          */
         embeddedWallets: {
           ethereum: {
