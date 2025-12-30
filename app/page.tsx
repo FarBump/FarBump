@@ -481,17 +481,3 @@ export default function BumpBotDashboard() {
     </div>
   )
 }
-
-import { useSmartWallets } from "@privy-io/react-auth/smart-wallets";
-
-export function WalletDisplay() {
-  const { smartWallets } = useSmartWallets();
-  const smartWallet = smartWallets[0];
-  if (!smartWallet) return <p>Sedang membuat Smart Wallet...</p>;
-  return (
-    <div>
-      <p>Smart Wallet Address: {smartWallet.address}</p>
-      <p>Type: {smartWallet.smartAccountType}</p> {/* Harusnya 'light-account' atau 'kernel' */}
-    </div>
-  );
-}
