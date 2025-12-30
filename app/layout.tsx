@@ -71,6 +71,9 @@ export default function RootLayout({
           name="fc:frame" 
           content={JSON.stringify(frameEmbed)} 
         />
+        {/* Preconnect to Quick Auth server for better performance */}
+        {/* Based on: https://miniapps.farcaster.xyz/docs/sdk/quick-auth */}
+        <link rel="preconnect" href="https://auth.farcaster.xyz" />
       </head>
       <body className={`${jetbrainsMono.variable} font-mono antialiased`}>
         <MiniAppProvider>

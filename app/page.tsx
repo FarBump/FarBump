@@ -224,9 +224,9 @@ export default function BumpBotDashboard() {
     callReady()
   }, [isInWarpcast, isReady])
 
-  // Handle Connect button click - Farcaster Mini App login flow
-  // CRITICAL: Use loginToMiniApp() for Farcaster Mini App, not login()
-  // Flow: initLoginToMiniApp → sign message with Farcaster SDK → loginToMiniApp
+  // Handle Connect button click - Simplified approach using Privy's regular login
+  // Privy's login() should work with Farcaster context that's already available
+  // This avoids the blank screen issue caused by sdk.actions.signIn()
   const handleConnect = async () => {
     // Ensure sdk.actions.ready() has been called first
     if (!sdkReady) {
@@ -234,117 +234,38 @@ export default function BumpBotDashboard() {
       return
     }
 
-    // If not in Warpcast, fallback to regular login
-    if (!isInWarpcast) {
-      console.log("⚠️ Not in Warpcast, using regular Privy login()...")
-      setIsConnecting(true)
-      try {
-        login()
-      } catch (error) {
-        console.error("❌ Connect Button: Login failed:", error)
-        setIsConnecting(false)
-      }
-      return
-    }
-
     setIsConnecting(true)
     try {
-      console.log("🔘 Connect Button: Starting Farcaster Mini App login flow...")
+      console.log("🔘 Connect Button: Starting login flow...")
       
-      // Step 1: Initialize login to get nonce from Privy
-      console.log("  Step 1: Initializing login to get nonce...")
-      const initResult = await initLoginToMiniApp() as { nonce?: string; message?: string; expiresAt?: string } | string | null
-      console.log("  ✅ Init result:", initResult)
+      // Use Privy's regular login() which should work with Farcaster context
+      // The Farcaster context is already available from miniapp-provider
+      // Privy will detect the Farcaster context and authenticate accordingly
+      console.log("  Using Privy's regular login() with Farcaster context...")
+      console.log("  - Farcaster context available:", !!context)
+      console.log("  - User FID:", context?.user?.fid)
+      console.log("  - Is in Warpcast:", isInWarpcast)
       
-      // Extract nonce from initResult
-      let nonce: string | null = null
-      if (typeof initResult === 'string') {
-        nonce = initResult
-      } else if (initResult && typeof initResult === 'object') {
-        nonce = initResult.nonce || initResult.message || null
-      }
+      // Privy's login() will open a modal for Farcaster authentication
+      // Since we're in Warpcast and have context, Privy should handle it automatically
+      login()
       
-      if (!nonce) {
-        throw new Error("Failed to get nonce from initLoginToMiniApp. Result: " + JSON.stringify(initResult))
-      }
-      
-      console.log("  ✅ Nonce extracted:", nonce)
-      
-      // Step 2: Sign in with Farcaster SDK using signIn
-      // CRITICAL: Use shorter timeout (5 seconds) to prevent blank screen
-      // If signIn hangs, we want to fail fast and show error instead of blank screen
-      console.log("  Step 2: Signing in with Farcaster SDK...")
-      console.log("    - Calling sdk.actions.signIn with nonce:", nonce)
-      console.log("    - Timeout: 5 seconds (to prevent blank screen)")
-      
-      let signInResult: { message: string; signature: string } | null = null
-      try {
-        // Shorter timeout (5 seconds) to prevent blank screen
-        // Blank screen usually happens when signIn hangs indefinitely
-        const result = await Promise.race([
-          sdk.actions.signIn({ 
-            nonce: nonce, 
-            acceptAuthAddress: true 
-          }) as Promise<{ message: string; signature: string }>,
-          new Promise<never>((_, reject) => 
-            setTimeout(() => reject(new Error("Sign in timeout after 5 seconds. The sign-in prompt may not have appeared.")), 5000)
-          )
-        ])
-        signInResult = result
-        console.log("  ✅ Sign in completed:", signInResult)
-      } catch (signInError: any) {
-        console.error("  ❌ Sign in error:", signInError)
-        console.error("    - This might cause blank screen if signIn hangs")
-        console.error("    - Error details:", {
-          name: signInError?.name,
-          message: signInError?.message,
-          stack: signInError?.stack
-        })
-        
-        if (signInError.name === 'RejectedByUser') {
-          throw new Error("User rejected the sign in request")
-        }
-        if (signInError.message?.includes('timeout')) {
-          // Provide helpful error message for timeout
-          throw new Error("Sign in timed out. The sign-in prompt may not have appeared. Please try again or check if you're in Warpcast.")
-        }
-        throw signInError
-      }
-      
-      // Validate signInResult
-      if (!signInResult || !signInResult.message || !signInResult.signature) {
-        throw new Error("Invalid signIn result. Expected { message, signature }, got: " + JSON.stringify(signInResult))
-      }
-      
-      // Step 3: Complete login with Privy using the signIn result
-      console.log("  Step 3: Completing login with Privy...")
-      console.log("    - Message:", signInResult.message.substring(0, 50) + "...")
-      console.log("    - Signature:", signInResult.signature.substring(0, 20) + "...")
-      
-      await loginToMiniApp({ 
-        message: signInResult.message, 
-        signature: signInResult.signature 
-      })
-      console.log("  ✅ Login completed successfully!")
+      console.log("  ✅ Login initiated with Privy!")
       
       // Note: Smart Wallet creation will be handled in useEffect after authentication
       // Privy does NOT automatically create Smart Wallets for Farcaster Mini App logins
       // We need to create it manually after login succeeds
+      
+      // Don't set isConnecting to false here - let the authentication state handle it
+      // The connecting state will be reset when authentication succeeds or fails
     } catch (error: any) {
-      console.error("❌ Connect Button: Farcaster Mini App login failed:", error)
+      console.error("❌ Connect Button: Login failed:", error)
       console.error("  - Error name:", error?.name)
       console.error("  - Error message:", error?.message)
       console.error("  - Error stack:", error?.stack)
       
       // Always reset connecting state to prevent blank screen
       setIsConnecting(false)
-      
-      if (error.name === 'RejectedByUser' || error.message?.includes('rejected')) {
-        console.log("  ℹ️ User rejected the sign in request")
-      } else if (error.message?.includes('timeout')) {
-        console.log("  ⚠️ Sign in timed out - this might indicate the sign-in prompt didn't appear")
-        console.log("  💡 Try: Refresh the page and try again, or check if you're running in Warpcast")
-      }
     }
   }
 
