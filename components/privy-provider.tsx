@@ -51,11 +51,21 @@ export function PrivyProvider({ children }: PrivyProviderProps) {
             requireUserPasswordOnCreate: false, // CRITICAL: No password prompt in Farcaster Mini App
           },
         },
-        // Smart Wallets: Enabled untuk Account Abstraction
+        // Smart Wallets: Enabled untuk Account Abstraction with Paymaster support
         // Configuration:
         // - enabled: true - Enable Smart Wallets
         // - createOnLogin: "all-users" - Create Smart Wallet for all users
         // - provider: 'light-account' or 'kernel' (default is fine, will use dashboard setting)
+        // 
+        // PAYMASTER CONFIGURATION:
+        // Paymaster is configured in Privy Dashboard (Settings → Wallets → Smart Wallets → Paymaster)
+        // When using Coinbase CDP Paymaster, Privy automatically handles:
+        // - User Operation creation with Paymaster sponsorship
+        // - pm_getPaymasterStubData calls to Coinbase CDP API
+        // - Gas fee sponsorship for transactions
+        // 
+        // The Smart Wallet client (from useSmartWallets hook) automatically uses Paymaster
+        // for all transactions, allowing users to transact with 0 ETH balance
         smartWallets: {
           enabled: true,
           createOnLogin: "all-users" as const,

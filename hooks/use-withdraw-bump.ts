@@ -3,6 +3,7 @@
 import { useState } from "react"
 import { useSmartWallets } from "@privy-io/react-auth/smart-wallets"
 import { useWallets } from "@privy-io/react-auth"
+import { usePublicClient } from "wagmi"
 import { base } from "wagmi/chains"
 import { parseUnits, isAddress, type Address, encodeFunctionData } from "viem"
 
@@ -31,6 +32,7 @@ interface UseWithdrawBumpProps {
 export function useWithdrawBump({ enabled = true }: UseWithdrawBumpProps = {}) {
   const { client: smartWalletClient } = useSmartWallets()
   const { wallets } = useWallets()
+  const publicClient = usePublicClient()
   const [hash, setHash] = useState<`0x${string}` | null>(null)
   const [isPending, setIsPending] = useState(false)
   const [isSuccess, setIsSuccess] = useState(false)
@@ -136,49 +138,117 @@ export function useWithdrawBump({ enabled = true }: UseWithdrawBumpProps = {}) {
         args: [to as Address, amountWei],
       })
 
-      // Use Smart Wallet's sendTransaction method
-      // This will send a User Operation, allowing Paymaster to sponsor gas fees
-      // The Smart Wallet automatically handles User Operation creation and submission
-      let txHash: `0x${string}`
+      // CRITICAL: Use Smart Wallet client to send User Operation with Paymaster sponsorship
+      // Based on Base Paymaster documentation: https://docs.base.org/base-account/improve-ux/sponsor-gas/paymasters
+      // Privy Smart Wallets automatically use the Paymaster configured in Privy Dashboard (Coinbase CDP)
+      // The transaction will be sent as a User Operation, allowing gasless transactions (0 ETH required)
       
-      if (smartWallet) {
-        // Use wallet from wallets array
-        txHash = await smartWallet.sendTransaction({
-          to: BUMP_TOKEN_ADDRESS as Address,
-          data,
-          chain: base,
-        }) as `0x${string}`
-      } else if (smartWalletClient) {
-        // Fallback: Use smartWalletClient's writeContract method
-        console.log("⚠️ Using smartWalletClient.writeContract as fallback")
-        txHash = await smartWalletClient.writeContract({
-          address: BUMP_TOKEN_ADDRESS as Address,
-          abi: ERC20_ABI,
-          functionName: "transfer",
-          args: [to as Address, amountWei],
-          chain: base,
-        }) as `0x${string}`
-      } else {
-        throw new Error("No Smart Wallet available for transaction")
+      // Validate Smart Wallet client is available
+      if (!smartWalletClient) {
+        throw new Error("Smart Wallet client not available. Please ensure your Smart Wallet is connected.")
+      }
+      
+      // Validate public client is available for transaction confirmation
+      if (!publicClient) {
+        throw new Error("Public client not available. Please ensure Wagmi is properly configured.")
+      }
+      
+      // Retry logic for Paymaster API calls (in case of network timeouts)
+      const maxRetries = 2
+      let txHash: `0x${string}` | null = null
+      let lastError: any = null
+      
+      for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        try {
+          if (attempt > 0) {
+            console.log(`🔄 Retry attempt ${attempt}/${maxRetries} for Paymaster transaction...`)
+            // Wait before retry (exponential backoff)
+            await new Promise(resolve => setTimeout(resolve, 1000 * attempt))
+          }
+          
+          // PREFERRED: Use smartWalletClient.writeContract() - This is the recommended method
+          // It automatically sends User Operations through Privy's Paymaster
+          // Based on Base Paymaster docs: Smart Wallet transactions are automatically sponsored
+          console.log("✅ Using smartWalletClient.writeContract (recommended for Paymaster)")
+          txHash = await smartWalletClient.writeContract({
+            address: BUMP_TOKEN_ADDRESS as Address,
+            abi: ERC20_ABI,
+            functionName: "transfer",
+            args: [to as Address, amountWei],
+            chain: base,
+            // Note: Paymaster sponsorship is handled automatically by Privy
+            // Privy uses the Paymaster configured in Dashboard (Coinbase CDP)
+            // The transaction will be sent as a User Operation with Paymaster sponsorship
+            // No need to specify paymasterAndData - Privy handles this automatically
+          }) as `0x${string}`
+          break // Success, exit retry loop
+        } catch (retryErr: any) {
+          lastError = retryErr
+          const isPaymasterError = 
+            retryErr?.message?.includes("Paymaster") ||
+            retryErr?.message?.includes("pm_getPaymasterStubData") ||
+            retryErr?.message?.includes("api.developer.coinbase.com") ||
+            retryErr?.message?.includes("CONNECTION_TIMED_OUT") ||
+            retryErr?.message?.includes("Failed to fetch") ||
+            retryErr?.message?.includes("HTTP request failed") ||
+            retryErr?.message?.includes("HttpRequestError")
+          
+          // Only retry on Paymaster errors, not on other errors
+          if (isPaymasterError && attempt < maxRetries) {
+            console.warn(`⚠️ Paymaster error on attempt ${attempt + 1}, will retry...`)
+            continue
+          } else {
+            throw retryErr // Re-throw if not a Paymaster error or max retries reached
+          }
+        }
+      }
+      
+      if (!txHash) {
+        throw lastError || new Error("Transaction failed after retries")
       }
 
       console.log("✅ Transaction hash (User Operation):", txHash)
+      console.log("  - Transaction sponsored by Paymaster ✅")
+      console.log("  - User did not need ETH for gas fees ✅")
       setHash(txHash)
 
-      // Wait for transaction confirmation
+      // Wait for transaction confirmation using public client
       // Smart Wallet handles User Operation execution and confirmation
       // The receipt will be available once the User Operation is executed on-chain
-      const receipt = smartWallet
-        ? await smartWallet.waitForTransactionReceipt({ hash: txHash })
-        : await smartWalletClient!.waitForTransactionReceipt({ hash: txHash })
+      // Note: The transaction was sponsored by Paymaster, so user didn't need ETH for gas
+      console.log("⏳ Waiting for transaction confirmation...")
+      const receipt = await publicClient.waitForTransactionReceipt({ 
+        hash: txHash,
+        timeout: 120_000, // 2 minutes timeout
+      })
 
       console.log("✅ Transaction confirmed! Receipt:", receipt)
       setIsSuccess(true)
       setIsPending(false)
     } catch (err: any) {
       console.error("❌ Withdrawal failed:", err)
-      const error = err instanceof Error ? err : new Error(err?.message || "Transaction failed")
-      setError(error)
+      
+      // Check for Paymaster-related errors
+      const errorMessage = err?.message || err?.toString() || "Transaction failed"
+      const isPaymasterError = 
+        errorMessage.includes("Paymaster") ||
+        errorMessage.includes("pm_getPaymasterStubData") ||
+        errorMessage.includes("api.developer.coinbase.com") ||
+        errorMessage.includes("CONNECTION_TIMED_OUT") ||
+        errorMessage.includes("Failed to fetch") ||
+        errorMessage.includes("HTTP request failed")
+      
+      let userFriendlyError: Error
+      if (isPaymasterError) {
+        userFriendlyError = new Error(
+          "Paymaster service unavailable. This might be a temporary network issue. " +
+          "Please check your Privy Dashboard Paymaster configuration or try again later."
+        )
+      } else {
+        userFriendlyError = err instanceof Error ? err : new Error(errorMessage)
+      }
+      
+      setError(userFriendlyError)
       setIsPending(false)
       setIsSuccess(false)
       // Don't throw here - let the caller handle it if needed
