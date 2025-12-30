@@ -68,23 +68,85 @@ export function useWithdrawBump() {
        * CRITICAL: Menggunakan smartWalletClient.sendTransaction
        * Privy akan otomatis mendeteksi konfigurasi Paymaster di Dashboard
        * dan mengirimkan ini sebagai Sponsored User Operation.
+       * 
+       * Timeout handling: Paymaster API calls can timeout, so we wrap it with a timeout
        */
-      const txHash = await smartWalletClient.sendTransaction({
-        to: BUMP_TOKEN_ADDRESS,
-        data: data,
-        value: BigInt(0),
-      })
+      const MAX_RETRIES = 2
+      const TIMEOUT_MS = 30000 // 30 seconds timeout for Paymaster API call
+      
+      let txHash: `0x${string}` | null = null
+      let lastError: Error | null = null
+
+      // Retry logic with exponential backoff
+      for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+        try {
+          if (attempt > 0) {
+            // Exponential backoff: 1s, 2s, 4s
+            const delay = Math.pow(2, attempt - 1) * 1000
+            console.log(`⏳ Waiting ${delay}ms before retry...`)
+            await new Promise(resolve => setTimeout(resolve, delay))
+          }
+
+          // Wrap sendTransaction with timeout
+          const transactionPromise = smartWalletClient.sendTransaction({
+            to: BUMP_TOKEN_ADDRESS,
+            data: data,
+            value: BigInt(0),
+          })
+
+          const timeoutPromise = new Promise<never>((_, reject) => {
+            setTimeout(() => {
+              reject(new Error("Transaction request timed out. The Paymaster API may be slow or unavailable. Please try again."))
+            }, TIMEOUT_MS)
+          })
+
+          txHash = await Promise.race([transactionPromise, timeoutPromise]) as `0x${string}`
+          break // Success, exit retry loop
+        } catch (attemptError: any) {
+          lastError = attemptError
+          console.error(`❌ Withdrawal attempt ${attempt + 1} failed:`, attemptError)
+          
+          // Check if it's a timeout error
+          const isTimeout = attemptError.message?.includes("timeout") || 
+                           attemptError.message?.includes("timed out") ||
+                           attemptError.name === "TimeoutError"
+          
+          if (isTimeout && attempt < MAX_RETRIES) {
+            console.log(`⚠️ Timeout detected, will retry (${attempt + 1}/${MAX_RETRIES})...`)
+            continue // Retry
+          } else {
+            // Not a timeout or max retries reached, throw error
+            throw attemptError
+          }
+        }
+      }
+
+      if (!txHash) {
+        throw lastError || new Error("Failed to send transaction after retries")
+      }
 
       console.log("✅ Transaction Sent! Hash:", txHash)
       setHash(txHash)
 
-      // 4. Tunggu Konfirmasi Transaksi
+      // 4. Tunggu Konfirmasi Transaksi (with longer timeout for on-chain confirmation)
       if (publicClient) {
         console.log("⏳ Waiting for on-chain confirmation...")
-        const receipt = await publicClient.waitForTransactionReceipt({ 
-          hash: txHash 
-        })
-        console.log("🎉 Transaction Confirmed:", receipt)
+        try {
+          const receipt = await Promise.race([
+            publicClient.waitForTransactionReceipt({ hash: txHash }),
+            new Promise<never>((_, reject) => {
+              setTimeout(() => {
+                reject(new Error("Transaction confirmation timed out. The transaction may still be pending. Please check the transaction hash on a block explorer."))
+              }, 120000) // 2 minutes for on-chain confirmation
+            })
+          ])
+          console.log("🎉 Transaction Confirmed:", receipt)
+        } catch (confirmationError: any) {
+          // Transaction was sent but confirmation timed out
+          // This is not a critical error - transaction may still succeed
+          console.warn("⚠️ Confirmation timeout, but transaction was sent:", confirmationError)
+          // Don't throw - transaction hash is already set, user can check manually
+        }
       }
 
       setIsSuccess(true)
@@ -93,10 +155,15 @@ export function useWithdrawBump() {
       
       // Menangani pesan error umum agar lebih user-friendly
       let friendlyMessage = err.message || "Transaction failed"
-      if (friendlyMessage.includes("insufficient funds")) {
+      
+      if (friendlyMessage.includes("timeout") || friendlyMessage.includes("timed out") || err.name === "TimeoutError") {
+        friendlyMessage = "Transaction request timed out. The Paymaster API may be slow or unavailable. Please try again in a few moments."
+      } else if (friendlyMessage.includes("insufficient funds")) {
         friendlyMessage = "Insufficient ETH for gas. Check if Paymaster is correctly configured in Privy Dashboard."
-      } else if (friendlyMessage.includes("Failed to fetch")) {
-        friendlyMessage = "Network error. Please check your internet or Coinbase CDP domain whitelist."
+      } else if (friendlyMessage.includes("Failed to fetch") || friendlyMessage.includes("network")) {
+        friendlyMessage = "Network error. Please check your internet connection or Coinbase CDP domain whitelist."
+      } else if (friendlyMessage.includes("User already has an embedded wallet")) {
+        friendlyMessage = "Wallet initialization error. Please refresh the page and try again."
       }
 
       setError(new Error(friendlyMessage))
