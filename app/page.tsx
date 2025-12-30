@@ -257,7 +257,6 @@ export default function BumpBotDashboard() {
       console.log("  ✅ Init result:", initResult)
       
       // Extract nonce from initResult
-      // initResult can be { nonce: string, expiresAt: string } or string
       let nonce: string | null = null
       if (typeof initResult === 'string') {
         nonce = initResult
@@ -272,29 +271,42 @@ export default function BumpBotDashboard() {
       console.log("  ✅ Nonce extracted:", nonce)
       
       // Step 2: Sign in with Farcaster SDK using signIn
-      // This will prompt user to sign in with Farcaster
-      // Based on: https://miniapps.farcaster.xyz/docs/sdk/quick-auth
+      // CRITICAL: Use shorter timeout (5 seconds) to prevent blank screen
+      // If signIn hangs, we want to fail fast and show error instead of blank screen
       console.log("  Step 2: Signing in with Farcaster SDK...")
       console.log("    - Calling sdk.actions.signIn with nonce:", nonce)
+      console.log("    - Timeout: 5 seconds (to prevent blank screen)")
       
       let signInResult: { message: string; signature: string } | null = null
       try {
+        // Shorter timeout (5 seconds) to prevent blank screen
+        // Blank screen usually happens when signIn hangs indefinitely
         const result = await Promise.race([
           sdk.actions.signIn({ 
             nonce: nonce, 
             acceptAuthAddress: true 
           }) as Promise<{ message: string; signature: string }>,
-          // Timeout after 30 seconds
           new Promise<never>((_, reject) => 
-            setTimeout(() => reject(new Error("Sign in timeout after 30 seconds")), 30000)
+            setTimeout(() => reject(new Error("Sign in timeout after 5 seconds. The sign-in prompt may not have appeared.")), 5000)
           )
         ])
         signInResult = result
         console.log("  ✅ Sign in completed:", signInResult)
       } catch (signInError: any) {
         console.error("  ❌ Sign in error:", signInError)
+        console.error("    - This might cause blank screen if signIn hangs")
+        console.error("    - Error details:", {
+          name: signInError?.name,
+          message: signInError?.message,
+          stack: signInError?.stack
+        })
+        
         if (signInError.name === 'RejectedByUser') {
           throw new Error("User rejected the sign in request")
+        }
+        if (signInError.message?.includes('timeout')) {
+          // Provide helpful error message for timeout
+          throw new Error("Sign in timed out. The sign-in prompt may not have appeared. Please try again or check if you're in Warpcast.")
         }
         throw signInError
       }
@@ -305,7 +317,6 @@ export default function BumpBotDashboard() {
       }
       
       // Step 3: Complete login with Privy using the signIn result
-      // Privy expects message and signature from Farcaster SDK
       console.log("  Step 3: Completing login with Privy...")
       console.log("    - Message:", signInResult.message.substring(0, 50) + "...")
       console.log("    - Signature:", signInResult.signature.substring(0, 20) + "...")
@@ -325,10 +336,15 @@ export default function BumpBotDashboard() {
       console.error("  - Error message:", error?.message)
       console.error("  - Error stack:", error?.stack)
       
+      // Always reset connecting state to prevent blank screen
+      setIsConnecting(false)
+      
       if (error.name === 'RejectedByUser' || error.message?.includes('rejected')) {
         console.log("  ℹ️ User rejected the sign in request")
+      } else if (error.message?.includes('timeout')) {
+        console.log("  ⚠️ Sign in timed out - this might indicate the sign-in prompt didn't appear")
+        console.log("  💡 Try: Refresh the page and try again, or check if you're running in Warpcast")
       }
-      setIsConnecting(false)
     }
   }
 
