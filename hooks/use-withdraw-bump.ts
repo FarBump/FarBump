@@ -106,10 +106,29 @@ export function useWithdrawBump() {
           lastError = attemptError
           console.error(`❌ Withdrawal attempt ${attempt + 1} failed:`, attemptError)
           
-          // Check if it's a timeout error
-          const isTimeout = attemptError.message?.includes("timeout") || 
-                           attemptError.message?.includes("timed out") ||
-                           attemptError.name === "TimeoutError"
+          const errorMessage = attemptError.message || ""
+          const errorDetails = attemptError.details || attemptError.cause?.details || ""
+          const errorName = attemptError.name || attemptError.cause?.name || ""
+          
+          // Check if it's a billing configuration error - don't retry these
+          const isBillingError = 
+            errorMessage.includes("No billing attached") ||
+            errorMessage.includes("billing attached to account") ||
+            errorMessage.includes("request denied") ||
+            errorDetails.includes("No billing attached") ||
+            errorDetails.includes("billing attached to account") ||
+            errorName === "ResourceUnavailableRpcError"
+          
+          if (isBillingError) {
+            console.error("❌ Paymaster billing not configured - no point retrying")
+            throw attemptError // Don't retry billing errors
+          }
+          
+          // Check if it's a timeout error - retry these
+          const isTimeout = 
+            errorMessage.includes("timeout") || 
+            errorMessage.includes("timed out") ||
+            errorName === "TimeoutError"
           
           if (isTimeout && attempt < MAX_RETRIES) {
             console.log(`⚠️ Timeout detected, will retry (${attempt + 1}/${MAX_RETRIES})...`)
@@ -155,8 +174,20 @@ export function useWithdrawBump() {
       
       // Menangani pesan error umum agar lebih user-friendly
       let friendlyMessage = err.message || "Transaction failed"
+      const errorDetails = err.details || err.cause?.details || ""
+      const errorName = err.name || err.cause?.name || ""
       
-      if (friendlyMessage.includes("timeout") || friendlyMessage.includes("timed out") || err.name === "TimeoutError") {
+      // Check for Paymaster billing error
+      if (
+        friendlyMessage.includes("No billing attached") ||
+        friendlyMessage.includes("billing attached to account") ||
+        friendlyMessage.includes("request denied") ||
+        errorDetails.includes("No billing attached") ||
+        errorDetails.includes("billing attached to account") ||
+        errorName === "ResourceUnavailableRpcError"
+      ) {
+        friendlyMessage = "Paymaster billing not configured. Please configure billing for mainnet sponsorship in Coinbase CDP Dashboard. Contact the administrator to set up Paymaster billing."
+      } else if (friendlyMessage.includes("timeout") || friendlyMessage.includes("timed out") || err.name === "TimeoutError") {
         friendlyMessage = "Transaction request timed out. The Paymaster API may be slow or unavailable. Please try again in a few moments."
       } else if (friendlyMessage.includes("insufficient funds")) {
         friendlyMessage = "Insufficient ETH for gas. Check if Paymaster is correctly configured in Privy Dashboard."
@@ -164,6 +195,8 @@ export function useWithdrawBump() {
         friendlyMessage = "Network error. Please check your internet connection or Coinbase CDP domain whitelist."
       } else if (friendlyMessage.includes("User already has an embedded wallet")) {
         friendlyMessage = "Wallet initialization error. Please refresh the page and try again."
+      } else if (friendlyMessage.includes("ResourceUnavailable") || friendlyMessage.includes("resource not available")) {
+        friendlyMessage = "Paymaster service unavailable. Please check Paymaster configuration in Coinbase CDP Dashboard or contact the administrator."
       }
 
       setError(new Error(friendlyMessage))
