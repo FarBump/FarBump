@@ -131,7 +131,7 @@ export function ConfigPanel({ fuelBalance = 0, credits = 0, smartWalletAddress }
               <DialogTrigger asChild>
                 <Button 
                   size="sm" 
-                  className="w-full bg-primary text-primary-foreground hover:bg-primary/90 font-semibold"
+                  className="w-full bg-primary text-primary-foreground hover:bg-primary/90 font-semibold transition-all duration-200 active:scale-95 active:shadow-lg hover:shadow-md"
                   disabled={!smartWalletAddress || isLoadingBalance}
                   title={!smartWalletAddress ? "Smart Wallet not ready" : "Convert $BUMP to Credit using Smart Wallet"}
                 >
@@ -151,14 +151,23 @@ export function ConfigPanel({ fuelBalance = 0, credits = 0, smartWalletAddress }
                     <label className="text-sm font-medium">Amount ($BUMP)</label>
                     <div className="relative">
                       <Input
-                        type="number"
+                        type="text"
+                        inputMode="decimal"
                         value={convertAmount}
-                        onChange={(e) => setConvertAmount(e.target.value)}
+                        onChange={(e) => {
+                          // Only allow numbers and decimal point
+                          const value = e.target.value.replace(/[^0-9.]/g, '')
+                          // Prevent multiple decimal points
+                          const parts = value.split('.')
+                          if (parts.length > 2) {
+                            setConvertAmount(parts[0] + '.' + parts.slice(1).join(''))
+                          } else {
+                            setConvertAmount(value)
+                          }
+                        }}
                         placeholder="Enter amount to convert"
-                        className="font-mono pr-16"
-                        step="0.01"
+                        className="font-mono pr-16 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                         min="0"
-                        max={formattedBalance ? parseFloat(formattedBalance.replace(/,/g, '')) : undefined}
                         disabled={isConverting || isLoadingBalance}
                       />
                       <Button
@@ -222,7 +231,7 @@ export function ConfigPanel({ fuelBalance = 0, credits = 0, smartWalletAddress }
                   
                   <div className="flex gap-2">
                     <Button
-                      className="flex-1"
+                      className="flex-1 transition-all duration-200 active:scale-95 hover:shadow-md"
                       onClick={async () => {
                         if (!convertAmount || parseFloat(convertAmount) <= 0) {
                           return

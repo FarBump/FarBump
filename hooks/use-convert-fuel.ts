@@ -244,6 +244,26 @@ export function useConvertFuel() {
   }
 
   /**
+   * Encode TRANSFER command input for Universal Router
+   * Command: 0x00
+   * Input: abi.encode(token, recipient, amount)
+   */
+  const encodeTransferCommand = (
+    token: Address,
+    recipient: Address,
+    amount: bigint
+  ): Hex => {
+    return encodeAbiParameters(
+      [
+        { name: "token", type: "address" },
+        { name: "recipient", type: "address" },
+        { name: "amount", type: "uint256" },
+      ],
+      [token, recipient, amount]
+    ) as Hex
+  }
+
+  /**
    * Encode V4_SWAP command input for Universal Router
    * Command: 0x10
    * Input: abi.encode(PoolKey, SwapParams, hookData)
@@ -306,6 +326,46 @@ export function useConvertFuel() {
         { name: "hookData", type: "bytes" },
       ],
       [poolKey, swapParams, hookData]
+    ) as Hex
+  }
+
+  /**
+   * Encode PAY_PORTION command input for Universal Router
+   * Command: 0x0A
+   * Input: abi.encode(token, recipient, bips)
+   */
+  const encodePayPortionCommand = (
+    token: Address,
+    recipient: Address,
+    bips: number
+  ): Hex => {
+    return encodeAbiParameters(
+      [
+        { name: "token", type: "address" },
+        { name: "recipient", type: "address" },
+        { name: "bips", type: "uint256" },
+      ],
+      [token, recipient, BigInt(bips)]
+    ) as Hex
+  }
+
+  /**
+   * Encode SWEEP command input for Universal Router
+   * Command: 0x0B
+   * Input: abi.encode(token, recipient, amountMin)
+   */
+  const encodeSweepCommand = (
+    token: Address,
+    recipient: Address,
+    amountMin: bigint
+  ): Hex => {
+    return encodeAbiParameters(
+      [
+        { name: "token", type: "address" },
+        { name: "recipient", type: "address" },
+        { name: "amountMin", type: "uint256" },
+      ],
+      [token, recipient, amountMin]
     ) as Hex
   }
 
@@ -523,56 +583,67 @@ export function useConvertFuel() {
       console.log(`  - Hooks: ${BUMP_POOL_HOOK_ADDRESS}`)
       console.log(`  - ZeroForOne: false (swapping $BUMP -> WETH)`)
 
-      // 6. Prepare Universal Router commands and inputs
-      console.log("📦 Preparing Universal Router transaction with V4_SWAP...")
+      // 6. Prepare Universal Router commands and inputs (all in one execute() call)
+      console.log("📦 Preparing Universal Router transaction with all commands...")
       
-      // Encode V4_SWAP input data
-      // V4_SWAP command (0x10) requires: abi.encode(PoolKey, SwapParams, hookData)
+      // Command 1: TRANSFER (0x00) - Transfer 5% $BUMP to Treasury
+      const transferInput = encodeTransferCommand(
+        BUMP_TOKEN_ADDRESS as Address,
+        TREASURY_ADDRESS as Address,
+        treasuryFeeWei
+      )
+      
+      // Command 2: V4_SWAP (0x10) - Swap 95% $BUMP to ETH
       const v4SwapInput = encodeV4SwapCommand(poolKey, swapParams, hookData)
       
-      // Universal Router commands: V4_SWAP (0x10)
-      // Commands are encoded as bytes where each byte is a command
-      const commands = "0x10" as Hex // V4_SWAP command
+      // Command 3: PAY_PORTION (0x0A) - Send 5% (from total initial amount) of ETH result to Treasury
+      // Since we swap 95% of total, and we want 5% of total initial in ETH:
+      // 5% of total = 5% / 95% = 5.263% of swap result
+      // But PAY_PORTION uses basis points, so we need to calculate:
+      // If total = 100%, swap = 95%, then 5% of total = (5/95) * 10000 = 526.3 bips
+      // However, PAY_PORTION calculates from current balance, not from swap result
+      // So we use 5% of total initial = 5% / 95% = ~5.26% of swap result
+      // For simplicity and to match user requirement "5% dari keseluruhan awal", we use:
+      // 5% of total initial in ETH = (5/100) / (95/100) = 5/95 = ~5.26% of swap result
+      // But since PAY_PORTION works on balance, we need to use a different approach
+      // Actually, PAY_PORTION sends a portion of the current balance, so we need to calculate
+      // the bips that represent 5% of total initial from the swap result
+      // Formula: (5% of total) / (95% of total) = 5/95 = ~0.0526 = 526 bips
+      const payPortionBips = Math.floor((TREASURY_FEE_BPS * 10000) / (10000 - TREASURY_FEE_BPS)) // ~526 bips
+      console.log(`📊 PAY_PORTION calculation: ${payPortionBips} bips (~5.26% of swap result = 5% of total initial)`)
+      const payPortionInput = encodePayPortionCommand(
+        BASE_WETH_ADDRESS as Address, // WETH token
+        TREASURY_ADDRESS as Address, // Treasury recipient
+        payPortionBips // ~526 bips = 5% of total initial from swap result
+      )
       
-      // Inputs array: one input per command
-      const inputs: Hex[] = [v4SwapInput]
+      // Command 4: SWEEP (0x0B) - Send remaining 90% ETH to user
+      // amountMin = 0 (we want to sweep all remaining balance)
+      const sweepInput = encodeSweepCommand(
+        BASE_WETH_ADDRESS as Address, // WETH token
+        userAddress as Address, // User recipient
+        BigInt(0) // amountMin = 0 (sweep all)
+      )
       
-      // Prepare batch calls for atomic transaction
-      const batchCalls: Array<{
-        to: Address
-        data: Hex
-        value?: bigint
-      }> = []
-
-      // Call 1: Transfer 5% $BUMP to Treasury
-      const transferData = encodeFunctionData({
-        abi: ERC20_ABI,
-        functionName: "transfer",
-        args: [TREASURY_ADDRESS as Address, treasuryFeeWei],
-      })
-      batchCalls.push({
-        to: BUMP_TOKEN_ADDRESS as Address,
-        data: transferData,
-        value: BigInt(0),
-      })
-
-      // Call 2: Universal Router execute() with V4_SWAP command
-      // Universal Router handles unlock, swap, settle, and take internally
-      const universalRouterData = encodeFunctionData({
-        abi: UNISWAP_UNIVERSAL_ROUTER_ABI,
-        functionName: "execute",
-        args: [commands, inputs],
-      })
-      batchCalls.push({
-        to: UNISWAP_UNIVERSAL_ROUTER,
-        data: universalRouterData,
-        value: BigInt(0),
-      })
-
-      // 7. Execute batch transaction (all calls in one UserOperation)
-      console.log(`📤 Executing ${batchCalls.length} calls in single batch transaction...`)
-      console.log("  1. Transfer 5% $BUMP to Treasury")
-      console.log("  2. Universal Router V4_SWAP (handles unlock, swap, settle, take)")
+      // Universal Router commands: concatenate all command bytes
+      // Format: 0x + command bytes (each command is 1 byte)
+      // TRANSFER (0x00) + V4_SWAP (0x10) + PAY_PORTION (0x0A) + SWEEP (0x0B)
+      const commands = "0x00100A0B" as Hex
+      
+      // Inputs array: one input per command (in same order as commands)
+      const inputs: Hex[] = [
+        transferInput,    // Command 1: TRANSFER
+        v4SwapInput,      // Command 2: V4_SWAP
+        payPortionInput,  // Command 3: PAY_PORTION
+        sweepInput,       // Command 4: SWEEP
+      ]
+      
+      // 7. Execute single Universal Router transaction
+      console.log(`📤 Executing Universal Router with ${inputs.length} commands in single transaction...`)
+      console.log("  1. TRANSFER: 5% $BUMP to Treasury")
+      console.log("  2. V4_SWAP: Swap 95% $BUMP to ETH")
+      console.log("  3. PAY_PORTION: 5% ETH to Treasury")
+      console.log("  4. SWEEP: 90% ETH to User")
       
       const MAX_RETRIES = 2
       const TIMEOUT_MS = 30000
@@ -589,55 +660,26 @@ export function useConvertFuel() {
             await new Promise(resolve => setTimeout(resolve, delay))
           }
 
-          // CRITICAL: All calls must be in one batch transaction for Flash Accounting atomicity
-          // Try multiple methods to send batch transactions
-          let batchMethodFound = false
+          // Encode Universal Router execute() call
+          const universalRouterData = encodeFunctionData({
+            abi: UNISWAP_UNIVERSAL_ROUTER_ABI,
+            functionName: "execute",
+            args: [commands, inputs],
+          })
           
-          // Method 1: Try sendTransactions (if available)
-          if (typeof (smartWalletClient as any).sendTransactions === 'function') {
-            console.log("✅ Using sendTransactions for atomic batch execution...")
-            txHash = await Promise.race([
-              (smartWalletClient as any).sendTransactions({
-                transactions: batchCalls,
-              }),
-              new Promise<never>((_, reject) => {
-                setTimeout(() => reject(new Error("Transaction timeout")), TIMEOUT_MS)
-              })
-            ]) as `0x${string}`
-            batchMethodFound = true
-          }
-          // Method 2: Try executeBatch (ERC-4337 standard)
-          else if (typeof (smartWalletClient as any).executeBatch === 'function') {
-            console.log("✅ Using executeBatch for atomic batch execution...")
-            txHash = await Promise.race([
-              (smartWalletClient as any).executeBatch(batchCalls),
-              new Promise<never>((_, reject) => {
-                setTimeout(() => reject(new Error("Transaction timeout")), TIMEOUT_MS)
-              })
-            ]) as `0x${string}`
-            batchMethodFound = true
-          }
-          // Method 3: Try using account's executeBatch directly
-          else if (smartWalletClient.account && typeof (smartWalletClient.account as any).executeBatch === 'function') {
-            console.log("✅ Using account.executeBatch for atomic batch execution...")
-            txHash = await Promise.race([
-              (smartWalletClient.account as any).executeBatch(batchCalls),
-              new Promise<never>((_, reject) => {
-                setTimeout(() => reject(new Error("Transaction timeout")), TIMEOUT_MS)
-              })
-            ]) as `0x${string}`
-            batchMethodFound = true
-          }
-          
-          if (!batchMethodFound) {
-            // If no batch method is available, we cannot proceed
-            // Sequential execution breaks Flash Accounting atomicity and will cause revert
-            throw new Error(
-              "Batch transaction method not available. " +
-              "Flash Accounting requires all calls (unlock, swap, settle, take) to be in a single atomic transaction. " +
-              "Please ensure your smart wallet supports batch transactions (sendTransactions, executeBatch, etc.)."
-            )
-          }
+          // Send single transaction to Universal Router
+          // All commands (TRANSFER, V4_SWAP, PAY_PORTION, SWEEP) are executed atomically
+          console.log("✅ Sending single Universal Router transaction...")
+          txHash = await Promise.race([
+            smartWalletClient.sendTransaction({
+              to: UNISWAP_UNIVERSAL_ROUTER,
+              data: universalRouterData,
+              value: BigInt(0),
+            }),
+            new Promise<never>((_, reject) => {
+              setTimeout(() => reject(new Error("Transaction timeout")), TIMEOUT_MS)
+            })
+          ]) as `0x${string}`
           
           // Note: The 5% WETH fee to treasury will be handled in the backend API
           // after we know the exact WETH amount received from the swap
