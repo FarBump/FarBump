@@ -1,15 +1,17 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { Card } from "@/components/ui/card"
 import { Slider } from "@/components/ui/slider"
 import { Input } from "@/components/ui/input"
-import { Clock, Coins, Fuel, ExternalLink, AlertCircle, ArrowRightLeft, ArrowDownUp } from "lucide-react"
+import { Clock, Coins, Fuel, ExternalLink, AlertCircle, ArrowRightLeft, ArrowDownUp, Loader2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { useBumpBalance } from "@/hooks/use-bump-balance"
 import { useFarcasterMiniApp } from "@/components/miniapp-provider"
 import { sdk } from "@farcaster/miniapp-sdk"
 import { WithdrawModal } from "@/components/withdraw-modal"
+import { useConvertFuel } from "@/hooks/use-convert-fuel"
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
 
 interface ConfigPanelProps {
   fuelBalance?: number
@@ -27,6 +29,23 @@ export function ConfigPanel({ fuelBalance = 0, credits = 0, smartWalletAddress }
   const [bumpSpeed, setBumpSpeed] = useState([5])
   const [amount, setAmount] = useState("0.0001")
   const [withdrawModalOpen, setWithdrawModalOpen] = useState(false)
+  const [convertModalOpen, setConvertModalOpen] = useState(false)
+  const [convertAmount, setConvertAmount] = useState("")
+  
+  // Convert $BUMP to Credit hook
+  const { convert, isPending: isConverting, isSuccess: convertSuccess, error: convertError, hash: convertHash, reset: resetConvert } = useConvertFuel()
+  
+  // Close modal and reset on success
+  useEffect(() => {
+    if (convertSuccess && convertModalOpen) {
+      const timer = setTimeout(() => {
+        setConvertModalOpen(false)
+        setConvertAmount("")
+        resetConvert()
+      }, 3000) // Close after 3 seconds
+      return () => clearTimeout(timer)
+    }
+  }, [convertSuccess, convertModalOpen, resetConvert])
 
   // Handle Buy $BUMP using Farcaster Native Swap
   // Based on: https://miniapps.farcaster.xyz/docs/sdk/actions/swap-token#buytoken-optional
@@ -81,15 +100,100 @@ export function ConfigPanel({ fuelBalance = 0, credits = 0, smartWalletAddress }
               <p className="text-[10px] text-muted-foreground leading-tight">This app runs ONLY on $BUMP tokens</p>
             </div>
 
-            <Button 
-              size="sm" 
-              className="w-full bg-primary text-primary-foreground hover:bg-primary/90 font-semibold"
-              disabled={!smartWalletAddress}
-              title={!smartWalletAddress ? "Smart Wallet not ready" : "Convert $BUMP to Credit using Smart Wallet"}
-            >
-              <ArrowRightLeft className="mr-2 h-4 w-4" />
-              Convert $BUMP to Credit
-            </Button>
+            <Dialog open={convertModalOpen} onOpenChange={setConvertModalOpen}>
+              <DialogTrigger asChild>
+                <Button 
+                  size="sm" 
+                  className="w-full bg-primary text-primary-foreground hover:bg-primary/90 font-semibold"
+                  disabled={!smartWalletAddress || isLoadingBalance}
+                  title={!smartWalletAddress ? "Smart Wallet not ready" : "Convert $BUMP to Credit using Smart Wallet"}
+                >
+                  <ArrowRightLeft className="mr-2 h-4 w-4" />
+                  Convert $BUMP to Credit
+                </Button>
+              </DialogTrigger>
+              <DialogContent className="sm:max-w-md">
+                <DialogHeader>
+                  <DialogTitle>Convert $BUMP to Credit</DialogTitle>
+                  <DialogDescription>
+                    Convert your $BUMP tokens to ETH Credit. 5% fee goes to treasury, 95% will be swapped to ETH.
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="space-y-4 py-4">
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">Amount ($BUMP)</label>
+                    <Input
+                      type="number"
+                      value={convertAmount}
+                      onChange={(e) => setConvertAmount(e.target.value)}
+                      placeholder="Enter amount to convert"
+                      className="font-mono"
+                      step="0.01"
+                      min="0"
+                      disabled={isConverting}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Available: {formattedBalance} $BUMP
+                    </p>
+                  </div>
+                  
+                  {convertError && (
+                    <div className="rounded-lg bg-destructive/10 border border-destructive/20 p-3">
+                      <p className="text-sm text-destructive">{convertError.message}</p>
+                    </div>
+                  )}
+                  
+                  {convertSuccess && convertHash && (
+                    <div className="rounded-lg bg-green-500/10 border border-green-500/20 p-3">
+                      <p className="text-sm text-green-600 dark:text-green-400 font-medium">
+                        ✅ Conversion successful!
+                      </p>
+                      <a
+                        href={`https://basescan.org/tx/${convertHash}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-xs text-green-600 dark:text-green-400 underline mt-1 block"
+                      >
+                        View transaction
+                      </a>
+                    </div>
+                  )}
+                  
+                  <div className="flex gap-2">
+                    <Button
+                      className="flex-1"
+                      onClick={async () => {
+                        if (!convertAmount || parseFloat(convertAmount) <= 0) {
+                          return
+                        }
+                        await convert(convertAmount)
+                      }}
+                      disabled={!convertAmount || parseFloat(convertAmount) <= 0 || isConverting || !smartWalletAddress}
+                    >
+                      {isConverting ? (
+                        <>
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                          Converting...
+                        </>
+                      ) : (
+                        "Convert"
+                      )}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      onClick={() => {
+                        setConvertModalOpen(false)
+                        setConvertAmount("")
+                        resetConvert()
+                      }}
+                      disabled={isConverting}
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+              </DialogContent>
+            </Dialog>
 
             <Button
               size="sm"

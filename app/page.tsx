@@ -22,6 +22,7 @@ import { useSmartWallets } from "@privy-io/react-auth/smart-wallets"
 import { useAccount, usePublicClient } from "wagmi"
 import { base } from "wagmi/chains"
 import { isAddress } from "viem"
+import { useCreditBalance } from "@/hooks/use-credit-balance"
 
 export default function BumpBotDashboard() {
   const { isInWarpcast, isReady, context } = useFarcasterMiniApp()
@@ -223,7 +224,10 @@ export default function BumpBotDashboard() {
   const [isConnecting, setIsConnecting] = useState(false)
   const [isActive, setIsActive] = useState(false)
   const [fuelBalance] = useState(1250.5)
-  const [credits] = useState(0)
+  
+  // Fetch credit balance from database
+  const { data: creditData, isLoading: isLoadingCredit } = useCreditBalance(privySmartWalletAddress)
+  const credits = creditData?.balanceUsd || 0
 
   // Extract user data from Privy user object (prioritize Privy user data)
   // Use user.farcaster.pfp and user.farcaster.username from Privy user object
