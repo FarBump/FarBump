@@ -3,7 +3,7 @@
 import { useState } from "react"
 import { useSmartWallets } from "@privy-io/react-auth/smart-wallets"
 import { usePublicClient } from "wagmi"
-import { parseUnits, isAddress, type Address, encodeFunctionData, type Hex } from "viem"
+import { parseUnits, isAddress, type Address, encodeFunctionData, type Hex, readContract } from "viem"
 import { 
   BUMP_TOKEN_ADDRESS, 
   TREASURY_ADDRESS, 
@@ -171,18 +171,34 @@ export function useConvertFuel() {
         value: BigInt(0),
       })
 
-      // Call 2: Approve Uniswap V4 PoolManager to spend 95% $BUMP
-      // Note: V4 PoolManager needs approval to transfer tokens
-      const approveData = encodeFunctionData({
+      // Call 2: Auto-approve Uniswap V4 PoolManager to spend 95% $BUMP
+      // Check current allowance first, only approve if needed
+      console.log("🔍 Checking current allowance...")
+      const currentAllowance = await publicClient.readContract({
+        address: BUMP_TOKEN_ADDRESS as Address,
         abi: ERC20_ABI,
-        functionName: "approve",
-        args: [UNISWAP_V4_POOL_MANAGER as Address, swapAmountWei],
+        functionName: "allowance",
+        args: [userAddress as Address, UNISWAP_V4_POOL_MANAGER as Address],
       })
-      calls.push({
-        to: BUMP_TOKEN_ADDRESS as Address,
-        data: approveData,
-        value: BigInt(0),
-      })
+      
+      console.log(`📊 Current Allowance: ${currentAllowance.toString()}, Required: ${swapAmountWei.toString()}`)
+      
+      // Only approve if current allowance is less than required amount
+      if (currentAllowance < swapAmountWei) {
+        console.log("✅ Approval needed, adding approve transaction...")
+        const approveData = encodeFunctionData({
+          abi: ERC20_ABI,
+          functionName: "approve",
+          args: [UNISWAP_V4_POOL_MANAGER as Address, swapAmountWei],
+        })
+        calls.push({
+          to: BUMP_TOKEN_ADDRESS as Address,
+          data: approveData,
+          value: BigInt(0),
+        })
+      } else {
+        console.log("✅ Sufficient allowance already exists, skipping approve")
+      }
 
       // Call 3: Swap 95% $BUMP to WETH via Uniswap V4 PoolManager
       // IMPORTANT: V4 PoolManager requires proper Currency struct format
@@ -201,51 +217,55 @@ export function useConvertFuel() {
         : BUMP_TOKEN_ADDRESS
       const zeroForOne = BUMP_TOKEN_ADDRESS.toLowerCase() < BASE_WETH_ADDRESS.toLowerCase()
       
-      // Pool configuration - MUST match existing pool
-      // Fee tier: 500 = 0.05%, 3000 = 0.3%, 10000 = 1%
+      // Pool configuration - Try multiple fee tiers dynamically
+      // Fee tier options: 500 = 0.05%, 3000 = 0.3%, 10000 = 1%
       // Tick spacing: 1 for 0.05%, 60 for 0.3%, 200 for 1%
-      // IMPORTANT: Verify these values match the actual pool on Uniswap V4
-      const poolFee = 500 // 0.05% - VERIFY THIS MATCHES YOUR POOL
-      const tickSpacing = 1 // For 0.05% fee tier - VERIFY THIS MATCHES YOUR POOL
+      const feeTierOptions = [
+        { fee: 500, tickSpacing: 1 },   // 0.05%
+        { fee: 3000, tickSpacing: 60 }, // 0.3%
+        { fee: 10000, tickSpacing: 200 }, // 1%
+      ]
+      
       const hooksAddress = "0x0000000000000000000000000000000000000000" // No hooks
       
-      const swapData = encodeFunctionData({
-        abi: UNISWAP_V4_POOL_MANAGER_ABI,
-        functionName: "swap",
-        args: [
-          {
-            currency0: {
-              currency: token0Address as Address,
-              type: 1, // ERC20 token (both $BUMP and WETH are ERC20)
+      // Helper function to generate swap data with specific fee tier
+      const generateSwapData = (feeTier: typeof feeTierOptions[0]): Hex => {
+        return encodeFunctionData({
+          abi: UNISWAP_V4_POOL_MANAGER_ABI,
+          functionName: "swap",
+          args: [
+            {
+              currency0: {
+                currency: token0Address as Address,
+                type: 1, // ERC20 token (both $BUMP and WETH are ERC20)
+              },
+              currency1: {
+                currency: token1Address as Address,
+                type: 1, // ERC20 token
+              },
+              fee: feeTier.fee,
+              tickSpacing: feeTier.tickSpacing,
+              hooks: hooksAddress as Address,
             },
-            currency1: {
-              currency: token1Address as Address,
-              type: 1, // ERC20 token
+            {
+              zeroForOne: zeroForOne,
+              amountSpecified: -BigInt(swapAmountWei.toString()), // Negative = exact input swap
+              sqrtPriceLimitX96: BigInt(0), // No price limit (0 = unlimited)
             },
-            fee: poolFee,
-            tickSpacing: tickSpacing,
-            hooks: hooksAddress as Address,
-          },
-          {
-            zeroForOne: zeroForOne,
-            amountSpecified: -BigInt(swapAmountWei.toString()), // Negative = exact input swap
-            sqrtPriceLimitX96: BigInt(0), // No price limit (0 = unlimited)
-          },
-          "0x" as Hex, // Empty hook data (no hooks)
-        ],
-      })
-      calls.push({
-        to: UNISWAP_V4_POOL_MANAGER as Address,
-        data: swapData,
-        value: BigInt(0),
-      })
+            "0x" as Hex, // Empty hook data (no hooks)
+          ],
+        })
+      }
+      
+      // Note: Swap will be executed in retry loop with dynamic fee tier selection
+      // We'll try each fee tier until one succeeds
 
       // Note: We cannot directly transfer 5% of ETH result in the same batch
       // because we don't know the exact ETH amount until swap completes.
       // We'll handle the 5% ETH transfer in a separate transaction or via the API sync.
 
-      // 5. Send batch transaction
-      console.log("📦 Sending batch transaction with", calls.length, "calls...")
+      // 5. Execute transactions sequentially
+      console.log("📦 Executing transactions sequentially...")
       
       const MAX_RETRIES = 2
       const TIMEOUT_MS = 30000
@@ -262,13 +282,8 @@ export function useConvertFuel() {
             await new Promise(resolve => setTimeout(resolve, delay))
           }
 
-          // Send batch transaction using multicall or individual calls
-          // Privy's smartWalletClient supports batch transactions via sendTransaction with multiple calls
-          // However, we need to use a different approach - send them as separate transactions in sequence
-          // OR use a multicall contract if available
-          
-          // For now, we'll send them sequentially to ensure proper execution order
           // First: Transfer 5% to treasury
+          console.log("📤 Step 1: Transferring 5% to treasury...")
           const transferTxHash = await Promise.race([
             smartWalletClient.sendTransaction({
               to: BUMP_TOKEN_ADDRESS,
@@ -282,32 +297,82 @@ export function useConvertFuel() {
 
           // Wait for first transaction to be confirmed
           await publicClient.waitForTransactionReceipt({ hash: transferTxHash })
+          console.log("✅ Treasury transfer confirmed")
 
-          // Second: Approve PoolManager
-          const approveTxHash = await Promise.race([
-            smartWalletClient.sendTransaction({
-              to: BUMP_TOKEN_ADDRESS,
-              data: approveData,
-              value: BigInt(0),
-            }),
-            new Promise<never>((_, reject) => {
-              setTimeout(() => reject(new Error("Transaction timeout")), TIMEOUT_MS)
-            })
-          ]) as `0x${string}`
+          // Second: Approve PoolManager (only if needed)
+          const approveCall = calls.find(c => c.to.toLowerCase() === BUMP_TOKEN_ADDRESS.toLowerCase() && c.data.startsWith("0x095ea7b3"))
+          if (approveCall) {
+            console.log("📝 Step 2: Executing approve transaction...")
+            const approveTxHash = await Promise.race([
+              smartWalletClient.sendTransaction({
+                to: BUMP_TOKEN_ADDRESS,
+                data: approveCall.data,
+                value: BigInt(0),
+              }),
+              new Promise<never>((_, reject) => {
+                setTimeout(() => reject(new Error("Transaction timeout")), TIMEOUT_MS)
+              })
+            ]) as `0x${string}`
 
-          await publicClient.waitForTransactionReceipt({ hash: approveTxHash })
+            await publicClient.waitForTransactionReceipt({ hash: approveTxHash })
+            console.log("✅ Approval confirmed")
+          } else {
+            console.log("⏭️ Step 2: Skipping approve (sufficient allowance)")
+          }
 
-          // Third: Swap via Uniswap V4 PoolManager
-          txHash = await Promise.race([
-            smartWalletClient.sendTransaction({
-              to: UNISWAP_V4_POOL_MANAGER,
-              data: swapData,
-              value: BigInt(0),
-            }),
-            new Promise<never>((_, reject) => {
-              setTimeout(() => reject(new Error("Transaction timeout")), TIMEOUT_MS)
-            })
-          ]) as `0x${string}`
+          // Third: Swap via Uniswap V4 PoolManager with dynamic fee tier
+          console.log("💱 Step 3: Attempting swap with dynamic fee tier detection...")
+          let swapSuccess = false
+          let lastSwapError: Error | null = null
+          
+          for (const feeTier of feeTierOptions) {
+            try {
+              const feeTierLabel = feeTier.fee === 500 ? '0.05%' : feeTier.fee === 3000 ? '0.3%' : '1%'
+              console.log(`🔄 Trying fee tier ${feeTier.fee} (${feeTierLabel})...`)
+              
+              const currentSwapData = generateSwapData(feeTier)
+              
+              txHash = await Promise.race([
+                smartWalletClient.sendTransaction({
+                  to: UNISWAP_V4_POOL_MANAGER,
+                  data: currentSwapData,
+                  value: BigInt(0),
+                }),
+                new Promise<never>((_, reject) => {
+                  setTimeout(() => reject(new Error("Transaction timeout")), TIMEOUT_MS)
+                })
+              ]) as `0x${string}`
+              
+              swapSuccess = true
+              console.log(`✅ Swap successful with fee tier ${feeTier.fee} (${feeTierLabel})`)
+              break // Success
+            } catch (swapError: any) {
+              lastSwapError = swapError
+              const errorMsg = swapError.message || ""
+              const errorDetails = swapError.details || swapError.cause?.details || ""
+              
+              // If it's a pool-related error, try next fee tier
+              if (
+                errorMsg.includes("execution reverted") ||
+                errorMsg.includes("Pool not found") ||
+                errorMsg.includes("Invalid pool") ||
+                errorDetails.includes("execution reverted")
+              ) {
+                console.log(`⚠️ Fee tier ${feeTier.fee} failed (pool may not exist), trying next...`)
+                // Small delay before trying next fee tier
+                await new Promise(resolve => setTimeout(resolve, 500))
+                continue // Try next fee tier
+              } else {
+                // Other errors (timeout, billing, etc.) should be thrown
+                console.log(`❌ Non-pool error with fee tier ${feeTier.fee}:`, errorMsg)
+                throw swapError
+              }
+            }
+          }
+          
+          if (!swapSuccess) {
+            throw lastSwapError || new Error("All fee tier attempts failed. Pool $BUMP/WETH may not exist on Uniswap V4. Please create the pool first.")
+          }
 
           break // Success
         } catch (attemptError: any) {
