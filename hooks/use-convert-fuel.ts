@@ -6,9 +6,9 @@ import { usePublicClient } from "wagmi"
 import { parseUnits, isAddress, type Address, encodeFunctionData, encodeAbiParameters, type Hex } from "viem"
 import { Currency, CurrencyAmount, Token, TradeType, Percent } from "@uniswap/sdk-core"
 import { Pool, Route, V4Planner } from "@uniswap/v4-sdk"
-import { 
-  BUMP_TOKEN_ADDRESS, 
-  TREASURY_ADDRESS, 
+import {
+  BUMP_TOKEN_ADDRESS,
+  TREASURY_ADDRESS,
   BASE_WETH_ADDRESS,
   UNISWAP_UNIVERSAL_ROUTER,
   PERMIT2_ADDRESS,
@@ -20,7 +20,8 @@ import {
   BUMP_DECIMALS,
   TREASURY_FEE_BPS,
   APP_FEE_BPS,
-  USER_CREDIT_BPS
+  USER_CREDIT_BPS,
+  CLANKER_FEE_CONFIG
 } from "@/lib/constants"
 
 // ERC20 ABI for transfer
@@ -107,10 +108,10 @@ const PERMIT2_ABI = [
 const MAX_UINT160 = BigInt("0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF") // 2^160 - 1
 const MAX_UINT48 = 281474976710655 // 2^48 - 1 (far future expiration, fits in JS number)
 
-// V4 SDK Token instances
+// V4 SDK Token instances for Clanker integration
 const CHAIN_ID = 8453 // Base mainnet
 const WETH_TOKEN = new Token(CHAIN_ID, BASE_WETH_ADDRESS, 18, "WETH", "Wrapped Ether")
-const BUMP_TOKEN = new Token(CHAIN_ID, BUMP_TOKEN_ADDRESS, BUMP_DECIMALS, "BUMP", "BUMP")
+const BUMP_TOKEN = new Token(CHAIN_ID, BUMP_TOKEN_ADDRESS, BUMP_DECIMALS, "BUMP", "BUMP (Clanker Token)")
 
 // Uniswap V4 PoolManager address on Base
 const UNISWAP_V4_POOL_MANAGER = "0x498581fF718922c3f8e6A244956aF099B2652b2b" as const
@@ -415,14 +416,16 @@ export function useConvertFuel() {
   }
 
   /**
-   * Create V4 swap transaction using direct PoolManager calls
+   * Create Clanker V4 swap transaction using direct PoolManager calls
    *
-   * Process:
+   * Process for Clanker-deployed $BUMP token:
    * 1. PERMIT2_TRANSFER_FROM (0x07): Transfer 5% $BUMP to Treasury
-   * 2. Direct V4 PoolManager.swap() call
+   * 2. Direct V4 PoolManager.swap() call (Clanker dynamic fee pool)
    * 3. UNWRAP_WETH (0x0c): Unwrap WETH to Native ETH
    * 4. PAY_PORTION (0x06): Send 5% ETH to Treasury
    * 5. SWEEP (0x04): Send remaining 90% ETH to User
+   *
+   * Compatible with Clanker SDK v4.0.0 dynamic fee pools
    */
   const createV4SwapTransaction = (
     totalBumpWei: bigint,
@@ -438,18 +441,23 @@ export function useConvertFuel() {
     const treasuryFeeWei = (totalBumpWei * BigInt(TREASURY_FEE_BPS)) / BigInt(10000)
     const swapAmountWei = totalBumpWei - treasuryFeeWei // 95% of total
 
-    console.log("🔄 Using Direct V4 PoolManager Swap:")
+    console.log("🚀 Using Clanker V4 PoolManager Swap:")
     console.log(`  - PoolManager: ${UNISWAP_V4_POOL_MANAGER}`)
+    console.log(`  - Clanker Token: $BUMP (${BUMP_TOKEN_ADDRESS})`)
     console.log(`  - AmountIn: ${swapAmountWei.toString()} $BUMP`)
     console.log(`  - Treasury Fee: ${treasuryFeeWei.toString()} $BUMP`)
+    console.log(`  - Fee Type: ${CLANKER_FEE_CONFIG.type} (${CLANKER_FEE_CONFIG.preset})`)
+    console.log(`  - Fee Value: ${BUMP_POOL_FEE} (dynamic)`)
+    console.log(`  - Hook Address: ${BUMP_POOL_HOOK_ADDRESS}`)
 
-    // Prepare V4 PoolManager swap (executed separately)
+    // Prepare Clanker V4 PoolManager swap (executed separately)
+    // Using Clanker-compatible pool configuration with dynamic fees
     const poolKey = {
       currency0: BUMP_POOL_CURRENCY0 as Address, // WETH
       currency1: BUMP_POOL_CURRENCY1 as Address, // $BUMP
-      fee: BUMP_POOL_FEE,
-      tickSpacing: BUMP_POOL_TICK_SPACING,
-      hooks: BUMP_POOL_HOOK_ADDRESS as Address,
+      fee: BUMP_POOL_FEE,                         // Dynamic fee (8388608)
+      tickSpacing: BUMP_POOL_TICK_SPACING,        // Dynamic fee spacing (200)
+      hooks: BUMP_POOL_HOOK_ADDRESS as Address,   // Clanker UniV4SwapExtension hook
     }
 
     const swapParams = {

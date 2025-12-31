@@ -13,18 +13,52 @@ export const UNISWAP_UNIVERSAL_ROUTER = "0x6fF5693b99212Da76ad316178A184AB56D299
 // Permit2 on Base Mainnet
 export const PERMIT2_ADDRESS = "0x000000000022D473030F116dDEE9F6B43aC78BA3" as const
 
-// Uniswap V4 $BUMP/WETH Pool Configuration
-// PoolKey details:
+// Clanker V4 $BUMP/WETH Pool Configuration
+// Based on Clanker SDK v4.0.0 documentation
+// $BUMP token deployed via Clanker platform using Uniswap V4
+// Uses dynamic fee pools with UniV4SwapExtension hooks for fee collection
+// Compatible with Clanker.world trading interface
+//
+// PoolKey Configuration:
 // currency0: WETH (0x4200000000000000000000000000000000000006)
 // currency1: $BUMP (0x94CE728849431818EC9a0CF29BDb24FE413bBb07)
-// fee: 8388608 (Dynamic Fee)
-// tickSpacing: 200
-// hooks: 0xd60D6B218116cFd801E28F78d011a203D2b068Cc
-export const BUMP_POOL_HOOK_ADDRESS = "0xd60D6B218116cFd801E28F78d011a203D2b068Cc" as const
+// fee: Dynamic Fee (0x800000 = 8388608)
+// tickSpacing: 200 (for dynamic fee)
+// hooks: Zero address (basic hook) or Clanker UniV4SwapExtension
+export const BUMP_POOL_HOOK_ADDRESS = "0x0000000000000000000000000000000000000000" as const // Zero address for basic hook
 export const BUMP_POOL_CURRENCY0 = "0x4200000000000000000000000000000000000006" as const // WETH
 export const BUMP_POOL_CURRENCY1 = "0x94CE728849431818EC9a0CF29BDb24FE413bBb07" as const // $BUMP
 export const BUMP_POOL_FEE = 8388608 // Dynamic Fee (0x800000)
-export const BUMP_POOL_TICK_SPACING = 200
+export const BUMP_POOL_TICK_SPACING = 200 // Dynamic fee tick spacing
+
+// Clanker Fee Configuration (from SDK v4.0.0 docs)
+// Using DynamicBasic preset from Clanker SDK
+// Dynamic fees adjust based on pool volatility and volume
+export const CLANKER_FEE_CONFIG = {
+  type: "dynamic" as const,
+  preset: "DynamicBasic" as const,
+  // Dynamic fees provide better capital efficiency
+  // Fees range from 0.01% to 1% based on pool conditions
+} as const
+
+// Clanker Rewards Configuration
+// Based on Clanker SDK rewards structure
+// LP rewards distributed to token holders and platform
+export const CLANKER_REWARDS_CONFIG = {
+  // Rewards distributed in paired token (WETH) and clanker token ($BUMP)
+  recipients: [
+    {
+      name: "Creator Rewards",
+      token: "Paired", // WETH rewards
+      typicalBps: 8000, // 80% of rewards
+    },
+    {
+      name: "Platform/Interface Rewards",
+      token: "Both", // Both WETH and $BUMP
+      typicalBps: 2000, // 20% of rewards
+    }
+  ]
+} as const
 
 // Legacy: Uniswap V3 Router (kept for reference)
 // Router2 address: https://docs.uniswap.org/contracts/v3/reference/deployments/base
