@@ -255,60 +255,96 @@ export function useConvertFuel() {
 
   /**
    * Encode V4_SWAP command for Universal Router (Command 0x10)
-   * Based on V4 architecture: uses PoolId hash and PathKey for routing
-   * 
+   * Based on V4 v4Planner pattern: uses actions/params for Flash Accounting
+   *
    * V4 Pattern (from docs):
-   * - PoolId is derived from PoolKey hash
-   * - PathKey contains: intermediateCurrency[], fee[], tickSpacing[], hooks[], hookData[]
-   * - For single-hop: arrays have 0 intermediate currencies
+   * - Uses v4Planner with actions: SWAP_EXACT_IN_SINGLE, SETTLE_ALL, TAKE_ALL
+   * - SETTLE_ALL (0x10): Pay input tokens to PoolManager
+   * - SWAP_EXACT_IN_SINGLE (0x00): Execute the swap
+   * - TAKE_ALL (0x11): Receive output tokens from PoolManager
    */
   const encodeV4SwapForUniversalRouter = (
     amountIn: bigint,
     amountOutMinimum: bigint,
     recipient: Address
   ): Hex => {
-    // V4 PathKey for single-hop swap
-    // struct PathKey {
-    //   Currency[] intermediateCurrency; // empty for single-hop
-    //   uint24[] fee;                    // [BUMP_POOL_FEE]
-    //   int24[] tickSpacing;             // [BUMP_POOL_TICK_SPACING]
-    //   IHooks[] hooks;                  // [BUMP_POOL_HOOK_ADDRESS]
-    //   bytes[] hookData;                // [empty bytes]
-    // }
-    
-    return encodeAbiParameters(
+    // V4 Router Action IDs (from @uniswap/v4-periphery)
+    const SWAP_EXACT_IN_SINGLE = 0x00
+    const SETTLE_ALL = 0x10
+    const TAKE_ALL = 0x11
+
+    // Actions sequence: SETTLE -> SWAP -> TAKE (Flash Accounting pattern)
+    // Convert to hex string manually (browser-compatible)
+    const actionsHex = ("0x" +
+      SETTLE_ALL.toString(16).padStart(2, "0") +
+      SWAP_EXACT_IN_SINGLE.toString(16).padStart(2, "0") +
+      TAKE_ALL.toString(16).padStart(2, "0")
+    ) as Hex // = "0x100011"
+
+    // Param 1: SETTLE_ALL params
+    // abi.encode(currency, maxAmount)
+    // We're settling currency1 ($BUMP) - the token we're selling
+    const settleParams = encodeAbiParameters(
       [
-        { name: "currencyIn", type: "address" },           // $BUMP
-        { name: "currencyOut", type: "address" },          // WETH  
-        { name: "amountIn", type: "uint256" },
-        { name: "amountOutMinimum", type: "uint256" },
-        { name: "recipient", type: "address" },
+        { name: "currency", type: "address" },
+        { name: "maxAmount", type: "uint128" },
+      ],
+      [BUMP_POOL_CURRENCY1 as Address, amountIn]
+    ) as Hex
+
+    // Param 2: SWAP_EXACT_IN_SINGLE params
+    // abi.encode(poolKey, zeroForOne, amountIn, amountOutMinimum, hookData)
+    const swapParams = encodeAbiParameters(
+      [
         {
           components: [
-            { name: "intermediateCurrency", type: "address[]" },
-            { name: "fee", type: "uint24[]" },
-            { name: "tickSpacing", type: "int24[]" },
-            { name: "hooks", type: "address[]" },
-            { name: "hookData", type: "bytes[]" },
+            { name: "currency0", type: "address" },
+            { name: "currency1", type: "address" },
+            { name: "fee", type: "uint24" },
+            { name: "tickSpacing", type: "int24" },
+            { name: "hooks", type: "address" },
           ],
-          name: "path",
+          name: "poolKey",
           type: "tuple",
         },
+        { name: "zeroForOne", type: "bool" },
+        { name: "amountIn", type: "uint128" },
+        { name: "amountOutMinimum", type: "uint128" },
+        { name: "hookData", type: "bytes" },
       ],
       [
-        BUMP_POOL_CURRENCY1 as Address,              // currencyIn ($BUMP)
-        BUMP_POOL_CURRENCY0 as Address,              // currencyOut (WETH)
+        {
+          currency0: BUMP_POOL_CURRENCY0 as Address, // WETH
+          currency1: BUMP_POOL_CURRENCY1 as Address, // $BUMP
+          fee: BUMP_POOL_FEE,
+          tickSpacing: BUMP_POOL_TICK_SPACING,
+          hooks: BUMP_POOL_HOOK_ADDRESS as Address,
+        },
+        false, // zeroForOne: false = selling currency1 ($BUMP) for currency0 (WETH)
         amountIn,
         amountOutMinimum,
-        recipient,
-        {
-          intermediateCurrency: [],                   // No intermediate for single-hop
-          fee: [BUMP_POOL_FEE],                      // Dynamic fee
-          tickSpacing: [BUMP_POOL_TICK_SPACING],    // 200
-          hooks: [BUMP_POOL_HOOK_ADDRESS as Address], // Hook address
-          hookData: ["0x" as Hex],                   // Empty hook data
-        },
+        "0x" as Hex, // Empty hook data
       ]
+    ) as Hex
+
+    // Param 3: TAKE_ALL params
+    // abi.encode(currency, minAmount)
+    // We're taking currency0 (WETH) - the token we're buying
+    const takeParams = encodeAbiParameters(
+      [
+        { name: "currency", type: "address" },
+        { name: "minAmount", type: "uint128" },
+      ],
+      [BUMP_POOL_CURRENCY0 as Address, amountOutMinimum]
+    ) as Hex
+
+    // Final V4_SWAP encoding: abi.encode(actions, params[])
+    return encodeAbiParameters(
+      [
+        { name: "actions", type: "bytes" },
+        { name: "params", type: "bytes[]" },
+      ],
+      [actionsHex, [settleParams, swapParams, takeParams]]
     ) as Hex
   }
 
