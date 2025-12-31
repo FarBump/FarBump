@@ -70,7 +70,7 @@ const UNISWAP_UNIVERSAL_ROUTER_ABI = [
   },
 ] as const
 
-// Permit2 ABI for allowance management
+// Permit2 ABI for allowance management and approval
 const PERMIT2_ABI = [
   {
     inputs: [
@@ -78,24 +78,32 @@ const PERMIT2_ABI = [
       { name: "spender", type: "address" },
       { name: "amount", type: "uint160" },
       { name: "expiration", type: "uint48" },
-      { name: "nonce", type: "uint48" },
+    ],
+    name: "approve",
+    outputs: [],
+    stateMutability: "nonpayable",
+    type: "function",
+  },
+  {
+    inputs: [
+      { name: "owner", type: "address" },
+      { name: "token", type: "address" },
+      { name: "spender", type: "address" },
     ],
     name: "allowance",
     outputs: [
-      {
-        components: [
-          { name: "amount", type: "uint160" },
-          { name: "expiration", type: "uint48" },
-          { name: "nonce", type: "uint48" },
-        ],
-        name: "",
-        type: "tuple",
-      },
+      { name: "amount", type: "uint160" },
+      { name: "expiration", type: "uint48" },
+      { name: "nonce", type: "uint48" },
     ],
     stateMutability: "view",
     type: "function",
   },
 ] as const
+
+// Max values for Permit2 approval
+const MAX_UINT160 = BigInt("0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF") // 2^160 - 1
+const MAX_UINT48 = 281474976710655 // 2^48 - 1 (far future expiration, fits in JS number)
 
 // Legacy: Uniswap V4 PoolManager ABI (kept for reference, not used with Universal Router)
 // V4 uses Currency struct (address + type) instead of direct addresses
@@ -222,24 +230,71 @@ export function useConvertFuel() {
   }
 
   /**
-   * Check Permit2 allowance for $BUMP token
-   * Falls back to regular ERC20 allowance check if Permit2 check fails
+   * Check if user has approved $BUMP to Permit2 contract
+   * This is required before Permit2 can authorize Universal Router
    */
-  const checkPermit2Allowance = async (amount: bigint): Promise<boolean> => {
+  const checkErc20ToPermit2Allowance = async (amount: bigint): Promise<boolean> => {
     if (!publicClient || !smartWalletClient) return false
 
-    // Fallback: Check regular ERC20 allowance to Universal Router
-    // Permit2 integration can be added later if needed
     try {
       const allowance = await publicClient.readContract({
         address: BUMP_TOKEN_ADDRESS as Address,
         abi: ERC20_ABI,
         functionName: "allowance",
-        args: [smartWalletClient.account.address as Address, UNISWAP_UNIVERSAL_ROUTER as Address],
+        args: [smartWalletClient.account.address as Address, PERMIT2_ADDRESS as Address],
       })
+      console.log(`📊 ERC20 Allowance to Permit2: ${allowance.toString()}`)
       return allowance >= amount
-    } catch {
+    } catch (err) {
+      console.error("Error checking ERC20 allowance to Permit2:", err)
       return false
+    }
+  }
+
+  /**
+   * Check Permit2 allowance for Universal Router
+   * This checks if Permit2 has authorized Universal Router to spend $BUMP
+   */
+  const checkPermit2Allowance = async (amount: bigint): Promise<{ hasAllowance: boolean; needsErc20Approval: boolean }> => {
+    if (!publicClient || !smartWalletClient) {
+      return { hasAllowance: false, needsErc20Approval: true }
+    }
+
+    // First check ERC20 allowance to Permit2
+    const hasErc20Allowance = await checkErc20ToPermit2Allowance(amount)
+    if (!hasErc20Allowance) {
+      console.log("⚠️ Need ERC20 approval to Permit2 first")
+      return { hasAllowance: false, needsErc20Approval: true }
+    }
+
+    // Then check Permit2 allowance for Universal Router
+    try {
+      const result = await publicClient.readContract({
+        address: PERMIT2_ADDRESS as Address,
+        abi: PERMIT2_ABI,
+        functionName: "allowance",
+        args: [
+          smartWalletClient.account.address as Address, // owner
+          BUMP_TOKEN_ADDRESS as Address,                 // token
+          UNISWAP_UNIVERSAL_ROUTER as Address,          // spender
+        ],
+      })
+      
+      // Result is [amount, expiration, nonce] - all as bigint from viem
+      const [allowedAmount, expiration] = result as unknown as [bigint, bigint, bigint]
+      const currentTime = BigInt(Math.floor(Date.now() / 1000))
+      
+      console.log(`📊 Permit2 Allowance for Universal Router:`)
+      console.log(`  - Amount: ${allowedAmount.toString()}`)
+      console.log(`  - Expiration: ${expiration.toString()}`)
+      console.log(`  - Current Time: ${currentTime.toString()}`)
+      
+      const hasEnough = allowedAmount >= amount && expiration > currentTime
+      return { hasAllowance: hasEnough, needsErc20Approval: false }
+    } catch (err) {
+      console.error("Error checking Permit2 allowance:", err)
+      // Permit2 check failed, but ERC20 allowance is ok
+      return { hasAllowance: false, needsErc20Approval: false }
     }
   }
 
@@ -512,8 +567,9 @@ export function useConvertFuel() {
   }
 
   /**
-   * Approve Permit2 to spend $BUMP tokens for Universal Router
-   * This function checks allowance first and only approves if needed
+   * Approve $BUMP tokens to Permit2 contract
+   * This is the first step - user must approve ERC20 to Permit2
+   * Then Permit2.approve() will be called in convert() to authorize Universal Router
    */
   const approve = async (amount: string) => {
     setIsApproving(true)
@@ -531,40 +587,36 @@ export function useConvertFuel() {
       const userAddress = smartWalletClient.account.address
       const amountWei = parseUnits(amount, BUMP_DECIMALS)
 
-      // Check Permit2 allowance first
-      console.log("🔍 Checking Permit2 allowance...")
-      const hasPermit2Allowance = await checkPermit2Allowance(amountWei)
-
-      if (hasPermit2Allowance) {
-        console.log("✅ Sufficient Permit2 allowance already exists")
-        setIsApproving(false)
-        return { approved: true, hash: null as `0x${string}` | null }
-      }
-
-      // Fallback: Check regular ERC20 allowance to Universal Router
-      console.log("🔍 Checking ERC20 allowance to Universal Router...")
+      // Check ERC20 allowance to Permit2
+      console.log("🔍 Checking ERC20 allowance to Permit2...")
       const currentAllowance = await publicClient.readContract({
         address: BUMP_TOKEN_ADDRESS as Address,
         abi: ERC20_ABI,
         functionName: "allowance",
-        args: [userAddress as Address, UNISWAP_UNIVERSAL_ROUTER as Address],
+        args: [userAddress as Address, PERMIT2_ADDRESS as Address],
       })
 
-      console.log(`📊 Current Allowance: ${currentAllowance.toString()}, Required: ${amountWei.toString()}`)
+      console.log(`📊 Current Allowance to Permit2: ${currentAllowance.toString()}, Required: ${amountWei.toString()}`)
 
       // If allowance is sufficient, no need to approve
       if (currentAllowance >= amountWei) {
-        console.log("✅ Sufficient allowance already exists")
+        console.log("✅ Sufficient ERC20 allowance to Permit2 already exists")
         setIsApproving(false)
         return { approved: true, hash: null as `0x${string}` | null }
       }
 
-      // Approve needed - approve to Universal Router (which uses Permit2 internally)
-      console.log("📝 Approval needed, sending approve transaction to Universal Router...")
+      // Approve ERC20 to Permit2 with max amount (so user doesn't need to approve again)
+      console.log("📝 ERC20 approval needed, sending approve transaction to Permit2...")
+      console.log(`  - Token: ${BUMP_TOKEN_ADDRESS}`)
+      console.log(`  - Spender: ${PERMIT2_ADDRESS} (Permit2)`)
+      console.log(`  - Amount: MAX_UINT256 (unlimited)`)
+      
+      // Use max uint256 for ERC20 approval to Permit2 (common practice)
+      const maxUint256 = BigInt("0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF")
       const approveData = encodeFunctionData({
         abi: ERC20_ABI,
         functionName: "approve",
-        args: [UNISWAP_UNIVERSAL_ROUTER as Address, amountWei],
+        args: [PERMIT2_ADDRESS as Address, maxUint256],
       })
 
       const MAX_RETRIES = 2
@@ -662,27 +714,23 @@ export function useConvertFuel() {
       console.log(`📤 Treasury Fee (5%): ${treasuryFeeWei.toString()} wei`)
       console.log(`💱 Swap Amount (95%): ${swapAmountWei.toString()} wei`)
 
-      // 4. Verify Permit2/Universal Router allowance before swap
-      console.log("🔍 Verifying Permit2/Universal Router allowance before swap...")
-      const hasPermit2Allowance = await checkPermit2Allowance(swapAmountWei)
+      // 4. Verify ERC20 approval to Permit2 before swap
+      // User must have approved $BUMP to Permit2 first
+      console.log("🔍 Verifying ERC20 allowance to Permit2...")
+      const erc20ToPermit2Allowance = await publicClient.readContract({
+        address: BUMP_TOKEN_ADDRESS as Address,
+        abi: ERC20_ABI,
+        functionName: "allowance",
+        args: [userAddress as Address, PERMIT2_ADDRESS as Address],
+      })
       
-      if (!hasPermit2Allowance) {
-        // Fallback: Check regular ERC20 allowance
-        const currentAllowance = await publicClient.readContract({
-          address: BUMP_TOKEN_ADDRESS as Address,
-          abi: ERC20_ABI,
-          functionName: "allowance",
-          args: [userAddress as Address, UNISWAP_UNIVERSAL_ROUTER as Address],
-        })
-        
-        console.log(`📊 Current Allowance: ${currentAllowance.toString()}, Required: ${swapAmountWei.toString()}`)
-        
-        if (currentAllowance < swapAmountWei) {
-          throw new Error("Insufficient allowance. Please approve first by clicking the 'Approve' button.")
-        }
+      console.log(`📊 ERC20 Allowance to Permit2: ${erc20ToPermit2Allowance.toString()}, Required: ${totalAmountWei.toString()}`)
+      
+      if (erc20ToPermit2Allowance < totalAmountWei) {
+        throw new Error("Insufficient ERC20 allowance to Permit2. Please approve first by clicking the 'Approve' button.")
       }
       
-      console.log("✅ Sufficient allowance confirmed")
+      console.log("✅ ERC20 allowance to Permit2 confirmed")
 
       // 5. Encode all Universal Router commands using clean function
       // This function handles all validation, PoolKey construction, and command encoding
@@ -702,6 +750,32 @@ export function useConvertFuel() {
       console.log("  5. SWEEP (0x04): 90% ETH to User")
       console.log(`📋 Commands: ${commands}`)
       
+      // 7. Prepare Permit2 approve call
+      // This authorizes Universal Router to pull $BUMP tokens via Permit2
+      console.log("🔐 Preparing Permit2 approval for Universal Router...")
+      console.log(`  - Token: ${BUMP_TOKEN_ADDRESS} ($BUMP)`)
+      console.log(`  - Spender: ${UNISWAP_UNIVERSAL_ROUTER} (Universal Router)`)
+      console.log(`  - Amount: MAX_UINT160 (unlimited)`)
+      console.log(`  - Expiration: MAX_UINT48 (far future)`)
+      
+      const permit2ApproveData = encodeFunctionData({
+        abi: PERMIT2_ABI,
+        functionName: "approve",
+        args: [
+          BUMP_TOKEN_ADDRESS as Address,           // token
+          UNISWAP_UNIVERSAL_ROUTER as Address,     // spender (Universal Router)
+          MAX_UINT160,                              // amount (max uint160)
+          MAX_UINT48,                               // expiration (max uint48 = far future)
+        ],
+      })
+      
+      // 8. Prepare Universal Router execute call
+      const universalRouterData = encodeFunctionData({
+        abi: UNISWAP_UNIVERSAL_ROUTER_ABI,
+        functionName: "execute",
+        args: [commands, inputs],
+      })
+      
       const MAX_RETRIES = 2
       const TIMEOUT_MS = 30000
       
@@ -716,42 +790,100 @@ export function useConvertFuel() {
             console.log(`⏳ Waiting ${delay}ms before retry...`)
             await new Promise(resolve => setTimeout(resolve, delay))
           }
-
-          // Encode Universal Router execute() call
-          const universalRouterData = encodeFunctionData({
-            abi: UNISWAP_UNIVERSAL_ROUTER_ABI,
-            functionName: "execute",
-            args: [commands, inputs],
-          })
-          
-          // Send single transaction to Universal Router
-          // All commands are executed atomically in one UserOperation
-          // Set gas limit manually to ensure sufficient gas for simulation
-          console.log("✅ Sending single Universal Router transaction...")
-          console.log(`📋 Commands: ${commands}`)
-          console.log(`📋 Inputs count: ${inputs.length}`)
           
           // For Smart Wallet (UserOperation), set manual gas limit to prevent simulation failures
-          // 1,000,000 gas units should be sufficient for all operations
-          const MANUAL_GAS_LIMIT = BigInt(1000000)
+          // 1,500,000 gas units should be sufficient for Permit2 approve + Universal Router execute
+          const MANUAL_GAS_LIMIT = BigInt(1500000)
           console.log(`⛽ Setting manual gas limit: ${MANUAL_GAS_LIMIT.toString()}`)
           
-          const transactionRequest = {
-            to: UNISWAP_UNIVERSAL_ROUTER,
-            data: universalRouterData,
-            value: BigInt(0),
-            gas: MANUAL_GAS_LIMIT, // Manual gas limit for Smart Wallet simulation
+          // Bundle both calls in a single UserOperation using Smart Wallet batch
+          // Call 1: Permit2.approve() - Authorize Universal Router as spender
+          // Call 2: UniversalRouter.execute() - Execute swap commands
+          console.log("✅ Sending batch transaction with Permit2 approval + Universal Router execute...")
+          console.log("  Call 1: Permit2.approve()")
+          console.log("  Call 2: UniversalRouter.execute()")
+          
+          // Smart Wallet batch transaction: array of calls processed atomically
+          const batchCalls = [
+            {
+              to: PERMIT2_ADDRESS as Address,
+              data: permit2ApproveData,
+              value: BigInt(0),
+            },
+            {
+              to: UNISWAP_UNIVERSAL_ROUTER as Address,
+              data: universalRouterData,
+              value: BigInt(0),
+            },
+          ]
+          
+          // Try different batch methods depending on Smart Wallet SDK version
+          // Privy Smart Wallet should support sendTransaction with batch or separate method
+          try {
+            // Method 1: Try sendTransaction with calls array (newer Privy SDK)
+            if (typeof (smartWalletClient as any).sendTransactions === 'function') {
+              console.log("📦 Using sendTransactions() method...")
+              txHash = await Promise.race([
+                (smartWalletClient as any).sendTransactions(batchCalls, { gas: MANUAL_GAS_LIMIT }),
+                new Promise<never>((_, reject) => {
+                  setTimeout(() => reject(new Error("Transaction timeout")), TIMEOUT_MS)
+                })
+              ]) as `0x${string}`
+            } 
+            // Method 2: Try executeBatch (alternative SDK method)
+            else if (typeof (smartWalletClient as any).executeBatch === 'function') {
+              console.log("📦 Using executeBatch() method...")
+              txHash = await Promise.race([
+                (smartWalletClient as any).executeBatch(batchCalls, { gas: MANUAL_GAS_LIMIT }),
+                new Promise<never>((_, reject) => {
+                  setTimeout(() => reject(new Error("Transaction timeout")), TIMEOUT_MS)
+                })
+              ]) as `0x${string}`
+            }
+            // Method 3: Fallback - Execute sequentially as single UserOp
+            // Encode multicall manually if batch methods not available
+            else {
+              console.log("📦 Batch method not available, using sequential transactions...")
+              // First approve Permit2
+              console.log("  Step 1/2: Permit2.approve()...")
+              const approveHash = await Promise.race([
+                smartWalletClient.sendTransaction({
+                  to: PERMIT2_ADDRESS as Address,
+                  data: permit2ApproveData,
+                  value: BigInt(0),
+                  gas: BigInt(100000),
+                }),
+                new Promise<never>((_, reject) => {
+                  setTimeout(() => reject(new Error("Approve timeout")), TIMEOUT_MS)
+                })
+              ]) as `0x${string}`
+              
+              console.log(`  ✅ Permit2 approve sent: ${approveHash}`)
+              
+              // Wait for approve confirmation
+              if (publicClient) {
+                await publicClient.waitForTransactionReceipt({ hash: approveHash })
+                console.log("  ✅ Permit2 approve confirmed")
+              }
+              
+              // Then execute Universal Router
+              console.log("  Step 2/2: UniversalRouter.execute()...")
+              txHash = await Promise.race([
+                smartWalletClient.sendTransaction({
+                  to: UNISWAP_UNIVERSAL_ROUTER as Address,
+                  data: universalRouterData,
+                  value: BigInt(0),
+                  gas: MANUAL_GAS_LIMIT,
+                }),
+                new Promise<never>((_, reject) => {
+                  setTimeout(() => reject(new Error("Transaction timeout")), TIMEOUT_MS)
+                })
+              ]) as `0x${string}`
+            }
+          } catch (batchError: any) {
+            console.error("❌ Batch/Sequential transaction failed:", batchError)
+            throw batchError
           }
-          
-          txHash = await Promise.race([
-            smartWalletClient.sendTransaction(transactionRequest),
-            new Promise<never>((_, reject) => {
-              setTimeout(() => reject(new Error("Transaction timeout")), TIMEOUT_MS)
-            })
-          ]) as `0x${string}`
-          
-          // Note: The 5% WETH fee to treasury will be handled in the backend API
-          // after we know the exact WETH amount received from the swap
 
           break // Success
         } catch (attemptError: any) {
