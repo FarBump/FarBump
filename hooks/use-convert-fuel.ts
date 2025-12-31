@@ -9,6 +9,7 @@ import {
   TREASURY_ADDRESS, 
   BASE_WETH_ADDRESS,
   UNISWAP_V4_POOL_MANAGER,
+  BUMP_POOL_HOOK_ADDRESS,
   BUMP_DECIMALS,
   TREASURY_FEE_BPS,
   APP_FEE_BPS,
@@ -331,27 +332,29 @@ export function useConvertFuel() {
       
       console.log("✅ Sufficient allowance confirmed")
 
-      // 5. Prepare Uniswap V4 Flash Accounting Flow
+      // 5. Prepare Uniswap V4 Flash Accounting Flow with Dynamic Fee
       // Flow: unlock() -> swap() -> settle() -> take()
-      // Determine token order (currency0 must be < currency1 by address)
-      const token0Address = BUMP_TOKEN_ADDRESS.toLowerCase() < BASE_WETH_ADDRESS.toLowerCase()
-        ? BUMP_TOKEN_ADDRESS
-        : BASE_WETH_ADDRESS
-      const token1Address = BUMP_TOKEN_ADDRESS.toLowerCase() < BASE_WETH_ADDRESS.toLowerCase()
-        ? BASE_WETH_ADDRESS
-        : BUMP_TOKEN_ADDRESS
-      const zeroForOne = BUMP_TOKEN_ADDRESS.toLowerCase() < BASE_WETH_ADDRESS.toLowerCase()
+      // 
+      // CRITICAL: Token order must be correct (currency0 < currency1 by address)
+      // This is required for PoolKey construction
+      const bumpAddressLower = BUMP_TOKEN_ADDRESS.toLowerCase()
+      const wethAddressLower = BASE_WETH_ADDRESS.toLowerCase()
       
-      // Pool configuration - Try multiple fee tiers dynamically
-      const feeTierOptions = [
-        { fee: 500, tickSpacing: 1 },   // 0.05%
-        { fee: 3000, tickSpacing: 60 }, // 0.3%
-        { fee: 10000, tickSpacing: 200 }, // 1%
-      ]
+      const isBumpToken0 = bumpAddressLower < wethAddressLower
+      const token0Address = isBumpToken0 ? BUMP_TOKEN_ADDRESS : BASE_WETH_ADDRESS
+      const token1Address = isBumpToken0 ? BASE_WETH_ADDRESS : BUMP_TOKEN_ADDRESS
+      const zeroForOne = isBumpToken0 // If BUMP is token0, we're swapping token0 -> token1
       
-      const hooksAddress = "0x0000000000000000000000000000000000000000" as Address // No hooks
+      // Dynamic Fee Configuration for $BUMP/WETH pool
+      // Dynamic Fee uses fee = 8388608 (0x800000) as the flag
+      const DYNAMIC_FEE = 8388608 // 0x800000 - Dynamic Fee flag
+      const DYNAMIC_FEE_TICK_SPACING = 1 // Standard tick spacing for Dynamic Fee
+      
+      // Hook Address for $BUMP/WETH pool (from user specification)
+      const hooksAddress = BUMP_POOL_HOOK_ADDRESS
       
       // Currency structs for V4
+      // Currency: { currency: address, type: uint8 } where type 0 = native ETH, 1 = ERC20
       const bumpCurrency = {
         currency: BUMP_TOKEN_ADDRESS as Address,
         type: 1 as const, // ERC20
@@ -362,15 +365,148 @@ export function useConvertFuel() {
       }
       const currency0 = {
         currency: token0Address as Address,
-        type: 1 as const,
+        type: 1 as const, // ERC20
       }
       const currency1 = {
         currency: token1Address as Address,
-        type: 1 as const,
+        type: 1 as const, // ERC20
       }
+      
+      // PoolKey for $BUMP/WETH Dynamic Fee pool
+      // CRITICAL: Must match the actual pool configuration on-chain
+      const poolKey = {
+        currency0,
+        currency1,
+        fee: DYNAMIC_FEE, // 8388608 (0x800000) - Dynamic Fee flag
+        tickSpacing: DYNAMIC_FEE_TICK_SPACING, // 1 for Dynamic Fee
+        hooks: hooksAddress, // 0xd60D6B218116cFd801E28F78d011a203D2b068Cc
+      }
+      
+      console.log("🔑 PoolKey Configuration:")
+      console.log(`  - Currency0: ${token0Address} (${isBumpToken0 ? '$BUMP' : 'WETH'})`)
+      console.log(`  - Currency1: ${token1Address} (${isBumpToken0 ? 'WETH' : '$BUMP'})`)
+      console.log(`  - Fee: ${DYNAMIC_FEE} (Dynamic Fee)`)
+      console.log(`  - Tick Spacing: ${DYNAMIC_FEE_TICK_SPACING}`)
+      console.log(`  - Hooks: ${hooksAddress}`)
+      console.log(`  - ZeroForOne: ${zeroForOne} (swapping ${isBumpToken0 ? '$BUMP -> WETH' : 'WETH -> $BUMP'})`)
 
-      // 6. Execute batch transaction with Flash Accounting
-      console.log("📦 Executing Uniswap V4 Flash Accounting flow...")
+      // 6. Prepare batch calls for Flash Accounting (all in one transaction)
+      console.log("📦 Preparing Uniswap V4 Flash Accounting batch with Dynamic Fee...")
+      
+      // Prepare all calls for batch transaction
+      const batchCalls: Array<{
+        to: Address
+        data: Hex
+        value?: bigint
+      }> = []
+
+      // Call 1: Transfer 5% $BUMP to Treasury
+      const transferData = encodeFunctionData({
+        abi: ERC20_ABI,
+        functionName: "transfer",
+        args: [TREASURY_ADDRESS as Address, treasuryFeeWei],
+      })
+      batchCalls.push({
+        to: BUMP_TOKEN_ADDRESS as Address,
+        data: transferData,
+        value: BigInt(0),
+      })
+
+      // Call 2: Unlock $BUMP currency for PoolManager
+      const unlockBumpData = encodeFunctionData({
+        abi: UNISWAP_V4_POOL_MANAGER_ABI,
+        functionName: "unlock",
+        args: [bumpCurrency],
+      })
+      batchCalls.push({
+        to: UNISWAP_V4_POOL_MANAGER,
+        data: unlockBumpData,
+        value: BigInt(0),
+      })
+
+      // Call 3: Unlock WETH currency for PoolManager
+      const unlockWethData = encodeFunctionData({
+        abi: UNISWAP_V4_POOL_MANAGER_ABI,
+        functionName: "unlock",
+        args: [wethCurrency],
+      })
+      batchCalls.push({
+        to: UNISWAP_V4_POOL_MANAGER,
+        data: unlockWethData,
+        value: BigInt(0),
+      })
+
+      // Call 4: Swap $BUMP to WETH (Exact Input Swap)
+      // CRITICAL: This swap will create balance deltas that must be settled/taken
+      // Hook data can be empty (0x) if hooks don't require specific data
+      // If hooks require data, it should be encoded according to hook interface
+      const hookData = "0x" as Hex // Empty hook data - update if hooks require specific data
+      
+      const swapData = encodeFunctionData({
+        abi: UNISWAP_V4_POOL_MANAGER_ABI,
+        functionName: "swap",
+        args: [
+          poolKey, // PoolKey with correct currency order, Dynamic Fee, and Hook address
+          {
+            zeroForOne: zeroForOne,
+            amountSpecified: -BigInt(swapAmountWei.toString()), // Negative = exact input swap
+            sqrtPriceLimitX96: BigInt(0), // No price limit (0 = unlimited)
+          },
+          hookData, // Hook data (empty for now, update if hooks require data)
+        ],
+      })
+      batchCalls.push({
+        to: UNISWAP_V4_POOL_MANAGER,
+        data: swapData,
+        value: BigInt(0),
+      })
+
+      // Call 5: Settle $BUMP debt (send $BUMP to PoolManager)
+      // CRITICAL: This settles the negative delta from the swap
+      // After swap, PoolManager expects $BUMP tokens to be sent to it
+      // The amount is the exact input amount (swapAmountWei)
+      // This must be called AFTER swap to resolve the negative balance delta
+      const settleData = encodeFunctionData({
+        abi: UNISWAP_V4_POOL_MANAGER_ABI,
+        functionName: "settle",
+        args: [bumpCurrency, swapAmountWei], // Currency and amount to settle
+      })
+      batchCalls.push({
+        to: UNISWAP_V4_POOL_MANAGER,
+        data: settleData,
+        value: BigInt(0),
+      })
+
+      // Call 6: Take WETH output (receive WETH from PoolManager)
+      // CRITICAL: This takes the positive delta from the swap
+      // After swap, PoolManager holds WETH tokens that belong to the user
+      // Use max uint128 to take all available WETH from the swap
+      // The actual amount taken will be the amount received from swap (less than max)
+      // This must be called AFTER swap to claim the positive balance delta
+      const maxWethAmount = BigInt("0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF") // Max uint128
+      const takeData = encodeFunctionData({
+        abi: UNISWAP_V4_POOL_MANAGER_ABI,
+        functionName: "take",
+        args: [
+          wethCurrency, // Currency to take (WETH)
+          userAddress as Address, // Recipient address
+          maxWethAmount, // Maximum amount to take (will take actual amount available)
+        ],
+      })
+      batchCalls.push({
+        to: UNISWAP_V4_POOL_MANAGER,
+        data: takeData,
+        value: BigInt(0),
+      })
+
+      // 7. Execute batch transaction (all calls in one UserOperation)
+      console.log(`📤 Executing ${batchCalls.length} calls in single batch transaction...`)
+      console.log("  1. Transfer 5% $BUMP to Treasury")
+      console.log("  2. Unlock $BUMP currency")
+      console.log("  3. Unlock WETH currency")
+      console.log("  4. Swap $BUMP to WETH (Dynamic Fee)")
+      console.log("  5. Settle $BUMP debt")
+      console.log("  6. Take WETH output")
       
       const MAX_RETRIES = 2
       const TIMEOUT_MS = 30000
@@ -387,188 +523,58 @@ export function useConvertFuel() {
             await new Promise(resolve => setTimeout(resolve, delay))
           }
 
-          // Try each fee tier until one succeeds
-          let swapSuccess = false
-          let lastSwapError: Error | null = null
+          // CRITICAL: All calls must be in one batch transaction for Flash Accounting atomicity
+          // Try multiple methods to send batch transactions
+          let batchMethodFound = false
           
-          for (const feeTier of feeTierOptions) {
-            try {
-              const feeTierLabel = feeTier.fee === 500 ? '0.05%' : feeTier.fee === 3000 ? '0.3%' : '1%'
-              console.log(`🔄 Attempting swap with fee tier ${feeTier.fee} (${feeTierLabel})...`)
-              
-              // Prepare batch calls for Flash Accounting
-              const batchCalls: Array<{
-                to: Address
-                data: Hex
-                value?: bigint
-              }> = []
-
-              // Call 1: Transfer 5% $BUMP to Treasury
-              const transferData = encodeFunctionData({
-                abi: ERC20_ABI,
-                functionName: "transfer",
-                args: [TREASURY_ADDRESS as Address, treasuryFeeWei],
+          // Method 1: Try sendTransactions (if available)
+          if (typeof (smartWalletClient as any).sendTransactions === 'function') {
+            console.log("✅ Using sendTransactions for atomic batch execution...")
+            txHash = await Promise.race([
+              (smartWalletClient as any).sendTransactions({
+                transactions: batchCalls,
+              }),
+              new Promise<never>((_, reject) => {
+                setTimeout(() => reject(new Error("Transaction timeout")), TIMEOUT_MS)
               })
-              batchCalls.push({
-                to: BUMP_TOKEN_ADDRESS as Address,
-                data: transferData,
-                value: BigInt(0),
+            ]) as `0x${string}`
+            batchMethodFound = true
+          }
+          // Method 2: Try executeBatch (ERC-4337 standard)
+          else if (typeof (smartWalletClient as any).executeBatch === 'function') {
+            console.log("✅ Using executeBatch for atomic batch execution...")
+            txHash = await Promise.race([
+              (smartWalletClient as any).executeBatch(batchCalls),
+              new Promise<never>((_, reject) => {
+                setTimeout(() => reject(new Error("Transaction timeout")), TIMEOUT_MS)
               })
-
-              // Call 2: Unlock $BUMP currency for PoolManager
-              const unlockBumpData = encodeFunctionData({
-                abi: UNISWAP_V4_POOL_MANAGER_ABI,
-                functionName: "unlock",
-                args: [bumpCurrency],
+            ]) as `0x${string}`
+            batchMethodFound = true
+          }
+          // Method 3: Try using account's executeBatch directly
+          else if (smartWalletClient.account && typeof (smartWalletClient.account as any).executeBatch === 'function') {
+            console.log("✅ Using account.executeBatch for atomic batch execution...")
+            txHash = await Promise.race([
+              (smartWalletClient.account as any).executeBatch(batchCalls),
+              new Promise<never>((_, reject) => {
+                setTimeout(() => reject(new Error("Transaction timeout")), TIMEOUT_MS)
               })
-              batchCalls.push({
-                to: UNISWAP_V4_POOL_MANAGER,
-                data: unlockBumpData,
-                value: BigInt(0),
-              })
-
-              // Call 3: Unlock WETH currency for PoolManager
-              const unlockWethData = encodeFunctionData({
-                abi: UNISWAP_V4_POOL_MANAGER_ABI,
-                functionName: "unlock",
-                args: [wethCurrency],
-              })
-              batchCalls.push({
-                to: UNISWAP_V4_POOL_MANAGER,
-                data: unlockWethData,
-                value: BigInt(0),
-              })
-
-              // Call 4: Swap $BUMP to WETH
-              // Note: Uniswap V4 swap() handles flash accounting internally
-              // It will automatically settle the input ($BUMP) and take the output (WETH)
-              // We just need to ensure currencies are unlocked first
-              const swapData = encodeFunctionData({
-                abi: UNISWAP_V4_POOL_MANAGER_ABI,
-                functionName: "swap",
-                args: [
-                  {
-                    currency0,
-                    currency1,
-                    fee: feeTier.fee,
-                    tickSpacing: feeTier.tickSpacing,
-                    hooks: hooksAddress,
-                  },
-                  {
-                    zeroForOne: zeroForOne,
-                    amountSpecified: -BigInt(swapAmountWei.toString()), // Negative = exact input
-                    sqrtPriceLimitX96: BigInt(0), // No price limit
-                  },
-                  "0x" as Hex, // Empty hook data
-                ],
-              })
-              batchCalls.push({
-                to: UNISWAP_V4_POOL_MANAGER,
-                data: swapData,
-                value: BigInt(0),
-              })
-              
-              // Note: settle() and take() are handled internally by swap() in V4
-              // The swap function uses flash accounting to:
-              // 1. Take input tokens ($BUMP) from user via settle()
-              // 2. Give output tokens (WETH) to user via take()
-              // All within the same transaction
-
-              // Execute batch transaction
-              // Note: Privy smart wallet supports batch transactions via sendTransactions
-              // If not available, we'll send sequentially but they should be in the same UserOperation
-              console.log(`📤 Executing ${batchCalls.length} calls in batch...`)
-              
-              // Try to send as batch if sendTransactions exists
-              if (typeof (smartWalletClient as any).sendTransactions === 'function') {
-                console.log("✅ Using sendTransactions for batch execution...")
-                txHash = await Promise.race([
-                  (smartWalletClient as any).sendTransactions({
-                    transactions: batchCalls,
-                  }),
-                  new Promise<never>((_, reject) => {
-                    setTimeout(() => reject(new Error("Transaction timeout")), TIMEOUT_MS)
-                  })
-                ]) as `0x${string}`
-              } else {
-                // Fallback: Send sequentially (they should still be in the same UserOperation)
-                console.log("⚠️ sendTransactions not available, using sequential approach...")
-                
-                // Send transfer first
-                const transferTxHash = await Promise.race([
-                  smartWalletClient.sendTransaction({
-                    to: BUMP_TOKEN_ADDRESS,
-                    data: transferData,
-                    value: BigInt(0),
-                  }),
-                  new Promise<never>((_, reject) => {
-                    setTimeout(() => reject(new Error("Transaction timeout")), TIMEOUT_MS)
-                  })
-                ]) as `0x${string}`
-
-                // Wait for transfer confirmation
-                await publicClient.waitForTransactionReceipt({ hash: transferTxHash })
-                console.log("✅ Treasury transfer confirmed")
-
-                // Send unlock calls (can be done in parallel or sequentially)
-                console.log("🔓 Unlocking currencies...")
-                for (const unlockCall of [unlockBumpData, unlockWethData]) {
-                  const unlockTxHash = await smartWalletClient.sendTransaction({
-                    to: UNISWAP_V4_POOL_MANAGER,
-                    data: unlockCall,
-                    value: BigInt(0),
-                  })
-                  await publicClient.waitForTransactionReceipt({ hash: unlockTxHash })
-                }
-                console.log("✅ Currencies unlocked")
-                
-                // Then send swap (which internally handles settle/take via flash accounting)
-                console.log("💱 Executing swap...")
-                txHash = await Promise.race([
-                  smartWalletClient.sendTransaction({
-                    to: UNISWAP_V4_POOL_MANAGER,
-                    data: swapData,
-                    value: BigInt(0),
-                  }),
-                  new Promise<never>((_, reject) => {
-                    setTimeout(() => reject(new Error("Transaction timeout")), TIMEOUT_MS)
-                  })
-                ]) as `0x${string}`
-              }
-              
-              // Note: The 5% WETH fee to treasury will be handled in the backend API
-              // after we know the exact WETH amount received from the swap
-              
-              swapSuccess = true
-              console.log(`✅ Swap successful with fee tier ${feeTier.fee} (${feeTierLabel})`)
-              break // Success
-            } catch (swapError: any) {
-              lastSwapError = swapError
-              const errorMsg = swapError.message || ""
-              const errorDetails = swapError.details || swapError.cause?.details || ""
-              
-              // If it's a pool-related error, try next fee tier
-              if (
-                errorMsg.includes("execution reverted") ||
-                errorMsg.includes("Pool not found") ||
-                errorMsg.includes("Invalid pool") ||
-                errorMsg.includes("Locked") ||
-                errorDetails.includes("execution reverted")
-              ) {
-                console.log(`⚠️ Fee tier ${feeTier.fee} failed (pool may not exist or locked), trying next...`)
-                await new Promise(resolve => setTimeout(resolve, 500))
-                continue // Try next fee tier
-              } else {
-                // Other errors (timeout, billing, etc.) should be thrown
-                console.log(`❌ Non-pool error with fee tier ${feeTier.fee}:`, errorMsg)
-                throw swapError
-              }
-            }
+            ]) as `0x${string}`
+            batchMethodFound = true
           }
           
-          if (!swapSuccess) {
-            throw lastSwapError || new Error("All fee tier attempts failed. Pool $BUMP/WETH may not exist on Uniswap V4. Please create the pool first.")
+          if (!batchMethodFound) {
+            // If no batch method is available, we cannot proceed
+            // Sequential execution breaks Flash Accounting atomicity and will cause revert
+            throw new Error(
+              "Batch transaction method not available. " +
+              "Flash Accounting requires all calls (unlock, swap, settle, take) to be in a single atomic transaction. " +
+              "Please ensure your smart wallet supports batch transactions (sendTransactions, executeBatch, etc.)."
+            )
           }
+          
+          // Note: The 5% WETH fee to treasury will be handled in the backend API
+          // after we know the exact WETH amount received from the swap
 
           break // Success
         } catch (attemptError: any) {
