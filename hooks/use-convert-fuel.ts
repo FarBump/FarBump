@@ -324,47 +324,48 @@ export function useConvertFuel() {
   /**
    * Encode V4_SWAP command input for Universal Router
    * Command: 0x10
-   * Input: abi.encode(PoolKey, SwapParams, hookData)
    * 
-   * Universal Router expects raw ABI encoding without function selector
+   * Universal Router V4 expects: abi.encode(bytes actions, bytes[] params)
+   * 
+   * Actions for exact-in single swap:
+   * - SWAP_EXACT_IN_SINGLE (0x00): Execute the swap
+   * - SETTLE_ALL (0x10): Pay input token to PoolManager (maxAmount)
+   * - TAKE_ALL (0x11): Receive output token from PoolManager (minAmount)
+   * 
+   * PoolKey uses plain addresses for Currency (not struct)
    */
   const encodeV4SwapCommand = (
-    poolKey: {
-      currency0: { currency: Address; type: number }
-      currency1: { currency: Address; type: number }
-      fee: number
-      tickSpacing: number
-      hooks: Address
-    },
-    swapParams: {
-      zeroForOne: boolean
-      amountSpecified: bigint
-      sqrtPriceLimitX96: bigint
-    },
+    currency0: Address,  // WETH address
+    currency1: Address,  // $BUMP address
+    fee: number,
+    tickSpacing: number,
+    hooks: Address,
+    zeroForOne: boolean,
+    amountIn: bigint,
+    amountOutMinimum: bigint,
     hookData: Hex
   ): Hex => {
-    // Use viem's encodeAbiParameters for raw ABI encoding (no function selector)
-    // Format: abi.encode(PoolKey, SwapParams, hookData)
-    return encodeAbiParameters(
+    // V4Router Action IDs (from @uniswap/v4-periphery)
+    const SWAP_EXACT_IN_SINGLE = 0x00
+    const SETTLE_ALL = 0x10
+    const TAKE_ALL = 0x11
+    
+    // Actions sequence: SWAP -> SETTLE -> TAKE
+    // Convert to hex string manually (browser-compatible)
+    const actionsHex = ("0x" + 
+      SWAP_EXACT_IN_SINGLE.toString(16).padStart(2, "0") +
+      SETTLE_ALL.toString(16).padStart(2, "0") +
+      TAKE_ALL.toString(16).padStart(2, "0")
+    ) as Hex // = "0x001011"
+    
+    // Param 1: SWAP_EXACT_IN_SINGLE params
+    // abi.encode(PoolKey, zeroForOne, amountIn, amountOutMinimum, hookData)
+    const swapParams = encodeAbiParameters(
       [
         {
           components: [
-            {
-              components: [
-                { name: "currency", type: "address" },
-                { name: "type", type: "uint8" },
-              ],
-              name: "currency0",
-              type: "tuple",
-            },
-            {
-              components: [
-                { name: "currency", type: "address" },
-                { name: "type", type: "uint8" },
-              ],
-              name: "currency1",
-              type: "tuple",
-            },
+            { name: "currency0", type: "address" },
+            { name: "currency1", type: "address" },
             { name: "fee", type: "uint24" },
             { name: "tickSpacing", type: "int24" },
             { name: "hooks", type: "address" },
@@ -372,18 +373,49 @@ export function useConvertFuel() {
           name: "poolKey",
           type: "tuple",
         },
-        {
-          components: [
-            { name: "zeroForOne", type: "bool" },
-            { name: "amountSpecified", type: "int256" },
-            { name: "sqrtPriceLimitX96", type: "uint160" },
-          ],
-          name: "swapParams",
-          type: "tuple",
-        },
+        { name: "zeroForOne", type: "bool" },
+        { name: "amountIn", type: "uint128" },
+        { name: "amountOutMinimum", type: "uint128" },
         { name: "hookData", type: "bytes" },
       ],
-      [poolKey, swapParams, hookData]
+      [
+        { currency0, currency1, fee, tickSpacing, hooks },
+        zeroForOne,
+        amountIn,
+        amountOutMinimum,
+        hookData,
+      ]
+    ) as Hex
+    
+    // Param 2: SETTLE_ALL params
+    // abi.encode(currency, maxAmount)
+    // We're settling currency1 ($BUMP) - the token we're selling
+    const settleParams = encodeAbiParameters(
+      [
+        { name: "currency", type: "address" },
+        { name: "maxAmount", type: "uint128" },
+      ],
+      [currency1, amountIn]
+    ) as Hex
+    
+    // Param 3: TAKE_ALL params
+    // abi.encode(currency, minAmount)
+    // We're taking currency0 (WETH) - the token we're buying
+    const takeParams = encodeAbiParameters(
+      [
+        { name: "currency", type: "address" },
+        { name: "minAmount", type: "uint128" },
+      ],
+      [currency0, amountOutMinimum]
+    ) as Hex
+    
+    // Final V4_SWAP encoding: abi.encode(actions, params[])
+    return encodeAbiParameters(
+      [
+        { name: "actions", type: "bytes" },
+        { name: "params", type: "bytes[]" },
+      ],
+      [actionsHex, [swapParams, settleParams, takeParams]]
     ) as Hex
   }
 
@@ -471,56 +503,30 @@ export function useConvertFuel() {
     const swapAmountWei = totalBumpWei - treasuryFeeWei // 95% of total
 
     // Validate PoolKey: currency0 must be < currency1 (by address)
-    const currency0Address = BUMP_POOL_CURRENCY0.toLowerCase() as Address
-    const currency1Address = BUMP_POOL_CURRENCY1.toLowerCase() as Address
+    // WETH: 0x4200000000000000000000000000000006
+    // $BUMP: 0x94CE728849431818EC9a0CF29BDb24FE413bBb07
+    // WETH < $BUMP numerically, so currency0 = WETH, currency1 = $BUMP
+    const currency0Address = BUMP_POOL_CURRENCY0 as Address // WETH
+    const currency1Address = BUMP_POOL_CURRENCY1 as Address // $BUMP
     
-    if (currency0Address >= currency1Address) {
+    if (currency0Address.toLowerCase() >= currency1Address.toLowerCase()) {
       throw new Error("Invalid PoolKey: currency0 must be < currency1 by address")
-    }
-
-    // Construct PoolKey struct (Uniswap V4 format)
-    const poolKey = {
-      currency0: {
-        currency: currency0Address, // WETH
-        type: 1, // ERC20
-      },
-      currency1: {
-        currency: currency1Address, // $BUMP
-        type: 1, // ERC20
-      },
-      fee: BUMP_POOL_FEE,
-      tickSpacing: BUMP_POOL_TICK_SPACING,
-      hooks: BUMP_POOL_HOOK_ADDRESS as Address,
-    }
-
-    // Swap parameters: selling $BUMP (currency1) for WETH (currency0)
-    // zeroForOne = false means currency1 -> currency0
-    // amountSpecified must be NEGATIVE for exact input
-    const swapParams = {
-      zeroForOne: false, // false = selling currency1 ($BUMP) for currency0 (WETH)
-      amountSpecified: -swapAmountWei, // Negative for exact input
-      sqrtPriceLimitX96: BigInt(0), // No price limit
-    }
-
-    // Validate amountSpecified is negative
-    if (swapParams.amountSpecified >= BigInt(0)) {
-      throw new Error("Invalid swap params: amountSpecified must be negative for exact input swap")
     }
 
     // Hook data (empty bytes for standard swap)
     const hookData = "0x" as Hex
 
     // Log PoolKey and SwapParams for debugging
-    console.log("🔑 PoolKey Configuration:")
+    console.log("🔑 PoolKey Configuration (V4 format - plain addresses):")
     console.log(`  - Currency0: ${currency0Address} (WETH)`)
     console.log(`  - Currency1: ${currency1Address} ($BUMP)`)
     console.log(`  - Fee: ${BUMP_POOL_FEE} (Dynamic Fee)`)
     console.log(`  - Tick Spacing: ${BUMP_POOL_TICK_SPACING}`)
     console.log(`  - Hooks: ${BUMP_POOL_HOOK_ADDRESS}`)
     console.log("🔑 Swap Parameters:")
-    console.log(`  - ZeroForOne: false (Currency1 -> Currency0)`)
-    console.log(`  - AmountSpecified: ${swapParams.amountSpecified.toString()} (negative = exact input) ✓`)
-    console.log(`  - SqrtPriceLimitX96: 0 (no limit)`)
+    console.log(`  - ZeroForOne: false (selling $BUMP for WETH)`)
+    console.log(`  - AmountIn: ${swapAmountWei.toString()} (exact input)`)
+    console.log(`  - AmountOutMinimum: 0 (no slippage protection for testing)`)
 
     // Command 1: PERMIT2_TRANSFER_FROM (0x07) - Pull 5% $BUMP from user, send to Treasury
     // This uses Permit2 to transfer tokens FROM user's wallet (not from Router)
@@ -531,7 +537,19 @@ export function useConvertFuel() {
     )
 
     // Command 2: V4_SWAP (0x10) - Swap 95% $BUMP to WETH
-    const v4SwapInput = encodeV4SwapCommand(poolKey, swapParams, hookData)
+    // Uses new V4 actions-based encoding: abi.encode(actions, params[])
+    // Actions: SWAP_EXACT_IN_SINGLE -> SETTLE_ALL -> TAKE_ALL
+    const v4SwapInput = encodeV4SwapCommand(
+      currency0Address,                    // currency0 (WETH)
+      currency1Address,                    // currency1 ($BUMP)
+      BUMP_POOL_FEE,                       // fee (Dynamic Fee = 8388608)
+      BUMP_POOL_TICK_SPACING,              // tickSpacing (200)
+      BUMP_POOL_HOOK_ADDRESS as Address,   // hooks
+      false,                                // zeroForOne = false (selling $BUMP for WETH)
+      swapAmountWei,                        // amountIn (95% of total)
+      BigInt(0),                            // amountOutMinimum (0 for testing)
+      hookData                              // hookData (empty)
+    )
 
     // Command 3: UNWRAP_WETH (0x0c) - Unwrap all WETH to Native ETH
     const unwrapInput = encodeUnwrapWethCommand(
