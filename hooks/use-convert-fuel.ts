@@ -3,12 +3,17 @@
 import { useState } from "react"
 import { useSmartWallets } from "@privy-io/react-auth/smart-wallets"
 import { usePublicClient } from "wagmi"
-import { parseUnits, isAddress, type Address, encodeFunctionData, type Hex } from "viem"
+import { parseUnits, isAddress, type Address, encodeFunctionData, encodeAbiParameters, type Hex } from "viem"
 import { 
   BUMP_TOKEN_ADDRESS, 
   TREASURY_ADDRESS, 
   BASE_WETH_ADDRESS,
-  UNISWAP_V4_POOL_MANAGER,
+  UNISWAP_UNIVERSAL_ROUTER,
+  PERMIT2_ADDRESS,
+  BUMP_POOL_CURRENCY0,
+  BUMP_POOL_CURRENCY1,
+  BUMP_POOL_FEE,
+  BUMP_POOL_TICK_SPACING,
   BUMP_POOL_HOOK_ADDRESS,
   BUMP_DECIMALS,
   TREASURY_FEE_BPS,
@@ -50,7 +55,49 @@ const ERC20_ABI = [
   },
 ] as const
 
-// Uniswap V4 PoolManager ABI - Complete Flash Accounting Interface
+// Universal Router ABI
+// Universal Router uses execute(bytes commands, bytes[] inputs) to execute multiple commands
+const UNISWAP_UNIVERSAL_ROUTER_ABI = [
+  {
+    inputs: [
+      { name: "commands", type: "bytes" },
+      { name: "inputs", type: "bytes[]" },
+    ],
+    name: "execute",
+    outputs: [],
+    stateMutability: "payable",
+    type: "function",
+  },
+] as const
+
+// Permit2 ABI for allowance management
+const PERMIT2_ABI = [
+  {
+    inputs: [
+      { name: "token", type: "address" },
+      { name: "spender", type: "address" },
+      { name: "amount", type: "uint160" },
+      { name: "expiration", type: "uint48" },
+      { name: "nonce", type: "uint48" },
+    ],
+    name: "allowance",
+    outputs: [
+      {
+        components: [
+          { name: "amount", type: "uint160" },
+          { name: "expiration", type: "uint48" },
+          { name: "nonce", type: "uint48" },
+        ],
+        name: "",
+        type: "tuple",
+      },
+    ],
+    stateMutability: "view",
+    type: "function",
+  },
+] as const
+
+// Legacy: Uniswap V4 PoolManager ABI (kept for reference, not used with Universal Router)
 // V4 uses Currency struct (address + type) instead of direct addresses
 // Currency: { currency: address, type: uint8 } where type 0 = native ETH, 1 = ERC20
 // Flash Accounting Flow: unlock() -> swap() -> settle() -> take()
@@ -175,7 +222,95 @@ export function useConvertFuel() {
   }
 
   /**
-   * Approve Uniswap V4 PoolManager to spend $BUMP tokens
+   * Check Permit2 allowance for $BUMP token
+   * Falls back to regular ERC20 allowance check if Permit2 check fails
+   */
+  const checkPermit2Allowance = async (amount: bigint): Promise<boolean> => {
+    if (!publicClient || !smartWalletClient) return false
+
+    // Fallback: Check regular ERC20 allowance to Universal Router
+    // Permit2 integration can be added later if needed
+    try {
+      const allowance = await publicClient.readContract({
+        address: BUMP_TOKEN_ADDRESS as Address,
+        abi: ERC20_ABI,
+        functionName: "allowance",
+        args: [smartWalletClient.account.address as Address, UNISWAP_UNIVERSAL_ROUTER as Address],
+      })
+      return allowance >= amount
+    } catch {
+      return false
+    }
+  }
+
+  /**
+   * Encode V4_SWAP command input for Universal Router
+   * Command: 0x10
+   * Input: abi.encode(PoolKey, SwapParams, hookData)
+   * 
+   * Universal Router expects raw ABI encoding without function selector
+   */
+  const encodeV4SwapCommand = (
+    poolKey: {
+      currency0: { currency: Address; type: number }
+      currency1: { currency: Address; type: number }
+      fee: number
+      tickSpacing: number
+      hooks: Address
+    },
+    swapParams: {
+      zeroForOne: boolean
+      amountSpecified: bigint
+      sqrtPriceLimitX96: bigint
+    },
+    hookData: Hex
+  ): Hex => {
+    // Use viem's encodeAbiParameters for raw ABI encoding (no function selector)
+    // Format: abi.encode(PoolKey, SwapParams, hookData)
+    return encodeAbiParameters(
+      [
+        {
+          components: [
+            {
+              components: [
+                { name: "currency", type: "address" },
+                { name: "type", type: "uint8" },
+              ],
+              name: "currency0",
+              type: "tuple",
+            },
+            {
+              components: [
+                { name: "currency", type: "address" },
+                { name: "type", type: "uint8" },
+              ],
+              name: "currency1",
+              type: "tuple",
+            },
+            { name: "fee", type: "uint24" },
+            { name: "tickSpacing", type: "int24" },
+            { name: "hooks", type: "address" },
+          ],
+          name: "poolKey",
+          type: "tuple",
+        },
+        {
+          components: [
+            { name: "zeroForOne", type: "bool" },
+            { name: "amountSpecified", type: "int256" },
+            { name: "sqrtPriceLimitX96", type: "uint160" },
+          ],
+          name: "swapParams",
+          type: "tuple",
+        },
+        { name: "hookData", type: "bytes" },
+      ],
+      [poolKey, swapParams, hookData]
+    ) as Hex
+  }
+
+  /**
+   * Approve Permit2 to spend $BUMP tokens for Universal Router
    * This function checks allowance first and only approves if needed
    */
   const approve = async (amount: string) => {
@@ -194,13 +329,23 @@ export function useConvertFuel() {
       const userAddress = smartWalletClient.account.address
       const amountWei = parseUnits(amount, BUMP_DECIMALS)
 
-      // Check current allowance
-      console.log("🔍 Checking current allowance...")
+      // Check Permit2 allowance first
+      console.log("🔍 Checking Permit2 allowance...")
+      const hasPermit2Allowance = await checkPermit2Allowance(amountWei)
+
+      if (hasPermit2Allowance) {
+        console.log("✅ Sufficient Permit2 allowance already exists")
+        setIsApproving(false)
+        return { approved: true, hash: null as `0x${string}` | null }
+      }
+
+      // Fallback: Check regular ERC20 allowance to Universal Router
+      console.log("🔍 Checking ERC20 allowance to Universal Router...")
       const currentAllowance = await publicClient.readContract({
         address: BUMP_TOKEN_ADDRESS as Address,
         abi: ERC20_ABI,
         functionName: "allowance",
-        args: [userAddress as Address, UNISWAP_V4_POOL_MANAGER as Address],
+        args: [userAddress as Address, UNISWAP_UNIVERSAL_ROUTER as Address],
       })
 
       console.log(`📊 Current Allowance: ${currentAllowance.toString()}, Required: ${amountWei.toString()}`)
@@ -212,12 +357,12 @@ export function useConvertFuel() {
         return { approved: true, hash: null as `0x${string}` | null }
       }
 
-      // Approve needed
-      console.log("📝 Approval needed, sending approve transaction...")
+      // Approve needed - approve to Universal Router (which uses Permit2 internally)
+      console.log("📝 Approval needed, sending approve transaction to Universal Router...")
       const approveData = encodeFunctionData({
         abi: ERC20_ABI,
         functionName: "approve",
-        args: [UNISWAP_V4_POOL_MANAGER as Address, amountWei],
+        args: [UNISWAP_UNIVERSAL_ROUTER as Address, amountWei],
       })
 
       const MAX_RETRIES = 2
@@ -315,85 +460,84 @@ export function useConvertFuel() {
       console.log(`📤 Treasury Fee (5%): ${treasuryFeeWei.toString()} wei`)
       console.log(`💱 Swap Amount (95%): ${swapAmountWei.toString()} wei`)
 
-      // 4. Verify allowance before swap
-      console.log("🔍 Verifying allowance before swap...")
-      const currentAllowance = await publicClient.readContract({
-        address: BUMP_TOKEN_ADDRESS as Address,
-        abi: ERC20_ABI,
-        functionName: "allowance",
-        args: [userAddress as Address, UNISWAP_V4_POOL_MANAGER as Address],
-      })
+      // 4. Verify Permit2/Universal Router allowance before swap
+      console.log("🔍 Verifying Permit2/Universal Router allowance before swap...")
+      const hasPermit2Allowance = await checkPermit2Allowance(swapAmountWei)
       
-      console.log(`📊 Current Allowance: ${currentAllowance.toString()}, Required: ${swapAmountWei.toString()}`)
-      
-      if (currentAllowance < swapAmountWei) {
-        throw new Error("Insufficient allowance. Please approve first by clicking the 'Approve' button.")
+      if (!hasPermit2Allowance) {
+        // Fallback: Check regular ERC20 allowance
+        const currentAllowance = await publicClient.readContract({
+          address: BUMP_TOKEN_ADDRESS as Address,
+          abi: ERC20_ABI,
+          functionName: "allowance",
+          args: [userAddress as Address, UNISWAP_UNIVERSAL_ROUTER as Address],
+        })
+        
+        console.log(`📊 Current Allowance: ${currentAllowance.toString()}, Required: ${swapAmountWei.toString()}`)
+        
+        if (currentAllowance < swapAmountWei) {
+          throw new Error("Insufficient allowance. Please approve first by clicking the 'Approve' button.")
+        }
       }
       
       console.log("✅ Sufficient allowance confirmed")
 
-      // 5. Prepare Uniswap V4 Flash Accounting Flow with Dynamic Fee
-      // Flow: unlock() -> swap() -> settle() -> take()
-      // 
-      // CRITICAL: Token order must be correct (currency0 < currency1 by address)
-      // This is required for PoolKey construction
-      const bumpAddressLower = BUMP_TOKEN_ADDRESS.toLowerCase()
-      const wethAddressLower = BASE_WETH_ADDRESS.toLowerCase()
+      // 5. Prepare PoolKey for $BUMP/WETH pool (from user specification)
+      // PoolKey details:
+      // currency0: WETH (0x4200000000000000000000000000000000000006)
+      // currency1: $BUMP (0x94CE728849431818EC9a0CF29BDb24FE413bBb07)
+      // fee: 8388608 (Dynamic Fee)
+      // tickSpacing: 200
+      // hooks: 0xd60D6B218116cFd801E28F78d011a203D2b068Cc
       
-      const isBumpToken0 = bumpAddressLower < wethAddressLower
-      const token0Address = isBumpToken0 ? BUMP_TOKEN_ADDRESS : BASE_WETH_ADDRESS
-      const token1Address = isBumpToken0 ? BASE_WETH_ADDRESS : BUMP_TOKEN_ADDRESS
-      const zeroForOne = isBumpToken0 // If BUMP is token0, we're swapping token0 -> token1
-      
-      // Dynamic Fee Configuration for $BUMP/WETH pool
-      // Dynamic Fee uses fee = 8388608 (0x800000) as the flag
-      const DYNAMIC_FEE = 8388608 // 0x800000 - Dynamic Fee flag
-      const DYNAMIC_FEE_TICK_SPACING = 1 // Standard tick spacing for Dynamic Fee
-      
-      // Hook Address for $BUMP/WETH pool (from user specification)
-      const hooksAddress = BUMP_POOL_HOOK_ADDRESS
-      
-      // Currency structs for V4
-      // Currency: { currency: address, type: uint8 } where type 0 = native ETH, 1 = ERC20
-      const bumpCurrency = {
-        currency: BUMP_TOKEN_ADDRESS as Address,
-        type: 1 as const, // ERC20
-      }
-      const wethCurrency = {
-        currency: BASE_WETH_ADDRESS as Address,
-        type: 1 as const, // ERC20
-      }
-      const currency0 = {
-        currency: token0Address as Address,
-        type: 1 as const, // ERC20
-      }
-      const currency1 = {
-        currency: token1Address as Address,
-        type: 1 as const, // ERC20
-      }
-      
-      // PoolKey for $BUMP/WETH Dynamic Fee pool
-      // CRITICAL: Must match the actual pool configuration on-chain
+      // Since we're selling $BUMP (Currency1) for WETH (Currency0), zeroForOne = false
       const poolKey = {
-        currency0,
-        currency1,
-        fee: DYNAMIC_FEE, // 8388608 (0x800000) - Dynamic Fee flag
-        tickSpacing: DYNAMIC_FEE_TICK_SPACING, // 1 for Dynamic Fee
-        hooks: hooksAddress, // 0xd60D6B218116cFd801E28F78d011a203D2b068Cc
+        currency0: {
+          currency: BUMP_POOL_CURRENCY0 as Address, // WETH
+          type: 1 as const, // ERC20
+        },
+        currency1: {
+          currency: BUMP_POOL_CURRENCY1 as Address, // $BUMP
+          type: 1 as const, // ERC20
+        },
+        fee: BUMP_POOL_FEE, // 8388608 (Dynamic Fee)
+        tickSpacing: BUMP_POOL_TICK_SPACING, // 200
+        hooks: BUMP_POOL_HOOK_ADDRESS, // 0xd60D6B218116cFd801E28F78d011a203D2b068Cc
       }
+      
+      // Swap parameters: selling $BUMP (Currency1) for WETH (Currency0)
+      // zeroForOne = false means we're swapping Currency1 -> Currency0
+      const swapParams = {
+        zeroForOne: false, // false = swapping Currency1 ($BUMP) -> Currency0 (WETH)
+        amountSpecified: -BigInt(swapAmountWei.toString()), // Negative = exact input
+        sqrtPriceLimitX96: BigInt(0), // No price limit
+      }
+      
+      const hookData = "0x" as Hex // Empty hook data
       
       console.log("🔑 PoolKey Configuration:")
-      console.log(`  - Currency0: ${token0Address} (${isBumpToken0 ? '$BUMP' : 'WETH'})`)
-      console.log(`  - Currency1: ${token1Address} (${isBumpToken0 ? 'WETH' : '$BUMP'})`)
-      console.log(`  - Fee: ${DYNAMIC_FEE} (Dynamic Fee)`)
-      console.log(`  - Tick Spacing: ${DYNAMIC_FEE_TICK_SPACING}`)
-      console.log(`  - Hooks: ${hooksAddress}`)
-      console.log(`  - ZeroForOne: ${zeroForOne} (swapping ${isBumpToken0 ? '$BUMP -> WETH' : 'WETH -> $BUMP'})`)
+      console.log(`  - Currency0: ${BUMP_POOL_CURRENCY0} (WETH)`)
+      console.log(`  - Currency1: ${BUMP_POOL_CURRENCY1} ($BUMP)`)
+      console.log(`  - Fee: ${BUMP_POOL_FEE} (Dynamic Fee)`)
+      console.log(`  - Tick Spacing: ${BUMP_POOL_TICK_SPACING}`)
+      console.log(`  - Hooks: ${BUMP_POOL_HOOK_ADDRESS}`)
+      console.log(`  - ZeroForOne: false (swapping $BUMP -> WETH)`)
 
-      // 6. Prepare batch calls for Flash Accounting (all in one transaction)
-      console.log("📦 Preparing Uniswap V4 Flash Accounting batch with Dynamic Fee...")
+      // 6. Prepare Universal Router commands and inputs
+      console.log("📦 Preparing Universal Router transaction with V4_SWAP...")
       
-      // Prepare all calls for batch transaction
+      // Encode V4_SWAP input data
+      // V4_SWAP command (0x10) requires: abi.encode(PoolKey, SwapParams, hookData)
+      const v4SwapInput = encodeV4SwapCommand(poolKey, swapParams, hookData)
+      
+      // Universal Router commands: V4_SWAP (0x10)
+      // Commands are encoded as bytes where each byte is a command
+      const commands = "0x10" as Hex // V4_SWAP command
+      
+      // Inputs array: one input per command
+      const inputs: Hex[] = [v4SwapInput]
+      
+      // Prepare batch calls for atomic transaction
       const batchCalls: Array<{
         to: Address
         data: Hex
@@ -412,101 +556,23 @@ export function useConvertFuel() {
         value: BigInt(0),
       })
 
-      // Call 2: Unlock $BUMP currency for PoolManager
-      const unlockBumpData = encodeFunctionData({
-        abi: UNISWAP_V4_POOL_MANAGER_ABI,
-        functionName: "unlock",
-        args: [bumpCurrency],
+      // Call 2: Universal Router execute() with V4_SWAP command
+      // Universal Router handles unlock, swap, settle, and take internally
+      const universalRouterData = encodeFunctionData({
+        abi: UNISWAP_UNIVERSAL_ROUTER_ABI,
+        functionName: "execute",
+        args: [commands, inputs],
       })
       batchCalls.push({
-        to: UNISWAP_V4_POOL_MANAGER,
-        data: unlockBumpData,
-        value: BigInt(0),
-      })
-
-      // Call 3: Unlock WETH currency for PoolManager
-      const unlockWethData = encodeFunctionData({
-        abi: UNISWAP_V4_POOL_MANAGER_ABI,
-        functionName: "unlock",
-        args: [wethCurrency],
-      })
-      batchCalls.push({
-        to: UNISWAP_V4_POOL_MANAGER,
-        data: unlockWethData,
-        value: BigInt(0),
-      })
-
-      // Call 4: Swap $BUMP to WETH (Exact Input Swap)
-      // CRITICAL: This swap will create balance deltas that must be settled/taken
-      // Hook data can be empty (0x) if hooks don't require specific data
-      // If hooks require data, it should be encoded according to hook interface
-      const hookData = "0x" as Hex // Empty hook data - update if hooks require specific data
-      
-      const swapData = encodeFunctionData({
-        abi: UNISWAP_V4_POOL_MANAGER_ABI,
-        functionName: "swap",
-        args: [
-          poolKey, // PoolKey with correct currency order, Dynamic Fee, and Hook address
-          {
-            zeroForOne: zeroForOne,
-            amountSpecified: -BigInt(swapAmountWei.toString()), // Negative = exact input swap
-            sqrtPriceLimitX96: BigInt(0), // No price limit (0 = unlimited)
-          },
-          hookData, // Hook data (empty for now, update if hooks require data)
-        ],
-      })
-      batchCalls.push({
-        to: UNISWAP_V4_POOL_MANAGER,
-        data: swapData,
-        value: BigInt(0),
-      })
-
-      // Call 5: Settle $BUMP debt (send $BUMP to PoolManager)
-      // CRITICAL: This settles the negative delta from the swap
-      // After swap, PoolManager expects $BUMP tokens to be sent to it
-      // The amount is the exact input amount (swapAmountWei)
-      // This must be called AFTER swap to resolve the negative balance delta
-      const settleData = encodeFunctionData({
-        abi: UNISWAP_V4_POOL_MANAGER_ABI,
-        functionName: "settle",
-        args: [bumpCurrency, swapAmountWei], // Currency and amount to settle
-      })
-      batchCalls.push({
-        to: UNISWAP_V4_POOL_MANAGER,
-        data: settleData,
-        value: BigInt(0),
-      })
-
-      // Call 6: Take WETH output (receive WETH from PoolManager)
-      // CRITICAL: This takes the positive delta from the swap
-      // After swap, PoolManager holds WETH tokens that belong to the user
-      // Use max uint128 to take all available WETH from the swap
-      // The actual amount taken will be the amount received from swap (less than max)
-      // This must be called AFTER swap to claim the positive balance delta
-      const maxWethAmount = BigInt("0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF") // Max uint128
-      const takeData = encodeFunctionData({
-        abi: UNISWAP_V4_POOL_MANAGER_ABI,
-        functionName: "take",
-        args: [
-          wethCurrency, // Currency to take (WETH)
-          userAddress as Address, // Recipient address
-          maxWethAmount, // Maximum amount to take (will take actual amount available)
-        ],
-      })
-      batchCalls.push({
-        to: UNISWAP_V4_POOL_MANAGER,
-        data: takeData,
+        to: UNISWAP_UNIVERSAL_ROUTER,
+        data: universalRouterData,
         value: BigInt(0),
       })
 
       // 7. Execute batch transaction (all calls in one UserOperation)
       console.log(`📤 Executing ${batchCalls.length} calls in single batch transaction...`)
       console.log("  1. Transfer 5% $BUMP to Treasury")
-      console.log("  2. Unlock $BUMP currency")
-      console.log("  3. Unlock WETH currency")
-      console.log("  4. Swap $BUMP to WETH (Dynamic Fee)")
-      console.log("  5. Settle $BUMP debt")
-      console.log("  6. Take WETH output")
+      console.log("  2. Universal Router V4_SWAP (handles unlock, swap, settle, take)")
       
       const MAX_RETRIES = 2
       const TIMEOUT_MS = 30000
