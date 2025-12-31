@@ -30,7 +30,7 @@ const poolKey = {
   currency1: "0x94CE728849431818EC9a0CF29BDb24FE413bBb07", // $BUMP
   fee: 8388608,        // Dynamic Fee (0x800000)
   tickSpacing: 200,    // Dynamic fee spacing
-  hooks: "0x0000000000000000000000000000000000000000" // Zero address for basic hook
+  hooks: "0xd60D6B218116cFd801E28F78d011a203D2b068Cc" // Clanker UniV4SwapExtension hook
 }
 ```
 

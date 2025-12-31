@@ -448,7 +448,7 @@ export function useConvertFuel() {
     console.log(`  - Treasury Fee: ${treasuryFeeWei.toString()} $BUMP`)
     console.log(`  - Fee Type: ${CLANKER_FEE_CONFIG.type} (${CLANKER_FEE_CONFIG.preset})`)
     console.log(`  - Fee Value: ${BUMP_POOL_FEE} (dynamic)`)
-    console.log(`  - Hook Address: ${BUMP_POOL_HOOK_ADDRESS}`)
+    console.log(`  - Hook Address: ${BUMP_POOL_HOOK_ADDRESS} (Clanker UniV4SwapExtension)`)
 
     // Prepare Clanker V4 PoolManager swap (executed separately)
     // Using Clanker-compatible pool configuration with dynamic fees

@@ -24,8 +24,8 @@ export const PERMIT2_ADDRESS = "0x000000000022D473030F116dDEE9F6B43aC78BA3" as c
 // currency1: $BUMP (0x94CE728849431818EC9a0CF29BDb24FE413bBb07)
 // fee: Dynamic Fee (0x800000 = 8388608)
 // tickSpacing: 200 (for dynamic fee)
-// hooks: Zero address (basic hook) or Clanker UniV4SwapExtension
-export const BUMP_POOL_HOOK_ADDRESS = "0x0000000000000000000000000000000000000000" as const // Zero address for basic hook
+// hooks: Clanker UniV4SwapExtension hook (0xd60D6B218116cFd801E28F78d011a203D2b068Cc)
+export const BUMP_POOL_HOOK_ADDRESS = "0xd60D6B218116cFd801E28F78d011a203D2b068Cc" as const // Clanker UniV4SwapExtension hook
 export const BUMP_POOL_CURRENCY0 = "0x4200000000000000000000000000000000000006" as const // WETH
 export const BUMP_POOL_CURRENCY1 = "0x94CE728849431818EC9a0CF29BDb24FE413bBb07" as const // $BUMP
 export const BUMP_POOL_FEE = 8388608 // Dynamic Fee (0x800000)
