@@ -426,18 +426,20 @@ export function useConvertFuel() {
     totalBumpWei: bigint,
     userAddress: Address,
     treasuryAddress: Address
-  ): { commands: Hex; inputs: Hex[] } => {
+  ): { commands: Hex; inputs: Hex[]; v4SwapCall: { to: Address; data: Hex; value: bigint } } => {
     // Calculate amounts
     const treasuryFeeWei = (totalBumpWei * BigInt(TREASURY_FEE_BPS)) / BigInt(10000)
     const swapAmountWei = totalBumpWei - treasuryFeeWei // 95% of total
 
-    console.log("🔑 Using V4_SWAP command (0x10) through Universal Router:")
-    console.log(`  - CurrencyIn: ${BUMP_POOL_CURRENCY1} ($BUMP)`)
-    console.log(`  - CurrencyOut: ${BUMP_POOL_CURRENCY0} (WETH)`)
+    console.log("🔄 Using Direct V4 PoolManager Swap:")
+    console.log(`  - PoolManager: ${UNISWAP_V4_POOL_MANAGER}`)
+    console.log(`  - Currency0: ${BUMP_POOL_CURRENCY0} (WETH)`)
+    console.log(`  - Currency1: ${BUMP_POOL_CURRENCY1} ($BUMP)`)
     console.log(`  - Fee: ${BUMP_POOL_FEE} (Dynamic Fee)`)
     console.log(`  - TickSpacing: ${BUMP_POOL_TICK_SPACING}`)
     console.log(`  - Hooks: ${BUMP_POOL_HOOK_ADDRESS}`)
     console.log(`  - AmountIn: ${swapAmountWei.toString()}`)
+    console.log(`  - zeroForOne: false (selling $BUMP for WETH)`)
 
     // Command 1: PERMIT2_TRANSFER_FROM (0x07) - Pull 5% $BUMP from user, send to Treasury
     const permit2TransferInput = encodePermit2TransferFromCommand(
@@ -446,12 +448,34 @@ export function useConvertFuel() {
       treasuryFeeWei
     )
 
-    // Command 2: V4_SWAP (0x10) - Swap 95% $BUMP to WETH via Universal Router
-    const v4SwapInput = encodeV4SwapForUniversalRouter(
-      swapAmountWei,
-      BigInt(0), // amountOutMinimum = 0 for testing
-      userAddress
-    )
+    // Command 2: Direct V4 PoolManager swap (separate call)
+    const poolKey = {
+      currency0: BUMP_POOL_CURRENCY0 as Address, // WETH
+      currency1: BUMP_POOL_CURRENCY1 as Address, // $BUMP
+      fee: BUMP_POOL_FEE,
+      tickSpacing: BUMP_POOL_TICK_SPACING,
+      hooks: BUMP_POOL_HOOK_ADDRESS as Address,
+    }
+
+    const swapParams = {
+      zeroForOne: false, // false = selling currency1 ($BUMP) for currency0 (WETH)
+      amountSpecified: -swapAmountWei, // Negative for exact input
+      sqrtPriceLimitX96: BigInt(0), // No price limit
+    }
+
+    const hookData = "0x" as Hex
+
+    const v4SwapData = encodeFunctionData({
+      abi: UNISWAP_V4_POOL_MANAGER_ABI,
+      functionName: "swap",
+      args: [poolKey, swapParams, hookData],
+    })
+
+    const v4SwapCall = {
+      to: UNISWAP_V4_POOL_MANAGER as Address,
+      data: v4SwapData,
+      value: BigInt(0),
+    }
 
     // Command 3: UNWRAP_WETH (0x0c) - Unwrap all WETH to Native ETH
     const unwrapInput = encodeUnwrapWethCommand(
@@ -477,21 +501,21 @@ export function useConvertFuel() {
       BigInt(0) // amountMin = 0 (minimal slippage, sweep all)
     )
 
-    // Universal Router commands: All operations through Universal Router
+    // Universal Router commands: Transfer and ETH operations only
     // Format: 0x + command bytes (each command is 1 byte)
-    // PERMIT2_TRANSFER_FROM (0x07) + V4_SWAP (0x10) + UNWRAP_WETH (0x0c) + PAY_PORTION (0x06) + SWEEP (0x04)
-    const commands = "0x07100c0604" as Hex
+    // PERMIT2_TRANSFER_FROM (0x07) + UNWRAP_WETH (0x0c) + PAY_PORTION (0x06) + SWEEP (0x04)
+    // V4 PoolManager swap will be executed separately in batch
+    const commands = "0x070c0604" as Hex
 
     // Inputs array: one input per command (in same order as commands)
     const inputs: Hex[] = [
       permit2TransferInput,  // Command 1: PERMIT2_TRANSFER_FROM (0x07) - 5% $BUMP to Treasury
-      v4SwapInput,           // Command 2: V4_SWAP (0x10) - Swap 95% $BUMP to WETH
-      unwrapInput,           // Command 3: UNWRAP_WETH (0x0c) - Unwrap WETH to Native ETH
-      payPortionInput,       // Command 4: PAY_PORTION (0x06) - 5% ETH to Treasury
-      sweepInput,            // Command 5: SWEEP (0x04) - 90% ETH to User
+      unwrapInput,           // Command 2: UNWRAP_WETH (0x0c) - Unwrap WETH to Native ETH
+      payPortionInput,       // Command 3: PAY_PORTION (0x06) - 5% ETH to Treasury
+      sweepInput,            // Command 4: SWEEP (0x04) - 90% ETH to User
     ]
 
-    return { commands, inputs }
+    return { commands, inputs, v4SwapCall }
   }
 
   /**
@@ -662,7 +686,7 @@ export function useConvertFuel() {
 
       // 5. Encode all commands
       console.log("📦 Encoding transaction commands...")
-      const { commands, inputs } = encodeUniversalRouterCommands(
+      const { commands, inputs, v4SwapCall } = encodeUniversalRouterCommands(
         totalAmountWei,
         userAddress as Address,
         TREASURY_ADDRESS as Address
@@ -671,27 +695,41 @@ export function useConvertFuel() {
       // 6. Execute batch transaction
       console.log(`📤 Executing batch transaction...`)
       console.log("  Step 1: Permit2.approve() - Authorize Universal Router")
-      console.log("  Step 2: Universal Router Commands (All in one call)")
+      console.log("  Step 2: Permit2.approve() - Authorize V4 PoolManager")
+      console.log("  Step 3: V4 PoolManager.swap() - Direct V4 swap")
+      console.log("  Step 4: Universal Router Commands")
       console.log(`    - PERMIT2_TRANSFER_FROM (0x07): 5% $BUMP to Treasury`)
-      console.log(`    - V4_SWAP (0x10): Swap 95% $BUMP to WETH (via PathKey)`)
       console.log(`    - UNWRAP_WETH (0x0c): Unwrap WETH to Native ETH`)
       console.log(`    - PAY_PORTION (0x06): 5% ETH to Treasury`)
       console.log(`    - SWEEP (0x04): 90% ETH to User`)
       console.log(`📋 Universal Router Commands: ${commands}`)
       
-      // 7. Prepare Permit2 approve call
-      console.log("🔐 Preparing Permit2 approval for Universal Router...")
+      // 7. Prepare Permit2 approve calls
+      console.log("🔐 Preparing Permit2 approvals...")
       console.log(`  - Token: ${BUMP_TOKEN_ADDRESS} ($BUMP)`)
-      console.log(`  - Spender: ${UNISWAP_UNIVERSAL_ROUTER} (Universal Router)`)
+      console.log(`  - Spender 1: ${UNISWAP_UNIVERSAL_ROUTER} (Universal Router)`)
+      console.log(`  - Spender 2: ${UNISWAP_V4_POOL_MANAGER} (V4 PoolManager)`)
       console.log(`  - Amount: MAX_UINT160 (unlimited)`)
       console.log(`  - Expiration: MAX_UINT48 (far future)`)
-      
+
       const permit2ApproveData = encodeFunctionData({
         abi: PERMIT2_ABI,
         functionName: "approve",
         args: [
           BUMP_TOKEN_ADDRESS as Address,           // token
           UNISWAP_UNIVERSAL_ROUTER as Address,     // spender (Universal Router)
+          MAX_UINT160,                              // amount (max uint160)
+          MAX_UINT48,                               // expiration (max uint48 = far future)
+        ],
+      })
+
+      // Also approve V4 PoolManager for direct swap
+      const permit2ApproveV4Data = encodeFunctionData({
+        abi: PERMIT2_ABI,
+        functionName: "approve",
+        args: [
+          BUMP_TOKEN_ADDRESS as Address,           // token
+          UNISWAP_V4_POOL_MANAGER as Address,      // spender (V4 PoolManager)
           MAX_UINT160,                              // amount (max uint160)
           MAX_UINT48,                               // expiration (max uint48 = far future)
         ],
@@ -738,6 +776,12 @@ export function useConvertFuel() {
               data: permit2ApproveData,
               value: BigInt(0),
             },
+            {
+              to: PERMIT2_ADDRESS as Address,
+              data: permit2ApproveV4Data,
+              value: BigInt(0),
+            },
+            v4SwapCall,  // V4 PoolManager swap call
             {
               to: UNISWAP_UNIVERSAL_ROUTER as Address,
               data: universalRouterData,
