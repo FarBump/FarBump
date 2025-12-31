@@ -424,49 +424,53 @@ export function useConvertFuel() {
    * 4. PAY_PORTION (0x06): Send 5% ETH to Treasury
    * 5. SWEEP (0x04): Send remaining 90% ETH to User
    */
-  const createV3SwapTransaction = (
+  const createV4SwapTransaction = (
     totalBumpWei: bigint,
     userAddress: Address,
     treasuryAddress: Address
   ): {
     commands: Hex;
     inputs: Hex[];
+    v4SwapCall: { to: Address; data: Hex; value: bigint };
     permit2Approval: { to: Address; data: Hex; value: bigint };
   } => {
     // Calculate amounts
     const treasuryFeeWei = (totalBumpWei * BigInt(TREASURY_FEE_BPS)) / BigInt(10000)
     const swapAmountWei = totalBumpWei - treasuryFeeWei // 95% of total
 
-    // Use V3 swap through Universal Router as proven fallback
-    // V4 pools may not have sufficient liquidity or proper setup yet
-    console.log("🔄 Using V3 Swap through Universal Router (proven fallback):")
-    console.log(`  - TokenIn: ${BUMP_TOKEN_ADDRESS} ($BUMP)`)
-    console.log(`  - TokenOut: ${BASE_WETH_ADDRESS} (WETH)`)
-    console.log(`  - Fee: 3000 (0.3%)`)
-    console.log(`  - AmountIn: ${swapAmountWei.toString()}`)
+    console.log("🔄 Using Direct V4 PoolManager Swap:")
+    console.log(`  - PoolManager: ${UNISWAP_V4_POOL_MANAGER}`)
+    console.log(`  - AmountIn: ${swapAmountWei.toString()} $BUMP`)
     console.log(`  - Treasury Fee: ${treasuryFeeWei.toString()} $BUMP`)
 
-    // V3_SWAP_EXACT_IN command (0x00) - proven to work
-    const v3SwapInput = encodeAbiParameters(
-      [
-        { name: "tokenIn", type: "address" },
-        { name: "tokenOut", type: "address" },
-        { name: "fee", type: "uint24" },
-        { name: "recipient", type: "address" },
-        { name: "amountIn", type: "uint256" },
-        { name: "amountOutMinimum", type: "uint256" },
-        { name: "sqrtPriceLimitX96", type: "uint160" },
-      ],
-      [
-        BUMP_TOKEN_ADDRESS as Address, // tokenIn ($BUMP)
-        BASE_WETH_ADDRESS as Address,  // tokenOut (WETH)
-        3000,                          // fee (0.3%)
-        userAddress,                   // recipient
-        swapAmountWei,                 // amountIn
-        BigInt(0),                     // amountOutMinimum = 0 for testing
-        BigInt(0)                      // sqrtPriceLimitX96 = 0 (no limit)
-      ]
-    ) as Hex
+    // Prepare V4 PoolManager swap (executed separately)
+    const poolKey = {
+      currency0: BUMP_POOL_CURRENCY0 as Address, // WETH
+      currency1: BUMP_POOL_CURRENCY1 as Address, // $BUMP
+      fee: BUMP_POOL_FEE,
+      tickSpacing: BUMP_POOL_TICK_SPACING,
+      hooks: BUMP_POOL_HOOK_ADDRESS as Address,
+    }
+
+    const swapParams = {
+      zeroForOne: false, // false = selling currency1 ($BUMP) for currency0 (WETH)
+      amountSpecified: -swapAmountWei, // Negative for exact input
+      sqrtPriceLimitX96: BigInt(0), // No price limit
+    }
+
+    const hookData = "0x" as Hex
+
+    const v4SwapData = encodeFunctionData({
+      abi: UNISWAP_V4_POOL_MANAGER_ABI,
+      functionName: "swap",
+      args: [poolKey, swapParams, hookData],
+    })
+
+    const v4SwapCall = {
+      to: UNISWAP_V4_POOL_MANAGER as Address,
+      data: v4SwapData,
+      value: BigInt(0),
+    }
 
     // Command 1: PERMIT2_TRANSFER_FROM (0x07) - Pull 5% $BUMP from user, send to Treasury
     const permit2TransferInput = encodePermit2TransferFromCommand(
@@ -499,8 +503,9 @@ export function useConvertFuel() {
       BigInt(0) // amountMin = 0 (minimal slippage, sweep all)
     )
 
-    // Universal Router commands: PERMIT2_TRANSFER_FROM + V3_SWAP_EXACT_IN + UNWRAP_WETH + PAY_PORTION + SWEEP
-    const commands = "0x07000c0604" as Hex
+    // Universal Router commands: PERMIT2_TRANSFER_FROM + UNWRAP_WETH + PAY_PORTION + SWEEP
+    // V4 PoolManager swap will be executed separately in batch
+    const commands = "0x070c0604" as Hex
 
     // Inputs array: one input per command (in same order as commands)
     const inputs: Hex[] = [
@@ -528,7 +533,7 @@ export function useConvertFuel() {
       value: BigInt(0),
     }
 
-    return { commands, inputs, permit2Approval }
+    return { commands, inputs, v4SwapCall, permit2Approval }
   }
 
   /**
@@ -697,9 +702,9 @@ export function useConvertFuel() {
       
       console.log("✅ ERC20 allowance to Permit2 confirmed")
 
-      // 5. Create V3 swap transaction
-      console.log("📦 Creating V3 swap transaction...")
-      const { commands, inputs, permit2Approval } = createV3SwapTransaction(
+      // 5. Create V4 swap transaction
+      console.log("📦 Creating V4 swap transaction...")
+      const { commands, inputs, v4SwapCall, permit2Approval } = createV4SwapTransaction(
         totalAmountWei,
         userAddress as Address,
         TREASURY_ADDRESS as Address
@@ -746,14 +751,17 @@ export function useConvertFuel() {
           
           // Bundle calls in a single UserOperation using Smart Wallet batch
           // Call 1: Permit2.approve() for Universal Router
-          // Call 2: UniversalRouter.execute() - V3 Swap + ETH Distribution
+          // Call 2: V4 PoolManager.swap() - Direct V4 swap
+          // Call 3: UniversalRouter.execute() - ETH Distribution
           console.log("✅ Sending batch transaction...")
           console.log("  Call 1: Permit2.approve(Universal Router)")
-          console.log("  Call 2: UniversalRouter.execute(V3 Swap + ETH Distribution)")
+          console.log("  Call 2: V4 PoolManager.swap()")
+          console.log("  Call 3: UniversalRouter.execute(ETH Distribution)")
 
           // Smart Wallet batch transaction: array of calls processed atomically
           const batchCalls = [
             permit2Approval,  // Permit2 approval for Universal Router
+            v4SwapCall,      // Direct V4 PoolManager swap
             {
               to: UNISWAP_UNIVERSAL_ROUTER as Address,
               data: universalRouterData,
