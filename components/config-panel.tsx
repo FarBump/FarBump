@@ -31,9 +31,36 @@ export function ConfigPanel({ fuelBalance = 0, credits = 0, smartWalletAddress }
   const [withdrawModalOpen, setWithdrawModalOpen] = useState(false)
   const [convertModalOpen, setConvertModalOpen] = useState(false)
   const [convertAmount, setConvertAmount] = useState("")
+  const [needsApproval, setNeedsApproval] = useState(false)
   
   // Convert $BUMP to Credit hook
-  const { convert, isPending: isConverting, isSuccess: convertSuccess, error: convertError, hash: convertHash, reset: resetConvert } = useConvertFuel()
+  const { 
+    convert, 
+    approve,
+    isPending: isConverting, 
+    isApproving,
+    isSuccess: convertSuccess, 
+    error: convertError, 
+    hash: convertHash,
+    approvalHash,
+    reset: resetConvert 
+  } = useConvertFuel()
+  
+  // Check if approval is needed when amount changes
+  useEffect(() => {
+    const checkApproval = async () => {
+      if (!smartWalletAddress || !convertAmount || parseFloat(convertAmount) <= 0) {
+        setNeedsApproval(false)
+        return
+      }
+      
+      // This will be checked in the convert function, but we can show UI hint
+      // For now, we'll assume approval might be needed
+      setNeedsApproval(true)
+    }
+    
+    checkApproval()
+  }, [convertAmount, smartWalletAddress])
   
   // Close modal and reset on success
   useEffect(() => {
@@ -122,16 +149,34 @@ export function ConfigPanel({ fuelBalance = 0, credits = 0, smartWalletAddress }
                 <div className="space-y-4 py-4">
                   <div className="space-y-2">
                     <label className="text-sm font-medium">Amount ($BUMP)</label>
-                    <Input
-                      type="number"
-                      value={convertAmount}
-                      onChange={(e) => setConvertAmount(e.target.value)}
-                      placeholder="Enter amount to convert"
-                      className="font-mono"
-                      step="0.01"
-                      min="0"
-                      disabled={isConverting}
-                    />
+                    <div className="relative">
+                      <Input
+                        type="number"
+                        value={convertAmount}
+                        onChange={(e) => setConvertAmount(e.target.value)}
+                        placeholder="Enter amount to convert"
+                        className="font-mono pr-16"
+                        step="0.01"
+                        min="0"
+                        max={formattedBalance ? parseFloat(formattedBalance.replace(/,/g, '')) : undefined}
+                        disabled={isConverting || isLoadingBalance}
+                      />
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="absolute right-1 top-1/2 -translate-y-1/2 h-7 px-2 text-xs font-medium hover:bg-secondary"
+                        onClick={() => {
+                          if (formattedBalance && !isLoadingBalance) {
+                            const maxAmount = formattedBalance.replace(/,/g, '')
+                            setConvertAmount(maxAmount)
+                          }
+                        }}
+                        disabled={isConverting || isLoadingBalance || !formattedBalance}
+                      >
+                        MAX
+                      </Button>
+                    </div>
                     <p className="text-xs text-muted-foreground">
                       Available: {formattedBalance} $BUMP
                     </p>
@@ -159,6 +204,22 @@ export function ConfigPanel({ fuelBalance = 0, credits = 0, smartWalletAddress }
                     </div>
                   )}
                   
+                  {approvalHash && (
+                    <div className="rounded-lg bg-green-500/10 border border-green-500/20 p-2">
+                      <p className="text-xs text-green-600 dark:text-green-400">
+                        ✅ Approval confirmed
+                      </p>
+                      <a
+                        href={`https://basescan.org/tx/${approvalHash}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-xs text-green-600 dark:text-green-400 underline mt-1 block"
+                      >
+                        View approval transaction
+                      </a>
+                    </div>
+                  )}
+                  
                   <div className="flex gap-2">
                     <Button
                       className="flex-1"
@@ -166,11 +227,30 @@ export function ConfigPanel({ fuelBalance = 0, credits = 0, smartWalletAddress }
                         if (!convertAmount || parseFloat(convertAmount) <= 0) {
                           return
                         }
-                        await convert(convertAmount)
+                        try {
+                          // Step 1: Auto-approve first if needed (will check allowance internally)
+                          // The approve function will check allowance and only approve if needed
+                          console.log("🔐 Step 1: Checking and approving if needed...")
+                          await approve(convertAmount)
+                          setNeedsApproval(false)
+                          console.log("✅ Step 1: Approval completed")
+                          
+                          // Step 2: Convert after approval is confirmed
+                          console.log("💱 Step 2: Starting conversion...")
+                          await convert(convertAmount)
+                        } catch (err: any) {
+                          // Error already handled in hooks
+                          console.error("Error in convert flow:", err)
+                        }
                       }}
-                      disabled={!convertAmount || parseFloat(convertAmount) <= 0 || isConverting || !smartWalletAddress}
+                      disabled={!convertAmount || parseFloat(convertAmount) <= 0 || isConverting || isApproving || !smartWalletAddress}
                     >
-                      {isConverting ? (
+                      {isApproving ? (
+                        <>
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                          Approving...
+                        </>
+                      ) : isConverting ? (
                         <>
                           <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                           Converting...
@@ -184,9 +264,10 @@ export function ConfigPanel({ fuelBalance = 0, credits = 0, smartWalletAddress }
                       onClick={() => {
                         setConvertModalOpen(false)
                         setConvertAmount("")
+                        setNeedsApproval(false)
                         resetConvert()
                       }}
-                      disabled={isConverting}
+                      disabled={isConverting || isApproving}
                     >
                       Cancel
                     </Button>

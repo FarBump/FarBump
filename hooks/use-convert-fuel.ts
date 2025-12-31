@@ -109,12 +109,122 @@ export function useConvertFuel() {
   const [isPending, setIsPending] = useState(false)
   const [isSuccess, setIsSuccess] = useState(false)
   const [error, setError] = useState<Error | null>(null)
+  const [isApproving, setIsApproving] = useState(false)
+  const [approvalHash, setApprovalHash] = useState<`0x${string}` | null>(null)
 
   const reset = () => {
     setHash(null)
     setIsPending(false)
     setIsSuccess(false)
     setError(null)
+    setIsApproving(false)
+    setApprovalHash(null)
+  }
+
+  /**
+   * Approve Uniswap V4 PoolManager to spend $BUMP tokens
+   * This function checks allowance first and only approves if needed
+   */
+  const approve = async (amount: string) => {
+    setIsApproving(true)
+    setError(null)
+
+    try {
+      if (!smartWalletClient) {
+        throw new Error("Smart Wallet client not found. Please login again.")
+      }
+
+      if (!publicClient) {
+        throw new Error("Public client not available")
+      }
+
+      const userAddress = smartWalletClient.account.address
+      const amountWei = parseUnits(amount, BUMP_DECIMALS)
+
+      // Check current allowance
+      console.log("🔍 Checking current allowance...")
+      const currentAllowance = await publicClient.readContract({
+        address: BUMP_TOKEN_ADDRESS as Address,
+        abi: ERC20_ABI,
+        functionName: "allowance",
+        args: [userAddress as Address, UNISWAP_V4_POOL_MANAGER as Address],
+      })
+
+      console.log(`📊 Current Allowance: ${currentAllowance.toString()}, Required: ${amountWei.toString()}`)
+
+      // If allowance is sufficient, no need to approve
+      if (currentAllowance >= amountWei) {
+        console.log("✅ Sufficient allowance already exists")
+        setIsApproving(false)
+        return { approved: true, hash: null as `0x${string}` | null }
+      }
+
+      // Approve needed
+      console.log("📝 Approval needed, sending approve transaction...")
+      const approveData = encodeFunctionData({
+        abi: ERC20_ABI,
+        functionName: "approve",
+        args: [UNISWAP_V4_POOL_MANAGER as Address, amountWei],
+      })
+
+      const MAX_RETRIES = 2
+      const TIMEOUT_MS = 30000
+      let approveTxHash: `0x${string}` | null = null
+
+      for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+        try {
+          if (attempt > 0) {
+            const delay = Math.pow(2, attempt - 1) * 1000
+            console.log(`⏳ Waiting ${delay}ms before retry...`)
+            await new Promise(resolve => setTimeout(resolve, delay))
+          }
+
+          approveTxHash = await Promise.race([
+            smartWalletClient.sendTransaction({
+              to: BUMP_TOKEN_ADDRESS,
+              data: approveData,
+              value: BigInt(0),
+            }),
+            new Promise<never>((_, reject) => {
+              setTimeout(() => reject(new Error("Transaction timeout")), TIMEOUT_MS)
+            })
+          ]) as `0x${string}`
+
+          // Wait for confirmation
+          await publicClient.waitForTransactionReceipt({ hash: approveTxHash })
+          console.log("✅ Approval confirmed")
+          setApprovalHash(approveTxHash)
+          break
+        } catch (attemptError: any) {
+          if (attempt === MAX_RETRIES) {
+            throw attemptError
+          }
+          const errorMessage = attemptError.message || ""
+          if (errorMessage.includes("timeout") || errorMessage.includes("timed out")) {
+            console.log(`⚠️ Timeout detected, will retry (${attempt + 1}/${MAX_RETRIES})...`)
+            continue
+          } else {
+            throw attemptError
+          }
+        }
+      }
+
+      setIsApproving(false)
+      return { approved: true, hash: approveTxHash }
+    } catch (err: any) {
+      setIsApproving(false)
+      console.error("❌ Approval Error:", err)
+      
+      let friendlyMessage = err.message || "Approval failed"
+      if (friendlyMessage.includes("timeout") || friendlyMessage.includes("timed out")) {
+        friendlyMessage = "Approval request timed out. Please try again."
+      } else if (friendlyMessage.includes("insufficient funds")) {
+        friendlyMessage = "Insufficient $BUMP balance for approval."
+      }
+
+      setError(new Error(friendlyMessage))
+      throw new Error(friendlyMessage)
+    }
   }
 
   const convert = async (amount: string) => {
@@ -171,9 +281,9 @@ export function useConvertFuel() {
         value: BigInt(0),
       })
 
-      // Call 2: Auto-approve Uniswap V4 PoolManager to spend 95% $BUMP
-      // Check current allowance first, only approve if needed
-      console.log("🔍 Checking current allowance...")
+      // Note: Approval is now handled separately before convert is called
+      // Check allowance here to ensure it's sufficient
+      console.log("🔍 Verifying allowance before swap...")
       const currentAllowance = await publicClient.readContract({
         address: BUMP_TOKEN_ADDRESS as Address,
         abi: ERC20_ABI,
@@ -183,22 +293,11 @@ export function useConvertFuel() {
       
       console.log(`📊 Current Allowance: ${currentAllowance.toString()}, Required: ${swapAmountWei.toString()}`)
       
-      // Only approve if current allowance is less than required amount
       if (currentAllowance < swapAmountWei) {
-        console.log("✅ Approval needed, adding approve transaction...")
-        const approveData = encodeFunctionData({
-          abi: ERC20_ABI,
-          functionName: "approve",
-          args: [UNISWAP_V4_POOL_MANAGER as Address, swapAmountWei],
-        })
-        calls.push({
-          to: BUMP_TOKEN_ADDRESS as Address,
-          data: approveData,
-          value: BigInt(0),
-        })
-      } else {
-        console.log("✅ Sufficient allowance already exists, skipping approve")
+        throw new Error("Insufficient allowance. Please approve first by clicking the 'Approve' button.")
       }
+      
+      console.log("✅ Sufficient allowance confirmed")
 
       // Call 3: Swap 95% $BUMP to WETH via Uniswap V4 PoolManager
       // IMPORTANT: V4 PoolManager requires proper Currency struct format
@@ -299,26 +398,9 @@ export function useConvertFuel() {
           await publicClient.waitForTransactionReceipt({ hash: transferTxHash })
           console.log("✅ Treasury transfer confirmed")
 
-          // Second: Approve PoolManager (only if needed)
-          const approveCall = calls.find(c => c.to.toLowerCase() === BUMP_TOKEN_ADDRESS.toLowerCase() && c.data.startsWith("0x095ea7b3"))
-          if (approveCall) {
-            console.log("📝 Step 2: Executing approve transaction...")
-            const approveTxHash = await Promise.race([
-              smartWalletClient.sendTransaction({
-                to: BUMP_TOKEN_ADDRESS,
-                data: approveCall.data,
-                value: BigInt(0),
-              }),
-              new Promise<never>((_, reject) => {
-                setTimeout(() => reject(new Error("Transaction timeout")), TIMEOUT_MS)
-              })
-            ]) as `0x${string}`
-
-            await publicClient.waitForTransactionReceipt({ hash: approveTxHash })
-            console.log("✅ Approval confirmed")
-          } else {
-            console.log("⏭️ Step 2: Skipping approve (sufficient allowance)")
-          }
+          // Note: Approval is handled separately before convert
+          // At this point, allowance should already be sufficient
+          console.log("✅ Step 2: Approval already completed (skipping)")
 
           // Third: Swap via Uniswap V4 PoolManager with dynamic fee tier
           console.log("💱 Step 3: Attempting swap with dynamic fee tier detection...")
@@ -493,8 +575,11 @@ export function useConvertFuel() {
 
   return {
     convert,
+    approve,
     hash,
+    approvalHash,
     isPending,
+    isApproving,
     isSuccess,
     error,
     reset,
