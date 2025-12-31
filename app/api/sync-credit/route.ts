@@ -15,6 +15,11 @@ const TRANSFER_EVENT = parseAbiItem(
   "event Transfer(address indexed from, address indexed to, uint256 value)"
 )
 
+// Uniswap V4 PoolManager Swap event ABI
+const UNISWAP_V4_SWAP_EVENT = parseAbiItem(
+  "event Swap(address indexed sender, address indexed recipient, int256 amount0, int256 amount1, uint160 sqrtPriceX96, uint128 liquidity, int24 tick, uint24 fee, uint24 tickSpacing)"
+)
+
 interface SyncCreditRequest {
   txHash: string
   userAddress: string
@@ -63,67 +68,107 @@ async function verifyAndCalculateCredit(
     }
 
     // 3. Calculate ETH received from swap
-    // Method 1: Check WETH transfers to userAddress (most reliable)
+    // Method 1: Parse Uniswap V4 Swap event (most accurate)
     let ethReceivedWei = BigInt(0)
-
-    // Look for WETH transfers to userAddress in logs
-    // Uniswap swaps $BUMP to WETH, then WETH can be unwrapped to ETH
-    const wethTransferLogs = receipt.logs.filter((log) => {
+    const BUMP_TOKEN_ADDRESS = "0x94ce728849431818ec9a0cf29bdb24fe413bbb07"
+    const BASE_WETH_ADDRESS = "0x4200000000000000000000000000000000000006"
+    
+    // Determine token order (same as frontend)
+    const isBumpToken0 = BUMP_TOKEN_ADDRESS.toLowerCase() < BASE_WETH_ADDRESS.toLowerCase()
+    
+    // Look for Uniswap V4 Swap event
+    const swapEventLog = receipt.logs.find((log) => {
       try {
         const decoded = publicClient.decodeEventLog({
-          abi: [TRANSFER_EVENT],
+          abi: [UNISWAP_V4_SWAP_EVENT],
           data: log.data,
           topics: log.topics,
         })
         return (
-          decoded.eventName === "Transfer" &&
-          decoded.args.to?.toLowerCase() === userAddress.toLowerCase() &&
-          log.address.toLowerCase() === "0x4200000000000000000000000000000000000006" // WETH address
+          decoded.eventName === "Swap" &&
+          decoded.args.recipient?.toLowerCase() === userAddress.toLowerCase() &&
+          log.address.toLowerCase() === "0x498581ff718922c3f8e6a244956af099b2652b2b" // PoolManager address
         )
       } catch {
         return false
       }
     })
 
-    if (wethTransferLogs.length > 0) {
-      // Sum all WETH transfers to user
-      for (const log of wethTransferLogs) {
+    if (swapEventLog) {
+      try {
+        const decoded = publicClient.decodeEventLog({
+          abi: [UNISWAP_V4_SWAP_EVENT],
+          data: swapEventLog.data,
+          topics: swapEventLog.topics,
+        })
+        
+        // amount0 and amount1 are int256, negative means input, positive means output
+        // If BUMP is token0 and we're swapping BUMP -> WETH (zeroForOne = true):
+        //   amount0 will be negative (input BUMP)
+        //   amount1 will be positive (output WETH)
+        // If BUMP is token1 and we're swapping BUMP -> WETH (zeroForOne = false):
+        //   amount0 will be positive (output WETH)
+        //   amount1 will be negative (input BUMP)
+        
+        const amount0 = decoded.args.amount0 || BigInt(0)
+        const amount1 = decoded.args.amount1 || BigInt(0)
+        
+        if (isBumpToken0) {
+          // BUMP is token0, WETH is token1
+          // amount1 should be positive (WETH output)
+          if (amount1 > BigInt(0)) {
+            ethReceivedWei = BigInt(amount1.toString())
+          }
+        } else {
+          // WETH is token0, BUMP is token1
+          // amount0 should be positive (WETH output)
+          if (amount0 > BigInt(0)) {
+            ethReceivedWei = BigInt(amount0.toString())
+          }
+        }
+        
+        console.log(`✅ Parsed Swap event: amount0=${amount0.toString()}, amount1=${amount1.toString()}, ETH received=${ethReceivedWei.toString()}`)
+      } catch (decodeError) {
+        console.error("❌ Error decoding Swap event:", decodeError)
+      }
+    }
+
+    // Method 2: Fallback - Check WETH transfers to userAddress
+    if (ethReceivedWei === BigInt(0)) {
+      console.log("⚠️ Swap event not found, checking WETH transfers...")
+      const wethTransferLogs = receipt.logs.filter((log) => {
         try {
           const decoded = publicClient.decodeEventLog({
             abi: [TRANSFER_EVENT],
             data: log.data,
             topics: log.topics,
           })
-          if (decoded.args.value) {
-            ethReceivedWei += BigInt(decoded.args.value.toString())
-          }
-        } catch (decodeError) {
-          console.error("❌ Error decoding WETH transfer:", decodeError)
+          return (
+            decoded.eventName === "Transfer" &&
+            decoded.args.to?.toLowerCase() === userAddress.toLowerCase() &&
+            log.address.toLowerCase() === BASE_WETH_ADDRESS.toLowerCase()
+          )
+        } catch {
+          return false
         }
-      }
-    }
+      })
 
-    // Method 2: Fallback - Check balance change (if trace not available)
-    // This is less accurate but works if RPC doesn't support trace
-    if (ethReceivedWei === BigInt(0)) {
-      try {
-        // Get transaction to see value field
-        const tx = await publicClient.getTransaction({ hash: txHash })
-        
-        // For swaps, ETH received is typically in internal transactions
-        // We'll use a simpler approach: estimate based on swap amount
-        // This is a fallback - ideally we should use trace or logs
-        console.warn("⚠️ Could not determine exact ETH amount from logs, using fallback calculation")
-        
-        // Note: This is a simplified fallback. In production, you should:
-        // 1. Use a RPC that supports traceTransaction
-        // 2. Or parse Uniswap swap events more carefully
-        // 3. Or use a subgraph/indexer
-        
-        // For now, we'll return 0 and let the frontend handle retry
-        // Or you can implement a more sophisticated calculation here
-      } catch (fallbackError) {
-        console.error("❌ Fallback calculation failed:", fallbackError)
+      if (wethTransferLogs.length > 0) {
+        // Sum all WETH transfers to user
+        for (const log of wethTransferLogs) {
+          try {
+            const decoded = publicClient.decodeEventLog({
+              abi: [TRANSFER_EVENT],
+              data: log.data,
+              topics: log.topics,
+            })
+            if (decoded.args.value) {
+              ethReceivedWei += BigInt(decoded.args.value.toString())
+            }
+          } catch (decodeError) {
+            console.error("❌ Error decoding WETH transfer:", decodeError)
+          }
+        }
       }
     }
 
