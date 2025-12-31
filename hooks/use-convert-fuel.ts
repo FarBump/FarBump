@@ -494,11 +494,19 @@ export function useConvertFuel() {
       [BUMP_POOL_CURRENCY0 as Address, BigInt(0)]
     ) as Hex
 
-    // Combine all params
-    const v4Inputs = [settleParams, swapParams, takeParams]
-    const v4Commands = actionsHex
+    // Encode V4_SWAP input properly: abi.encode(actions, params[])
+    const v4SwapInput = encodeAbiParameters(
+      [
+        { name: "actions", type: "bytes" },
+        { name: "params", type: "bytes[]" },
+      ],
+      [
+        actionsHex,                                    // actions: "0x100011"
+        [settleParams, swapParams, takeParams],        // params: [settleParams, swapParams, takeParams]
+      ]
+    ) as Hex
 
-    console.log(`  - V4 Commands: ${v4Commands}`)
+    console.log(`  - V4 Commands: ${actionsHex}`)
     console.log(`  - V4 Actions: SETTLE -> SWAP_EXACT_IN_SINGLE -> TAKE`)
 
     // Command 1: PERMIT2_TRANSFER_FROM (0x07) - Pull 5% $BUMP from user, send to Treasury
@@ -539,7 +547,7 @@ export function useConvertFuel() {
     // Inputs array: one input per command
     const inputs: Hex[] = [
       permit2TransferInput,  // Command 1: PERMIT2_TRANSFER_FROM (0x07)
-      `0x${v4Commands}${v4Inputs.slice(2)}` as Hex, // Command 2: V4_SWAP (0x10) - planner data
+      v4SwapInput,           // Command 2: V4_SWAP (0x10) - properly encoded
       unwrapInput,           // Command 3: UNWRAP_WETH (0x0c)
       payPortionInput,       // Command 4: PAY_PORTION (0x06)
       sweepInput,            // Command 5: SWEEP (0x04)
