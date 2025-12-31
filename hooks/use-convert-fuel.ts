@@ -350,9 +350,28 @@ export function useConvertFuel() {
   }
 
   /**
+   * Encode UNWRAP_WETH command input for Universal Router
+   * Command: 0x0C (or 0x0D depending on Universal Router version)
+   * Input: abi.encode(recipient, amountMin)
+   */
+  const encodeUnwrapWethCommand = (
+    recipient: Address,
+    amountMin: bigint
+  ): Hex => {
+    return encodeAbiParameters(
+      [
+        { name: "recipient", type: "address" },
+        { name: "amountMin", type: "uint256" },
+      ],
+      [recipient, amountMin]
+    ) as Hex
+  }
+
+  /**
    * Encode SWEEP command input for Universal Router
-   * Command: 0x0B
+   * Command: 0x0B (for ERC20) or 0x0D (for native ETH)
    * Input: abi.encode(token, recipient, amountMin)
+   * For native ETH, use address(0) as token
    */
   const encodeSweepCommand = (
     token: Address,
@@ -542,22 +561,29 @@ export function useConvertFuel() {
       
       console.log("✅ Sufficient allowance confirmed")
 
-      // 5. Prepare PoolKey for $BUMP/WETH pool (from user specification)
-      // PoolKey details:
-      // currency0: WETH (0x4200000000000000000000000000000000000006)
-      // currency1: $BUMP (0x94CE728849431818EC9a0CF29BDb24FE413bBb07)
-      // fee: 8388608 (Dynamic Fee)
-      // tickSpacing: 200
-      // hooks: 0xd60D6B218116cFd801E28F78d011a203D2b068Cc
+      // 5. Validate and prepare PoolKey for $BUMP/WETH pool
+      // CRITICAL: currency0 must be < currency1 by address (numerical order)
+      // WETH: 0x4200000000000000000000000000000000000006
+      // $BUMP: 0x94CE728849431818EC9a0CF29BDb24FE413bBb07
+      // WETH < $BUMP, so currency0 = WETH, currency1 = $BUMP ✓
       
-      // Since we're selling $BUMP (Currency1) for WETH (Currency0), zeroForOne = false
+      const wethAddress = BUMP_POOL_CURRENCY0.toLowerCase()
+      const bumpAddress = BUMP_POOL_CURRENCY1.toLowerCase()
+      
+      if (wethAddress >= bumpAddress) {
+        throw new Error("Invalid PoolKey: currency0 must be < currency1 by address")
+      }
+      
+      console.log("✅ PoolKey validation passed:")
+      console.log(`  - Currency0 (${wethAddress}) < Currency1 (${bumpAddress})`)
+      
       const poolKey = {
         currency0: {
-          currency: BUMP_POOL_CURRENCY0 as Address, // WETH
+          currency: BUMP_POOL_CURRENCY0 as Address, // WETH (lower address)
           type: 1 as const, // ERC20
         },
         currency1: {
-          currency: BUMP_POOL_CURRENCY1 as Address, // $BUMP
+          currency: BUMP_POOL_CURRENCY1 as Address, // $BUMP (higher address)
           type: 1 as const, // ERC20
         },
         fee: BUMP_POOL_FEE, // 8388608 (Dynamic Fee)
@@ -566,11 +592,22 @@ export function useConvertFuel() {
       }
       
       // Swap parameters: selling $BUMP (Currency1) for WETH (Currency0)
-      // zeroForOne = false means we're swapping Currency1 -> Currency0
+      // CRITICAL: amountSpecified must be NEGATIVE for exact input swap
+      // Negative value means we're providing exact input amount (selling $BUMP)
       const swapParams = {
         zeroForOne: false, // false = swapping Currency1 ($BUMP) -> Currency0 (WETH)
-        amountSpecified: -BigInt(swapAmountWei.toString()), // Negative = exact input
-        sqrtPriceLimitX96: BigInt(0), // No price limit
+        amountSpecified: -swapAmountWei, // NEGATIVE = exact input (selling $BUMP)
+        sqrtPriceLimitX96: BigInt(0), // No price limit (0 = unlimited)
+      }
+      
+      console.log("🔑 Swap Parameters Validation:")
+      console.log(`  - ZeroForOne: false (Currency1 -> Currency0)`)
+      console.log(`  - AmountSpecified: ${swapParams.amountSpecified.toString()} (negative = exact input) ✓`)
+      console.log(`  - SqrtPriceLimitX96: 0 (no limit)`)
+      
+      // Validate amountSpecified is negative
+      if (swapParams.amountSpecified >= BigInt(0)) {
+        throw new Error("Invalid swap params: amountSpecified must be negative for exact input swap")
       }
       
       const hookData = "0x" as Hex // Empty hook data
@@ -593,57 +630,61 @@ export function useConvertFuel() {
         treasuryFeeWei
       )
       
-      // Command 2: V4_SWAP (0x10) - Swap 95% $BUMP to ETH
+      // Command 2: V4_SWAP (0x10) - Swap 95% $BUMP to WETH
+      // CRITICAL: amountSpecified must be NEGATIVE for exact input
       const v4SwapInput = encodeV4SwapCommand(poolKey, swapParams, hookData)
       
-      // Command 3: PAY_PORTION (0x0A) - Send 5% (from total initial amount) of ETH result to Treasury
+      // Command 3: UNWRAP_WETH (0x0C) - Unwrap all WETH to Native ETH
+      // This converts WETH (from swap) to native ETH
+      // amountMin = 0 for minimal slippage (as requested)
+      const unwrapInput = encodeUnwrapWethCommand(
+        userAddress as Address, // Recipient (will receive native ETH)
+        BigInt(0) // amountMin = 0 (minimal slippage)
+      )
+      
+      // Command 4: PAY_PORTION (0x0A) - Send 5% (from total initial amount) of ETH to Treasury
       // Since we swap 95% of total, and we want 5% of total initial in ETH:
       // 5% of total = 5% / 95% = 5.263% of swap result
-      // But PAY_PORTION uses basis points, so we need to calculate:
-      // If total = 100%, swap = 95%, then 5% of total = (5/95) * 10000 = 526.3 bips
-      // However, PAY_PORTION calculates from current balance, not from swap result
-      // So we use 5% of total initial = 5% / 95% = ~5.26% of swap result
-      // For simplicity and to match user requirement "5% dari keseluruhan awal", we use:
-      // 5% of total initial in ETH = (5/100) / (95/100) = 5/95 = ~5.26% of swap result
-      // But since PAY_PORTION works on balance, we need to use a different approach
-      // Actually, PAY_PORTION sends a portion of the current balance, so we need to calculate
-      // the bips that represent 5% of total initial from the swap result
+      // PAY_PORTION works on native ETH balance (after UNWRAP)
       // Formula: (5% of total) / (95% of total) = 5/95 = ~0.0526 = 526 bips
       const payPortionBips = Math.floor((TREASURY_FEE_BPS * 10000) / (10000 - TREASURY_FEE_BPS)) // ~526 bips
       console.log(`📊 PAY_PORTION calculation: ${payPortionBips} bips (~5.26% of swap result = 5% of total initial)`)
       const payPortionInput = encodePayPortionCommand(
-        BASE_WETH_ADDRESS as Address, // WETH token
+        "0x0000000000000000000000000000000000000000" as Address, // Native ETH (address(0))
         TREASURY_ADDRESS as Address, // Treasury recipient
         payPortionBips // ~526 bips = 5% of total initial from swap result
       )
       
-      // Command 4: SWEEP (0x0B) - Send remaining 90% ETH to user
-      // amountMin = 0 (we want to sweep all remaining balance)
+      // Command 5: SWEEP (0x0B) - Send remaining 90% native ETH to user
+      // For native ETH, use address(0) as token
+      // amountMin = 0 (minimal slippage, sweep all remaining)
       const sweepInput = encodeSweepCommand(
-        BASE_WETH_ADDRESS as Address, // WETH token
+        "0x0000000000000000000000000000000000000000" as Address, // Native ETH (address(0))
         userAddress as Address, // User recipient
-        BigInt(0) // amountMin = 0 (sweep all)
+        BigInt(0) // amountMin = 0 (minimal slippage, sweep all)
       )
       
-      // Universal Router commands: concatenate all command bytes
+      // Universal Router commands: strict order
       // Format: 0x + command bytes (each command is 1 byte)
-      // TRANSFER (0x00) + V4_SWAP (0x10) + PAY_PORTION (0x0A) + SWEEP (0x0B)
-      const commands = "0x00100A0B" as Hex
+      // TRANSFER (0x00) + V4_SWAP (0x10) + UNWRAP_WETH (0x0C) + PAY_PORTION (0x0A) + SWEEP (0x0B)
+      const commands = "0x00100C0A0B" as Hex
       
       // Inputs array: one input per command (in same order as commands)
       const inputs: Hex[] = [
-        transferInput,    // Command 1: TRANSFER
-        v4SwapInput,      // Command 2: V4_SWAP
-        payPortionInput,  // Command 3: PAY_PORTION
-        sweepInput,       // Command 4: SWEEP
+        transferInput,    // Command 1: TRANSFER (0x00)
+        v4SwapInput,      // Command 2: V4_SWAP (0x10)
+        unwrapInput,      // Command 3: UNWRAP_WETH (0x0C)
+        payPortionInput,  // Command 4: PAY_PORTION (0x0A)
+        sweepInput,       // Command 5: SWEEP (0x0B)
       ]
       
       // 7. Execute single Universal Router transaction
       console.log(`📤 Executing Universal Router with ${inputs.length} commands in single transaction...`)
-      console.log("  1. TRANSFER: 5% $BUMP to Treasury")
-      console.log("  2. V4_SWAP: Swap 95% $BUMP to ETH")
-      console.log("  3. PAY_PORTION: 5% ETH to Treasury")
-      console.log("  4. SWEEP: 90% ETH to User")
+      console.log("  1. TRANSFER (0x00): 5% $BUMP to Treasury")
+      console.log("  2. V4_SWAP (0x10): Swap 95% $BUMP to WETH")
+      console.log("  3. UNWRAP_WETH (0x0C): Unwrap WETH to Native ETH")
+      console.log("  4. PAY_PORTION (0x0A): 5% ETH to Treasury")
+      console.log("  5. SWEEP (0x0B): 90% ETH to User")
       
       const MAX_RETRIES = 2
       const TIMEOUT_MS = 30000
@@ -668,14 +709,24 @@ export function useConvertFuel() {
           })
           
           // Send single transaction to Universal Router
-          // All commands (TRANSFER, V4_SWAP, PAY_PORTION, SWEEP) are executed atomically
+          // All commands are executed atomically in one UserOperation
+          // Set gas limit to ensure sufficient gas for all operations
           console.log("✅ Sending single Universal Router transaction...")
+          console.log(`📋 Commands: ${commands}`)
+          console.log(`📋 Inputs count: ${inputs.length}`)
+          
+          // For Smart Wallet, we need to ensure gas limit is sufficient
+          // Privy will handle gas estimation, but we can set a high limit for testing
+          const transactionRequest = {
+            to: UNISWAP_UNIVERSAL_ROUTER,
+            data: universalRouterData,
+            value: BigInt(0),
+            // Note: Smart Wallet will estimate gas automatically
+            // If needed, we can set gas limit here, but Privy handles it
+          }
+          
           txHash = await Promise.race([
-            smartWalletClient.sendTransaction({
-              to: UNISWAP_UNIVERSAL_ROUTER,
-              data: universalRouterData,
-              value: BigInt(0),
-            }),
+            smartWalletClient.sendTransaction(transactionRequest),
             new Promise<never>((_, reject) => {
               setTimeout(() => reject(new Error("Transaction timeout")), TIMEOUT_MS)
             })
