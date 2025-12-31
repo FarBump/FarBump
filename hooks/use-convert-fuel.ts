@@ -299,11 +299,14 @@ export function useConvertFuel() {
   }
 
   /**
-   * Encode TRANSFER command input for Universal Router
-   * Command: 0x05
+   * Encode PERMIT2_TRANSFER_FROM command input for Universal Router
+   * Command: 0x07
+   * This pulls tokens FROM the user's wallet via Permit2 and sends to recipient
    * Input: abi.encode(token, recipient, amount)
+   * 
+   * IMPORTANT: This is different from TRANSFER (0x05) which transfers from Router's balance
    */
-  const encodeTransferCommand = (
+  const encodePermit2TransferFromCommand = (
     token: Address,
     recipient: Address,
     amount: bigint
@@ -448,11 +451,15 @@ export function useConvertFuel() {
    * Returns: { commands: Hex, inputs: Hex[] }
    * 
    * Command Sequence:
-   * 1. TRANSFER (0x05): Send 5% $BUMP to Treasury
-   * 2. V4_SWAP (0x10): Swap 95% $BUMP to WETH
+   * 1. PERMIT2_TRANSFER_FROM (0x07): Pull 5% $BUMP from user, send to Treasury
+   * 2. V4_SWAP (0x10): Swap 95% $BUMP to WETH (Permit2 pulls from user)
    * 3. UNWRAP_WETH (0x0c): Unwrap WETH to Native ETH
    * 4. PAY_PORTION (0x06): Send 5% ETH to Treasury
    * 5. SWEEP (0x04): Send remaining 90% ETH to User
+   * 
+   * IMPORTANT: We use PERMIT2_TRANSFER_FROM (0x07) instead of TRANSFER (0x05)
+   * because TRANSFER moves tokens from Router's balance (empty),
+   * while PERMIT2_TRANSFER_FROM pulls from user's wallet via Permit2.
    */
   const encodeUniversalRouterCommands = (
     totalBumpWei: bigint,
@@ -515,8 +522,9 @@ export function useConvertFuel() {
     console.log(`  - AmountSpecified: ${swapParams.amountSpecified.toString()} (negative = exact input) ✓`)
     console.log(`  - SqrtPriceLimitX96: 0 (no limit)`)
 
-    // Command 1: TRANSFER (0x05) - Transfer 5% $BUMP to Treasury
-    const transferInput = encodeTransferCommand(
+    // Command 1: PERMIT2_TRANSFER_FROM (0x07) - Pull 5% $BUMP from user, send to Treasury
+    // This uses Permit2 to transfer tokens FROM user's wallet (not from Router)
+    const permit2TransferInput = encodePermit2TransferFromCommand(
       BUMP_TOKEN_ADDRESS as Address,
       treasuryAddress,
       treasuryFeeWei
@@ -551,16 +559,16 @@ export function useConvertFuel() {
 
     // Universal Router commands: strict order
     // Format: 0x + command bytes (each command is 1 byte)
-    // TRANSFER (0x05) + V4_SWAP (0x10) + UNWRAP_WETH (0x0c) + PAY_PORTION (0x06) + SWEEP (0x04)
-    const commands = "0x05100c0604" as Hex
+    // PERMIT2_TRANSFER_FROM (0x07) + V4_SWAP (0x10) + UNWRAP_WETH (0x0c) + PAY_PORTION (0x06) + SWEEP (0x04)
+    const commands = "0x07100c0604" as Hex
 
     // Inputs array: one input per command (in same order as commands)
     const inputs: Hex[] = [
-      transferInput,    // Command 1: TRANSFER (0x05)
-      v4SwapInput,      // Command 2: V4_SWAP (0x10)
-      unwrapInput,      // Command 3: UNWRAP_WETH (0x0c)
-      payPortionInput,  // Command 4: PAY_PORTION (0x06)
-      sweepInput,       // Command 5: SWEEP (0x04)
+      permit2TransferInput,  // Command 1: PERMIT2_TRANSFER_FROM (0x07)
+      v4SwapInput,           // Command 2: V4_SWAP (0x10)
+      unwrapInput,           // Command 3: UNWRAP_WETH (0x0c)
+      payPortionInput,       // Command 4: PAY_PORTION (0x06)
+      sweepInput,            // Command 5: SWEEP (0x04)
     ]
 
     return { commands, inputs }
@@ -743,7 +751,7 @@ export function useConvertFuel() {
       
       // 7. Execute single Universal Router transaction
       console.log(`📤 Executing Universal Router with ${inputs.length} commands in single transaction...`)
-      console.log("  1. TRANSFER (0x05): 5% $BUMP to Treasury")
+      console.log("  1. PERMIT2_TRANSFER_FROM (0x07): Pull 5% $BUMP from user to Treasury")
       console.log("  2. V4_SWAP (0x10): Swap 95% $BUMP to WETH")
       console.log("  3. UNWRAP_WETH (0x0c): Unwrap WETH to Native ETH")
       console.log("  4. PAY_PORTION (0x06): 5% ETH to Treasury")
