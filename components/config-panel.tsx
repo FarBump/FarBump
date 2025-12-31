@@ -116,7 +116,7 @@ export function ConfigPanel({ fuelBalance = 0, credits = 0, smartWalletAddress }
                 <DialogHeader>
                   <DialogTitle>Convert $BUMP to Credit</DialogTitle>
                   <DialogDescription>
-                    Convert your $BUMP tokens to ETH Credit. 5% fee goes to treasury, 95% will be swapped to ETH.
+                    Convert your $BUMP tokens to Credit. 90% will be swapped to Credit, 5% of $BUMP is allocated for treasury to be burned every week, 5% as platform fee.
                   </DialogDescription>
                 </DialogHeader>
                 <div className="space-y-4 py-4">

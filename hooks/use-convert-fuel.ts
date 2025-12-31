@@ -8,7 +8,7 @@ import {
   BUMP_TOKEN_ADDRESS, 
   TREASURY_ADDRESS, 
   BASE_WETH_ADDRESS,
-  UNISWAP_V4_POOL_MANAGER,
+  UNISWAP_V3_ROUTER2,
   BUMP_DECIMALS,
   TREASURY_FEE_BPS,
   APP_FEE_BPS,
@@ -49,71 +49,32 @@ const ERC20_ABI = [
   },
 ] as const
 
-// Uniswap V4 PoolManager ABI
-// V4 uses a different architecture with hooks and swap actions
-// For swap, we use the swap function with SwapParams
-const UNISWAP_V4_POOL_MANAGER_ABI = [
+// Uniswap V3 Router2 ABI (exactInputSingle)
+// Using V3 Router as it's more stable and pools are readily available
+const UNISWAP_V3_ROUTER_ABI = [
   {
     inputs: [
       {
         components: [
-          { name: "currency0", type: "address" }, // Currency (token address or zero address for native ETH)
-          { name: "currency1", type: "address" },
+          { name: "tokenIn", type: "address" },
+          { name: "tokenOut", type: "address" },
           { name: "fee", type: "uint24" },
-          { name: "tickSpacing", type: "int24" },
-          { name: "hooks", type: "address" }, // Hook contract address (can be zero address)
-        ],
-        name: "key",
-        type: "tuple",
-      },
-      {
-        components: [
-          { name: "zeroForOne", type: "bool" }, // true = token0 -> token1, false = token1 -> token0
-          { name: "amountSpecified", type: "int256" }, // Negative for exact input, positive for exact output
-          { name: "sqrtPriceLimitX96", type: "uint160" }, // Price limit (0 = no limit)
+          { name: "recipient", type: "address" },
+          { name: "deadline", type: "uint256" },
+          { name: "amountIn", type: "uint256" },
+          { name: "amountOutMinimum", type: "uint256" },
+          { name: "sqrtPriceLimitX96", type: "uint160" },
         ],
         name: "params",
         type: "tuple",
       },
-      { name: "hookData", type: "bytes" }, // Hook data (empty bytes if no hooks)
     ],
-    name: "swap",
-    outputs: [
-      { name: "amount0", type: "int256" },
-      { name: "amount1", type: "int256" },
-    ],
-    stateMutability: "nonpayable",
-    type: "function",
-  },
-  {
-    inputs: [
-      {
-        components: [
-          { name: "currency0", type: "address" },
-          { name: "currency1", type: "address" },
-          { name: "fee", type: "uint24" },
-          { name: "tickSpacing", type: "int24" },
-          { name: "hooks", type: "address" },
-        ],
-        name: "key",
-        type: "tuple",
-      },
-    ],
-    name: "getSlot0",
-    outputs: [
-      { name: "sqrtPriceX96", type: "uint160" },
-      { name: "tick", type: "int24" },
-      { name: "protocolFee", type: "uint24" },
-      { name: "lpFee", type: "uint24" },
-    ],
-    stateMutability: "view",
+    name: "exactInputSingle",
+    outputs: [{ name: "amountOut", type: "uint256" }],
+    stateMutability: "payable",
     type: "function",
   },
 ] as const
-
-// Note: Uniswap V4 requires a Router or Hook contract to handle token transfers
-// For simplicity, we'll use a SwapRouter pattern if available
-// If not, we may need to use V3 Router as fallback or implement custom swap logic
 
 export function useConvertFuel() {
   const { client: smartWalletClient } = useSmartWallets()
@@ -185,12 +146,11 @@ export function useConvertFuel() {
         value: BigInt(0),
       })
 
-      // Call 2: Approve Uniswap V4 PoolManager to spend 95% $BUMP
-      // Note: V4 PoolManager may need approval depending on implementation
+      // Call 2: Approve Uniswap V3 Router to spend 95% $BUMP
       const approveData = encodeFunctionData({
         abi: ERC20_ABI,
         functionName: "approve",
-        args: [UNISWAP_V4_POOL_MANAGER as Address, swapAmountWei],
+        args: [UNISWAP_V3_ROUTER2 as Address, swapAmountWei],
       })
       calls.push({
         to: BUMP_TOKEN_ADDRESS as Address,
@@ -198,56 +158,29 @@ export function useConvertFuel() {
         value: BigInt(0),
       })
 
-      // Call 3: Swap 95% $BUMP to ETH via Uniswap V4 PoolManager
-      // V4 uses a different swap mechanism with pool keys and swap params
-      // Note: This is a simplified implementation. V4 may require additional setup:
-      // - Pool key (currency0, currency1, fee, tickSpacing, hooks)
-      // - Swap params (zeroForOne, amountSpecified, sqrtPriceLimitX96)
-      // - Hook data (if using hooks)
-      
-      // For $BUMP -> WETH swap:
-      // - currency0 = $BUMP (lower address)
-      // - currency1 = WETH (higher address)
-      // - zeroForOne = true (swapping currency0 for currency1)
-      // - amountSpecified = negative (exact input)
-      // - fee = pool fee tier (500 = 0.05%, 3000 = 0.3%, 10000 = 1%)
-      // - tickSpacing = depends on fee tier (usually 1, 60, or 200)
-      
-      const token0 = BUMP_TOKEN_ADDRESS.toLowerCase() < BASE_WETH_ADDRESS.toLowerCase() 
-        ? BUMP_TOKEN_ADDRESS 
-        : BASE_WETH_ADDRESS
-      const token1 = BUMP_TOKEN_ADDRESS.toLowerCase() < BASE_WETH_ADDRESS.toLowerCase()
-        ? BASE_WETH_ADDRESS
-        : BUMP_TOKEN_ADDRESS
-      const zeroForOne = BUMP_TOKEN_ADDRESS.toLowerCase() < BASE_WETH_ADDRESS.toLowerCase()
-      
-      // Using 0.05% fee tier (500) with tickSpacing 1
-      // Adjust these values based on actual pool configuration
-      const poolFee = 500 // 0.05%
-      const tickSpacing = 1 // For 0.05% fee tier
-      const hooksAddress = "0x0000000000000000000000000000000000000000" // No hooks
-      
+      // Call 3: Swap 95% $BUMP to ETH via Uniswap V3 Router
+      // Using V3 Router as it's more stable and pools are readily available
+      // Using 0.05% fee tier (500) - adjust based on actual pool fee
+      // Deadline: 20 minutes from now
+      const deadline = BigInt(Math.floor(Date.now() / 1000) + 1200)
       const swapData = encodeFunctionData({
-        abi: UNISWAP_V4_POOL_MANAGER_ABI,
-        functionName: "swap",
+        abi: UNISWAP_V3_ROUTER_ABI,
+        functionName: "exactInputSingle",
         args: [
           {
-            currency0: token0 as Address,
-            currency1: token1 as Address,
-            fee: poolFee,
-            tickSpacing: tickSpacing,
-            hooks: hooksAddress as Address,
+            tokenIn: BUMP_TOKEN_ADDRESS,
+            tokenOut: BASE_WETH_ADDRESS,
+            fee: 500, // 0.05% fee tier - adjust if pool uses different fee (3000 = 0.3%, 10000 = 1%)
+            recipient: userAddress,
+            deadline: deadline,
+            amountIn: swapAmountWei,
+            amountOutMinimum: BigInt(0), // Accept any amount (slippage protection can be added)
+            sqrtPriceLimitX96: BigInt(0),
           },
-          {
-            zeroForOne: zeroForOne,
-            amountSpecified: -BigInt(swapAmountWei.toString()), // Negative for exact input
-            sqrtPriceLimitX96: BigInt(0), // No price limit
-          },
-          "0x" as Hex, // Empty hook data
         ],
       })
       calls.push({
-        to: UNISWAP_V4_POOL_MANAGER as Address,
+        to: UNISWAP_V3_ROUTER2 as Address,
         data: swapData,
         value: BigInt(0),
       })
@@ -309,10 +242,10 @@ export function useConvertFuel() {
 
           await publicClient.waitForTransactionReceipt({ hash: approveTxHash })
 
-          // Third: Swap via Uniswap V4 PoolManager
+          // Third: Swap via Uniswap V3 Router
           txHash = await Promise.race([
             smartWalletClient.sendTransaction({
-              to: UNISWAP_V4_POOL_MANAGER,
+              to: UNISWAP_V3_ROUTER2,
               data: swapData,
               value: BigInt(0),
             }),
