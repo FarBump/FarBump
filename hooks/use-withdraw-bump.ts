@@ -71,8 +71,8 @@ export function useWithdrawBump() {
        * 
        * Timeout handling: Paymaster API calls can timeout, so we wrap it with a timeout
        */
-      const MAX_RETRIES = 2
-      const TIMEOUT_MS = 30000 // 30 seconds timeout for Paymaster API call
+      const MAX_RETRIES = 3 // Increased retries
+      const TIMEOUT_MS = 60000 // Increased to 60 seconds for Paymaster API calls
       
       let txHash: `0x${string}` | null = null
       let lastError: Error | null = null
@@ -81,13 +81,17 @@ export function useWithdrawBump() {
       for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
         try {
           if (attempt > 0) {
-            // Exponential backoff: 1s, 2s, 4s
-            const delay = Math.pow(2, attempt - 1) * 1000
-            console.log(`⏳ Waiting ${delay}ms before retry...`)
+            // Exponential backoff: 2s, 4s, 8s
+            const delay = Math.pow(2, attempt) * 1000
+            console.log(`⏳ Waiting ${delay}ms before retry (attempt ${attempt + 1}/${MAX_RETRIES + 1})...`)
             await new Promise(resolve => setTimeout(resolve, delay))
           }
 
+          console.log(`🔄 Attempt ${attempt + 1}/${MAX_RETRIES + 1}: Sending transaction...`)
+
           // Wrap sendTransaction with timeout
+          let timeoutId: NodeJS.Timeout | null = null
+          
           const transactionPromise = smartWalletClient.sendTransaction({
             to: BUMP_TOKEN_ADDRESS,
             data: data,
@@ -95,27 +99,51 @@ export function useWithdrawBump() {
           })
 
           const timeoutPromise = new Promise<never>((_, reject) => {
-            setTimeout(() => {
+            timeoutId = setTimeout(() => {
               reject(new Error("Transaction request timed out. The Paymaster API may be slow or unavailable. Please try again."))
             }, TIMEOUT_MS)
           })
 
-          txHash = await Promise.race([transactionPromise, timeoutPromise]) as `0x${string}`
-          break // Success, exit retry loop
+          try {
+            // Race between transaction and timeout
+            txHash = await Promise.race([
+              transactionPromise.finally(() => {
+                // Clear timeout if transaction completes (success or failure)
+                if (timeoutId) {
+                  clearTimeout(timeoutId)
+                }
+              }),
+              timeoutPromise.finally(() => {
+                // Clear timeout if it fires
+                if (timeoutId) {
+                  clearTimeout(timeoutId)
+                }
+              })
+            ]) as `0x${string}`
+            
+            console.log(`✅ Transaction sent successfully on attempt ${attempt + 1}`)
+            break // Success, exit retry loop
+          } catch (raceError: any) {
+            // Ensure timeout is cleared on any error
+            if (timeoutId) {
+              clearTimeout(timeoutId)
+            }
+            throw raceError
+          }
         } catch (attemptError: any) {
           lastError = attemptError
           console.error(`❌ Withdrawal attempt ${attempt + 1} failed:`, attemptError)
           
-          const errorMessage = attemptError.message || ""
-          const errorDetails = attemptError.details || attemptError.cause?.details || ""
+          const errorMessage = (attemptError.message || "").toLowerCase()
+          const errorDetails = (attemptError.details || attemptError.cause?.details || "").toLowerCase()
           const errorName = attemptError.name || attemptError.cause?.name || ""
           
           // Check if it's a billing configuration error - don't retry these
           const isBillingError = 
-            errorMessage.includes("No billing attached") ||
+            errorMessage.includes("no billing attached") ||
             errorMessage.includes("billing attached to account") ||
             errorMessage.includes("request denied") ||
-            errorDetails.includes("No billing attached") ||
+            errorDetails.includes("no billing attached") ||
             errorDetails.includes("billing attached to account") ||
             errorName === "ResourceUnavailableRpcError"
           
@@ -133,8 +161,12 @@ export function useWithdrawBump() {
           if (isTimeout && attempt < MAX_RETRIES) {
             console.log(`⚠️ Timeout detected, will retry (${attempt + 1}/${MAX_RETRIES})...`)
             continue // Retry
+          } else if (attempt >= MAX_RETRIES) {
+            // Max retries reached
+            console.error(`❌ Max retries (${MAX_RETRIES + 1}) reached. Last error:`, attemptError)
+            throw attemptError
           } else {
-            // Not a timeout or max retries reached, throw error
+            // Not a timeout and not max retries, throw error immediately
             throw attemptError
           }
         }
