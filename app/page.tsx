@@ -67,6 +67,9 @@ export default function BumpBotDashboard() {
   const [sdkReady, setSdkReady] = useState(false)
   const [isCreatingSmartWallet, setIsCreatingSmartWallet] = useState(false)
   
+  // State for target token address (from TokenInput)
+  const [targetTokenAddress, setTargetTokenAddress] = useState<string | null>(null)
+  
   // Farcaster Embed Wallet address (hanya untuk informasi, TIDAK digunakan untuk verifikasi atau transaksi)
   // Ini adalah wallet yang dibuat oleh Farcaster untuk user (custody address)
   const farcasterEmbedWallet = context?.user?.custodyAddress || null
@@ -626,14 +629,14 @@ export default function BumpBotDashboard() {
 
           <TabsContent value="control" className="mt-4 space-y-4">
             <AnalyticsCards isActive={isActive} />
-            <PriceChart />
+            <PriceChart tokenAddress={targetTokenAddress} />
             <WalletCard 
               fuelBalance={fuelBalance} 
               credits={credits} 
               walletAddress={privySmartWalletAddress}
               isSmartAccountActive={!!privySmartWalletAddress}
             />
-            <TokenInput />
+            <TokenInput onAddressChange={setTargetTokenAddress} />
             <ConfigPanel 
               fuelBalance={fuelBalance} 
               credits={credits} 

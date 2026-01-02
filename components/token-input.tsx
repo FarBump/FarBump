@@ -1,20 +1,47 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { Card } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { CheckCircle2, XCircle, Loader2 } from "lucide-react"
+import { isAddress } from "viem"
 
-export function TokenInput() {
+interface TokenInputProps {
+  onAddressChange?: (address: string | null) => void
+}
+
+export function TokenInput({ onAddressChange }: TokenInputProps) {
   const [address, setAddress] = useState("")
   const [status, setStatus] = useState<"idle" | "loading" | "verified" | "error">("idle")
 
+  // Reset status when address is cleared
+  useEffect(() => {
+    if (!address && status !== "idle") {
+      setStatus("idle")
+    }
+  }, [address, status])
+
+  // Notify parent when address changes and is verified
+  useEffect(() => {
+    if (status === "verified" && address && isAddress(address)) {
+      onAddressChange?.(address)
+    } else {
+      onAddressChange?.(null)
+    }
+  }, [address, status, onAddressChange])
+
   const handleVerify = () => {
     setStatus("loading")
+    // Validate address format
+    const isValid = address && isAddress(address)
     setTimeout(() => {
-      setStatus(address.length > 10 ? "verified" : "error")
-    }, 1500)
+      if (isValid) {
+        setStatus("verified")
+      } else {
+        setStatus("error")
+      }
+    }, 500)
   }
 
   return (
