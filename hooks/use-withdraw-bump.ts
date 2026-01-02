@@ -70,9 +70,10 @@ export function useWithdrawBump() {
        * dan mengirimkan ini sebagai Sponsored User Operation.
        * 
        * Timeout handling: Paymaster API calls can timeout, so we wrap it with a timeout
+       * Coinbase CDP Paymaster API can be slow, so we use longer timeout and more retries
        */
-      const MAX_RETRIES = 3 // Increased retries
-      const TIMEOUT_MS = 60000 // Increased to 60 seconds for Paymaster API calls
+      const MAX_RETRIES = 5 // Increased retries for Paymaster API reliability
+      const TIMEOUT_MS = 120000 // Increased to 120 seconds (2 minutes) for slow Paymaster API calls
       
       let txHash: `0x${string}` | null = null
       let lastError: Error | null = null
@@ -81,8 +82,8 @@ export function useWithdrawBump() {
       for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
         try {
           if (attempt > 0) {
-            // Exponential backoff: 2s, 4s, 8s
-            const delay = Math.pow(2, attempt) * 1000
+            // Exponential backoff: 3s, 6s, 12s, 24s, 48s
+            const delay = Math.min(Math.pow(2, attempt) * 1500, 30000) // Cap at 30s
             console.log(`⏳ Waiting ${delay}ms before retry (attempt ${attempt + 1}/${MAX_RETRIES + 1})...`)
             await new Promise(resolve => setTimeout(resolve, delay))
           }
@@ -90,7 +91,7 @@ export function useWithdrawBump() {
           console.log(`🔄 Attempt ${attempt + 1}/${MAX_RETRIES + 1}: Sending transaction...`)
 
           // Wrap sendTransaction with timeout
-          let timeoutId: NodeJS.Timeout | null = null
+          let timeoutId: ReturnType<typeof setTimeout> | null = null
           
           const transactionPromise = smartWalletClient.sendTransaction({
             to: BUMP_TOKEN_ADDRESS,
@@ -134,9 +135,16 @@ export function useWithdrawBump() {
           lastError = attemptError
           console.error(`❌ Withdrawal attempt ${attempt + 1} failed:`, attemptError)
           
-          const errorMessage = (attemptError.message || "").toLowerCase()
-          const errorDetails = (attemptError.details || attemptError.cause?.details || "").toLowerCase()
+          const errorMessage = (attemptError.message || attemptError.toString() || "").toLowerCase()
+          const errorDetails = (attemptError.details || attemptError.cause?.details || attemptError.cause?.message || "").toLowerCase()
           const errorName = attemptError.name || attemptError.cause?.name || ""
+          // Also check the full error object string representation (safely)
+          let errorString = ""
+          try {
+            errorString = JSON.stringify(attemptError).toLowerCase()
+          } catch {
+            errorString = String(attemptError).toLowerCase()
+          }
           
           // Check if it's a billing configuration error - don't retry these
           const isBillingError = 
@@ -153,10 +161,20 @@ export function useWithdrawBump() {
           }
           
           // Check if it's a timeout error - retry these
+          // Paymaster API can timeout with various error messages
           const isTimeout = 
             errorMessage.includes("timeout") || 
             errorMessage.includes("timed out") ||
-            errorName === "TimeoutError"
+            errorMessage.includes("took too long") ||
+            errorMessage.includes("request took too long") ||
+            errorMessage.includes("too long to respond") ||
+            errorDetails.includes("timeout") ||
+            errorDetails.includes("took too long") ||
+            errorDetails.includes("too long to respond") ||
+            errorString.includes("timeout") ||
+            errorString.includes("took too long") ||
+            errorName === "TimeoutError" ||
+            errorName === "RequestTimeoutError"
           
           if (isTimeout && attempt < MAX_RETRIES) {
             console.log(`⚠️ Timeout detected, will retry (${attempt + 1}/${MAX_RETRIES})...`)
@@ -219,8 +237,14 @@ export function useWithdrawBump() {
         errorName === "ResourceUnavailableRpcError"
       ) {
         friendlyMessage = "Paymaster billing not configured. Please configure billing for mainnet sponsorship in Coinbase CDP Dashboard. Contact the administrator to set up Paymaster billing."
-      } else if (friendlyMessage.includes("timeout") || friendlyMessage.includes("timed out") || err.name === "TimeoutError") {
-        friendlyMessage = "Transaction request timed out. The Paymaster API may be slow or unavailable. Please try again in a few moments."
+      } else if (
+        friendlyMessage.includes("timeout") || 
+        friendlyMessage.includes("timed out") || 
+        friendlyMessage.includes("took too long") ||
+        err.name === "TimeoutError" ||
+        err.name === "RequestTimeoutError"
+      ) {
+        friendlyMessage = "Transaction request timed out. The Paymaster API may be slow or unavailable. The system will automatically retry. Please wait..."
       } else if (friendlyMessage.includes("insufficient funds")) {
         friendlyMessage = "Insufficient ETH for gas. Check if Paymaster is correctly configured in Privy Dashboard."
       } else if (friendlyMessage.includes("Failed to fetch") || friendlyMessage.includes("network")) {
