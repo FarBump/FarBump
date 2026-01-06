@@ -4,6 +4,19 @@ import { useReadContract } from "wagmi"
 import { base } from "wagmi/chains"
 import { formatUnits } from "viem"
 
+/**
+ * Fetches $BUMP token balance directly from blockchain
+ * 
+ * IMPORTANT: This is the actual $BUMP token balance in the user's wallet
+ * - Reads directly from ERC20 contract on-chain
+ * - Used for withdraw operations (useWithdrawBump)
+ * - Independent from credit balance (useCreditBalance)
+ * 
+ * Credit Balance vs $BUMP Balance:
+ * - Credit Balance = ETH value from converting $BUMP (stored in Supabase, for bot services)
+ * - $BUMP Balance = Actual $BUMP tokens in wallet (on-chain, for withdraw)
+ */
+
 // $BUMP Token Contract Address on Base Network
 const BUMP_TOKEN_ADDRESS = "0x94ce728849431818ec9a0cf29bdb24fe413bbb07" as const
 const BUMP_DECIMALS = 18
@@ -52,6 +65,8 @@ export function useBumpBalance({ address, enabled = true }: UseBumpBalanceProps)
     refetch,
   }
 }
+
+
 
 
 

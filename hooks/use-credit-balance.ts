@@ -14,6 +14,14 @@ interface CreditBalance {
 /**
  * Fetches user credit balance from database and converts to USD
  * Uses real-time ETH price from CoinGecko API
+ * 
+ * IMPORTANT: This is NOT the $BUMP token balance!
+ * - Credit Balance = ETH value from converting $BUMP to ETH (stored in Supabase)
+ * - Used for paying for bump bot services in the future
+ * - For $BUMP token balance, use useBumpBalance() instead
+ * 
+ * This hook is completely independent from withdraw operations.
+ * Withdraw uses useBumpBalance() which reads directly from blockchain.
  */
 export function useCreditBalance(userAddress: string | null) {
   const supabase = createSupabaseClient()
