@@ -7,6 +7,3 @@ console.log(privateKey)
 console.log('\n⚠️  WARNING: Keep this private key secure!')
 console.log('⚠️  DO NOT commit this to version control!')
 console.log('\nCopy this key and update config.js with it.')
-
-
-

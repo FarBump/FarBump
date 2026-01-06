@@ -150,5 +150,3 @@ export function useCreditBalance(userAddress: string | null, options?: { enabled
     retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 30000),
   })
 }
-
-

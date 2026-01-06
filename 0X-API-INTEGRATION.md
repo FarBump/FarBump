@@ -25,21 +25,21 @@ This document explains how to use 0x Swap API for token swaps on Base network wi
 
 Add to `.env.local`:
 
-```env
+\`\`\`env
 NEXT_PUBLIC_ZEROX_API_KEY=bec0c136-9487-4a50-9ceb-995e8d6a1419
-```
+\`\`\`
 
 ### 3. Restart Development Server
 
-```bash
+\`\`\`bash
 npm run dev
-```
+\`\`\`
 
 ## Usage
 
 ### Basic Swap
 
-```typescript
+\`\`\`typescript
 import { use0xSwap } from "@/hooks/use-0x-swap"
 
 function MyComponent() {
@@ -62,11 +62,11 @@ function MyComponent() {
     </button>
   )
 }
-```
+\`\`\`
 
 ### Swap $BUMP to WETH (Convenience Method)
 
-```typescript
+\`\`\`typescript
 import { use0xSwap } from "@/hooks/use-0x-swap"
 
 function MyComponent() {
@@ -82,11 +82,11 @@ function MyComponent() {
     </button>
   )
 }
-```
+\`\`\`
 
 ### Get Quote Only
 
-```typescript
+\`\`\`typescript
 import { use0xSwap } from "@/hooks/use-0x-swap"
 
 function MyComponent() {
@@ -106,7 +106,7 @@ function MyComponent() {
     console.log("Estimated Price Impact:", quote.estimatedPriceImpact)
   }
 }
-```
+\`\`\`
 
 ## API Endpoints
 
@@ -118,7 +118,7 @@ function MyComponent() {
 
 ## Response Structure
 
-```typescript
+\`\`\`typescript
 {
   chainId: 8453,
   price: "0.001234",
@@ -146,7 +146,7 @@ function MyComponent() {
     }
   }
 }
-```
+\`\`\`
 
 ## Permit2 Integration
 
@@ -192,4 +192,3 @@ Check your usage at [0x Dashboard](https://dashboard.0x.org)
 - [0x Swap API Documentation](https://0x.org/docs/api/swap-permit2)
 - [0x Dashboard](https://dashboard.0x.org)
 - [Permit2 Documentation](https://docs.uniswap.org/contracts/permit2/overview)
-

@@ -25,7 +25,7 @@ Dokumentasi implementasi Uniswap V4 PoolManager untuk swap $BUMP ke ETH di Base 
 
 ### 1. Pool Key Structure
 Setiap pool di V4 diidentifikasi oleh:
-```typescript
+\`\`\`typescript
 {
   currency0: Address,    // Token dengan address lebih rendah (alphabetically)
   currency1: Address,     // Token dengan address lebih tinggi
@@ -33,16 +33,16 @@ Setiap pool di V4 diidentifikasi oleh:
   tickSpacing: int24,    // Tick spacing (1, 60, atau 200 tergantung fee)
   hooks: Address          // Hook contract (0x0 jika tidak ada hooks)
 }
-```
+\`\`\`
 
 ### 2. Swap Parameters
-```typescript
+\`\`\`typescript
 {
   zeroForOne: bool,              // true = currency0 -> currency1, false = sebaliknya
   amountSpecified: int256,        // Negative untuk exact input, positive untuk exact output
   sqrtPriceLimitX96: uint160      // Price limit (0 = no limit)
 }
-```
+\`\`\`
 
 ### 3. Implementation di Hook
 Hook `use-convert-fuel.ts` melakukan:
@@ -53,7 +53,7 @@ Hook `use-convert-fuel.ts` melakukan:
 ## ⚙️ Konfigurasi Pool
 
 ### Pool Configuration untuk $BUMP/WETH
-```typescript
+\`\`\`typescript
 // Token addresses (sorted alphabetically)
 const token0 = BUMP_TOKEN_ADDRESS.toLowerCase() < BASE_WETH_ADDRESS.toLowerCase()
   ? BUMP_TOKEN_ADDRESS  // $BUMP (lower address)
@@ -78,7 +78,7 @@ const token1 = BUMP_TOKEN_ADDRESS.toLowerCase() < BASE_WETH_ADDRESS.toLowerCase(
   amountSpecified: -swapAmountWei,  // Negative = exact input
   sqrtPriceLimitX96: 0   // No price limit
 }
-```
+\`\`\`
 
 ## ⚠️ Important Notes
 
@@ -128,7 +128,7 @@ Untuk memverifikasi pool $BUMP/WETH di Uniswap V4:
 
 Jika V4 pool tidak tersedia, bisa menggunakan V3 Router sebagai fallback:
 
-```typescript
+\`\`\`typescript
 // Fallback ke V3 Router
 import { UNISWAP_V3_ROUTER2 } from "@/lib/constants"
 
@@ -138,11 +138,10 @@ const swapData = encodeFunctionData({
   functionName: "exactInputSingle",
   args: [/* V3 params */],
 })
-```
+\`\`\`
 
 ## 📚 References
 
 - [Uniswap V4 Documentation](https://docs.uniswap.org/)
 - [Uniswap V4 GitHub](https://github.com/Uniswap/v4-core)
 - [Base Network Deployments](https://docs.verifiedpools.com/security/deployments)
-

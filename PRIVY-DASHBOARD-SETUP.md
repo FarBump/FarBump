@@ -89,9 +89,9 @@ Sebelum memulai, pastikan Anda sudah:
 3. Di bagian **App Information**, cari **App ID**
 4. **Copy** App ID (format: `clxxxxxxxxxxxxx`)
 5. Paste ke file `.env.local` di project:
-   ```env
+   \`\`\`env
    NEXT_PUBLIC_PRIVY_APP_ID=clxxxxxxxxxxxxx
-   ```
+   \`\`\`
 
 **Catatan:**
 - App ID adalah identifier unik untuk aplikasi Anda
@@ -138,9 +138,9 @@ Setelah setup, pastikan semua konfigurasi sudah benar:
 Setelah setup selesai, test aplikasi:
 
 1. **Start development server:**
-   ```bash
+   \`\`\`bash
    npm run dev
-   ```
+   \`\`\`
 
 2. **Buka aplikasi di browser:**
    - Development: http://localhost:3000
@@ -242,10 +242,3 @@ Setup Privy Dashboard untuk FarBump membutuhkan:
 5. ✅ **Configure Allowed Origins untuk production (optional)**
 
 Setelah semua setup selesai, aplikasi siap digunakan!
-
-
-
-
-
-
-
