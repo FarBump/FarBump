@@ -74,7 +74,7 @@ The conversion process uses 5 Universal Router commands in a single atomic trans
 
 The `PathKey` structure defines the swap route for V4:
 
-```typescript
+\`\`\`typescript
 struct PathKey {
   address[] intermediateCurrency;  // Empty for single-hop swap
   uint24[] fee;                    // [8388608] - Dynamic Fee
@@ -82,7 +82,7 @@ struct PathKey {
   address[] hooks;                 // [0xd60D6B218116cFd801E28F78d011a203D2b068Cc]
   bytes[] hookData;                // ["0x"] - Empty hook data
 }
-```
+\`\`\`
 
 For a **single-hop swap** (direct $BUMP → WETH):
 - `intermediateCurrency` is an **empty array** (no intermediate tokens)
@@ -97,7 +97,7 @@ For a **single-hop swap** (direct $BUMP → WETH):
 
 ### Conversion Phase
 1. **Batch Transaction via Smart Wallet**:
-   ```
+   \`\`\`
    Call 1: Permit2.approve(BUMP_TOKEN, UNIVERSAL_ROUTER, MAX_UINT160, MAX_UINT48)
            └─ Authorizes Universal Router to spend $BUMP via Permit2
    
@@ -108,7 +108,7 @@ For a **single-hop swap** (direct $BUMP → WETH):
               ├─ UNWRAP_WETH: WETH → Native ETH
               ├─ PAY_PORTION: 5% ETH → Treasury
               └─ SWEEP: 90% ETH → User
-   ```
+   \`\`\`
 
 2. **Backend Verification** (`/api/sync-credit`):
    - Verify transaction receipt on-chain
@@ -171,5 +171,3 @@ For a **single-hop swap** (direct $BUMP → WETH):
 - The current implementation uses `amountOutMinimum = 0` for testing purposes. In production, implement proper slippage calculation based on real-time pool price.
 - PathKey encoding follows V4 specification for single-hop swaps with custom hooks and dynamic fees.
 - All operations are atomic - either all succeed or all revert.
-
-

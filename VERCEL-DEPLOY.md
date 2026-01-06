@@ -45,7 +45,7 @@ Vercel akan auto-detect Next.js. Pastikan konfigurasi:
 
 #### Required Variables:
 
-```
+\`\`\`
 NEXT_PUBLIC_PRIVY_APP_ID
 Value: [Masukkan Privy App ID Anda]
 
@@ -58,7 +58,7 @@ Value: [Masukkan Supabase Anon Key Anda]
 NEXT_PUBLIC_APP_URL
 Value: https://[project-name].vercel.app
 (akan otomatis terisi setelah deploy, bisa update nanti)
-```
+\`\`\`
 
 3. Pilih **Environment:** Production, Preview, dan Development
 4. Klik **Save**
@@ -78,11 +78,11 @@ Setelah deploy, update manifest dengan domain Vercel:
 1. Buka `public/.well-known/farcaster.json`
 2. Ganti semua `https://farbump.vercel.app` dengan domain Vercel Anda
 3. Commit dan push:
-   ```bash
+   \`\`\`bash
    git add public/.well-known/farcaster.json
    git commit -m "Update manifest with Vercel domain"
    git push
-   ```
+   \`\`\`
 4. Vercel akan auto-deploy ulang
 
 ## 🔧 Setup Domain Custom (Optional)
@@ -178,4 +178,3 @@ Setelah deploy, test:
 ---
 
 **Selamat!** 🎉 Aplikasi Anda sudah live di Vercel dengan domain gratis!
-

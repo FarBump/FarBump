@@ -9,14 +9,14 @@ File ini menjelaskan cara setup environment variables untuk FarBump.
 Buat file `.env.local` di root project (sama level dengan `package.json`).
 
 **Windows:**
-```bash
+\`\`\`bash
 copy env.example.txt .env.local
-```
+\`\`\`
 
 **Mac/Linux:**
-```bash
+\`\`\`bash
 cp env.example.txt .env.local
-```
+\`\`\`
 
 ### 2. Isi Environment Variables
 
@@ -30,9 +30,9 @@ Buka file `.env.local` dan isi dengan nilai yang sesuai:
 4. Salin **App ID**
 5. Paste ke `NEXT_PUBLIC_PRIVY_APP_ID`
 
-```env
+\`\`\`env
 NEXT_PUBLIC_PRIVY_APP_ID=clxxxxxxxxxxxxx
-```
+\`\`\`
 
 **Setup Privy:**
 - Aktifkan **Farcaster** login method
@@ -47,30 +47,30 @@ NEXT_PUBLIC_PRIVY_APP_ID=clxxxxxxxxxxxxx
    - **Project URL** → `NEXT_PUBLIC_SUPABASE_URL`
    - **anon/public key** → `NEXT_PUBLIC_SUPABASE_ANON_KEY`
 
-```env
+\`\`\`env
 NEXT_PUBLIC_SUPABASE_URL=https://xxxxxxxxxxxxx.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
-```
+\`\`\`
 
 #### 🌐 Application URL (Optional)
 
 Untuk development lokal:
-```env
+\`\`\`env
 NEXT_PUBLIC_APP_URL=http://localhost:3000
-```
+\`\`\`
 
 Untuk production:
-```env
+\`\`\`env
 NEXT_PUBLIC_APP_URL=https://farbump.vercel.app
-```
+\`\`\`
 
 ### 3. Verifikasi Setup
 
 Setelah mengisi semua environment variables, restart development server:
 
-```bash
+\`\`\`bash
 npm run dev
-```
+\`\`\`
 
 Aplikasi akan membaca environment variables dari `.env.local`.
 
@@ -127,4 +127,3 @@ Untuk production (Vercel, Netlify, dll), setup environment variables di dashboar
 - Pastikan menggunakan prefix `NEXT_PUBLIC_` untuk client-side variables
 - Restart development server
 - Clear Next.js cache: `rm -rf .next` (Mac/Linux) atau `rmdir /s .next` (Windows)
-

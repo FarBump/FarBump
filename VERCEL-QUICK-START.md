@@ -19,11 +19,11 @@ Panduan cepat untuk deploy FarBump ke Vercel dan mendapatkan domain gratis.
 
 Di halaman project setup, scroll ke **Environment Variables** dan tambahkan:
 
-```
+\`\`\`
 NEXT_PUBLIC_PRIVY_APP_ID = [Privy App ID Anda]
 NEXT_PUBLIC_SUPABASE_URL = [Supabase URL Anda]
 NEXT_PUBLIC_SUPABASE_ANON_KEY = [Supabase Anon Key Anda]
-```
+\`\`\`
 
 **Untuk setiap variable:**
 - Klik **Add**
@@ -45,11 +45,11 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY = [Supabase Anon Key Anda]
 1. Buka `public/.well-known/farcaster.json`
 2. Ganti semua `https://farbump.vercel.app` dengan domain Vercel Anda (misalnya `https://farbumpbot.vercel.app`)
 3. Commit dan push:
-   ```bash
+   \`\`\`bash
    git add public/.well-known/farcaster.json
    git commit -m "Update manifest with Vercel domain"
    git push
-   ```
+   \`\`\`
 4. Vercel akan auto-deploy ulang
 
 ### Update Environment Variable `NEXT_PUBLIC_APP_URL`
@@ -94,4 +94,3 @@ Lihat `VERCEL-DEPLOY.md` untuk panduan lengkap dan troubleshooting detail.
 ---
 
 **Selamat!** 🎉 Aplikasi Anda sudah live di Vercel!
-

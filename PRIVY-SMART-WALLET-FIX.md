@@ -25,7 +25,7 @@ Berdasarkan dokumentasi Privy dan hasil investigasi:
   3. `loginToMiniApp({ message, signature })` → complete login
 
 **Kode:**
-```typescript
+\`\`\`typescript
 const handleConnect = async () => {
   // Step 1: Initialize login to get message
   const { message } = await initLoginToMiniApp()
@@ -36,7 +36,7 @@ const handleConnect = async () => {
   // Step 3: Complete login with message and signature
   await loginToMiniApp({ message, signature })
 }
-```
+\`\`\`
 
 ### 2. Auto-Create Smart Wallet Setelah Login
 
@@ -47,7 +47,7 @@ const handleConnect = async () => {
 - Logic: Jika user sudah authenticated tapi Smart Wallet belum ada, otomatis create Smart Wallet
 
 **Kode:**
-```typescript
+\`\`\`typescript
 useEffect(() => {
   if (isAuthenticated && username && userFid && !privySmartWalletAddress && privyReady && !isCreatingSmartWallet) {
     // Auto-create Smart Wallet for Farcaster Mini App users
@@ -61,7 +61,7 @@ useEffect(() => {
     }, 500) // Small delay to ensure Privy is fully ready
   }
 }, [isAuthenticated, username, userFid, privySmartWalletAddress, privyReady, isCreatingSmartWallet, createWallet])
-```
+\`\`\`
 
 ### 3. Update Konfigurasi Privy Provider
 
@@ -121,7 +121,7 @@ Setelah implementasi fix ini, pastikan:
 
 ### Expected Console Logs
 
-```
+\`\`\`
 🔘 Connect Button: Starting Farcaster Mini App login flow...
   Step 1: Initializing login to get message...
   ✅ Message received: [message]
@@ -134,7 +134,7 @@ Setelah implementasi fix ini, pastikan:
   🔄 Creating Smart Wallet automatically...
   ✅ Smart Wallet created automatically: [address]
 ✅ Privy Smart Wallet ready (Primary Address): [address]
-```
+\`\`\`
 
 ## 🐛 Troubleshooting
 
@@ -189,7 +189,3 @@ Setelah implementasi fix ini, pastikan:
 
 **Last Updated:** Setelah fix implementasi
 **Status:** ✅ Fixed - Smart Wallet akan otomatis dibuat setelah Farcaster login
-
-
-
-

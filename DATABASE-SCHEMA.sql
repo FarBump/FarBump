@@ -84,5 +84,3 @@ $$;
 -- Function created:
 --   - increment_user_credit: Atomic increment function
 -- ============================================
-
-

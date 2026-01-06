@@ -25,14 +25,14 @@ This tutorial demonstrates how to submit your first smart account transaction on
 You can generate a private key using one of these methods:
 
 **Option A: Using Foundry (if installed)**
-```bash
+\`\`\`bash
 cast wallet new
-```
+\`\`\`
 
 **Option B: Using Node.js**
-```bash
+\`\`\`bash
 node -e "console.log('0x' + require('crypto').randomBytes(32).toString('hex'))"
-```
+\`\`\`
 
 **Option C: Use any existing Ethereum private key (0x...)**
 
@@ -48,9 +48,9 @@ node -e "console.log('0x' + require('crypto').randomBytes(32).toString('hex'))"
 
 ### 4. Run the Script
 
-```bash
+\`\`\`bash
 npm start
-```
+\`\`\`
 
 ## What This Does
 
@@ -69,4 +69,3 @@ If you encounter errors:
 4. **"Invalid private key"**: Ensure your private key starts with `0x` and is 66 characters long
 
 For more help, see: https://docs.cdp.coinbase.com/paymaster/guides/quickstart
-

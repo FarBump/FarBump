@@ -24,7 +24,7 @@ Token $BUMP telah di-deploy menggunakan Clanker SDK v4.0.0 dan terintegrasi deng
 ## Pool Configuration
 
 ### PoolKey Parameters
-```typescript
+\`\`\`typescript
 const poolKey = {
   currency0: "0x4200000000000000000000000000000000000006", // WETH
   currency1: "0x94CE728849431818EC9a0CF29BDb24FE413bBb07", // $BUMP
@@ -32,19 +32,19 @@ const poolKey = {
   tickSpacing: 200,    // Dynamic fee spacing
   hooks: "0xd60D6B218116cFd801E28F78d011a203D2b068Cc" // Clanker UniV4SwapExtension hook
 }
-```
+\`\`\`
 
 ### Fee Configuration
-```typescript
+\`\`\`typescript
 const CLANKER_FEE_CONFIG = {
   type: "dynamic",
   preset: "DynamicBasic",
   // Dynamic fees: 0.01% to 1% based on pool conditions
 }
-```
+\`\`\`
 
 ### Rewards Configuration
-```typescript
+\`\`\`typescript
 const CLANKER_REWARDS_CONFIG = {
   recipients: [
     {
@@ -59,20 +59,20 @@ const CLANKER_REWARDS_CONFIG = {
     }
   ]
 }
-```
+\`\`\`
 
 ## Swap Implementation
 
 ### Direct PoolManager Calls
 Implementasi menggunakan direct `PoolManager.swap()` calls untuk kompatibilitas dengan Clanker pools:
 
-```typescript
+\`\`\`typescript
 const swapParams = {
   zeroForOne: false,        // selling $BUMP for WETH
   amountSpecified: -amountIn, // exact input
   sqrtPriceLimitX96: BigInt(0), // no price limit
 }
-```
+\`\`\`
 
 ### Flash Accounting
 - **SETTLE**: Bayar input tokens ke PoolManager
@@ -121,7 +121,7 @@ const swapParams = {
 
 ## Configuration Constants
 
-```typescript
+\`\`\`typescript
 // Pool Configuration
 export const BUMP_POOL_FEE = 8388608        // Dynamic Fee
 export const BUMP_POOL_TICK_SPACING = 200   // Dynamic spacing
@@ -132,7 +132,7 @@ export const CLANKER_FEE_CONFIG = {
   type: "dynamic",
   preset: "DynamicBasic"
 }
-```
+\`\`\`
 
 ## Notes
 

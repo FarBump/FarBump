@@ -38,9 +38,9 @@ Menyimpan audit log untuk setiap konversi $BUMP ke Credit.
 Function untuk atomic increment credit balance (menghindari race condition).
 
 **Cara Menggunakan:**
-```sql
+\`\`\`sql
 SELECT increment_user_credit('0x1234...', '1000000000000000000');
-```
+\`\`\`
 
 ## 🔐 Security (RLS)
 
@@ -52,11 +52,11 @@ SELECT increment_user_credit('0x1234...', '1000000000000000000');
 
 Pastikan environment variables berikut sudah di-set di `.env.local`:
 
-```env
+\`\`\`env
 NEXT_PUBLIC_SUPABASE_URL=https://yusmynrsoplqadxukesv.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inl1c215bnJzb3BscWFkeHVrZXN2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjY5ODY5NTEsImV4cCI6MjA4MjU2Mjk1MX0.yA8iQKJkezNF_gDOER0XwVwkLqz8cvoSqDoo8UOiLno
 SUPABASE_SERVICE_ROLE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inl1c215bnJzb3BscWFkeHVrZXN2Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2Njk4Njk1MSwiZXhwIjoyMDgyNTYyOTUxfQ.M4IanYhq79_Z_n-6iIdGV2_83yMiD9Ndqy2TEw4dM-s
-```
+\`\`\`
 
 ## ⚠️ Catatan Penting
 
@@ -68,4 +68,3 @@ SUPABASE_SERVICE_ROLE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhY
 ## 📚 File SQL
 
 Gunakan file `DATABASE-SCHEMA.sql` untuk setup database. File tersebut berisi pure SQL code yang siap di-paste ke Supabase SQL Editor.
-
