@@ -40,6 +40,11 @@ SUPABASE_SERVICE_ROLE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhY
 NEXT_PUBLIC_PRIVY_APP_ID=your-privy-app-id-here
 ```
 
+### 0x Swap API (Required for token swaps)
+```env
+NEXT_PUBLIC_ZEROX_API_KEY=bec0c136-9487-4a50-9ceb-995e8d6a1419
+```
+
 ## Database Setup
 
 1. **Buka Supabase Dashboard**: https://supabase.com/dashboard
@@ -55,4 +60,5 @@ Setelah setup, verifikasi:
 - ✅ Function `increment_user_credit` created
 - ✅ Environment variables loaded
 - ✅ Supabase connection working
+
 
