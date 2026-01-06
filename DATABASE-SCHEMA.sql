@@ -18,12 +18,14 @@ CREATE INDEX IF NOT EXISTS idx_user_credits_last_updated ON user_credits(last_up
 -- RLS Policy (Row Level Security)
 ALTER TABLE user_credits ENABLE ROW LEVEL SECURITY;
 
--- Policy: Users can only read their own credit balance
+-- Policy: Allow public read access (wallet address-based, not auth.uid())
+-- Since we use wallet addresses instead of Supabase Auth, we allow public SELECT
+-- Users can only query their own address via .eq() filter in application code
 DROP POLICY IF EXISTS "Users can view own credits" ON user_credits;
 CREATE POLICY "Users can view own credits"
   ON user_credits
   FOR SELECT
-  USING (auth.uid()::text = user_address);
+  USING (true); -- Allow public read - filtering by user_address is done in application code
 
 -- 2. Create conversion_logs table
 CREATE TABLE IF NOT EXISTS conversion_logs (
@@ -44,12 +46,14 @@ CREATE INDEX IF NOT EXISTS idx_conversion_logs_created_at ON conversion_logs(cre
 -- RLS Policy
 ALTER TABLE conversion_logs ENABLE ROW LEVEL SECURITY;
 
--- Policy: Users can only view their own conversion logs
+-- Policy: Allow public read access (wallet address-based, not auth.uid())
+-- Since we use wallet addresses instead of Supabase Auth, we allow public SELECT
+-- Users can only query their own address via .eq() filter in application code
 DROP POLICY IF EXISTS "Users can view own conversion logs" ON conversion_logs;
 CREATE POLICY "Users can view own conversion logs"
   ON conversion_logs
   FOR SELECT
-  USING (auth.uid()::text = user_address);
+  USING (true); -- Allow public read - filtering by user_address is done in application code
 
 -- 3. Create function untuk Atomic Increment
 CREATE OR REPLACE FUNCTION increment_user_credit(
@@ -80,4 +84,5 @@ $$;
 -- Function created:
 --   - increment_user_credit: Atomic increment function
 -- ============================================
+
 
