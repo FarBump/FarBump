@@ -23,8 +23,12 @@ interface CreditBalance {
  * This hook is completely independent from withdraw operations.
  * Withdraw uses useBumpBalance() which reads directly from blockchain.
  */
-export function useCreditBalance(userAddress: string | null) {
+export function useCreditBalance(userAddress: string | null, options?: { enabled?: boolean }) {
   const supabase = createSupabaseClient()
+  
+  // Track if 406 error occurred - disable query if RLS policy not fixed
+  const has406Error = typeof window !== "undefined" && sessionStorage.getItem("credit_406_error") === "true"
+  const enabled = options?.enabled !== false && !!userAddress && !has406Error
 
   return useQuery<CreditBalance>({
     queryKey: ["credit-balance", userAddress],
@@ -65,14 +69,20 @@ export function useCreditBalance(userAddress: string | null) {
           String(error).includes("406")
         
         if (is406Error) {
-          // Only log warning once per session to avoid console spam
-          // This error does NOT affect withdraw operations (which use useBumpBalance)
-          if (!sessionStorage.getItem("credit_406_warned")) {
-            console.warn("⚠️ Credit balance fetch failed (RLS policy issue). Returning default values.")
-            console.warn("💡 This does NOT affect withdraw - withdraw uses $BUMP token balance from blockchain.")
-            console.warn("💡 Please update RLS policy in Supabase. See FIX-RLS-POLICY.md for instructions.")
-            sessionStorage.setItem("credit_406_warned", "true")
+          // Mark 406 error occurred - disable future queries to prevent console spam
+          if (typeof window !== "undefined") {
+            sessionStorage.setItem("credit_406_error", "true")
+            
+            // Only log warning once per session to avoid console spam
+            if (!sessionStorage.getItem("credit_406_warned")) {
+              console.warn("⚠️ Credit balance fetch failed (RLS policy issue). Disabling auto-refetch.")
+              console.warn("💡 This does NOT affect withdraw - withdraw uses $BUMP token balance from blockchain.")
+              console.warn("💡 Please update RLS policy in Supabase. See FIX-RLS-POLICY.md for instructions.")
+              console.warn("💡 After fixing RLS policy, refresh the page to re-enable credit balance fetch.")
+              sessionStorage.setItem("credit_406_warned", "true")
+            }
           }
+          
           return {
             balanceWei: "0",
             balanceEth: "0",
@@ -119,8 +129,8 @@ export function useCreditBalance(userAddress: string | null) {
         lastUpdated: data?.last_updated || null,
       }
     },
-    enabled: !!userAddress,
-    refetchInterval: 30000, // Refetch every 30 seconds
+    enabled: enabled,
+    refetchInterval: enabled ? 30000 : false, // Disable refetch if 406 error occurred
     staleTime: 10000, // Consider data stale after 10 seconds
     retry: (failureCount, error: any) => {
       // Don't retry on 406 errors (RLS policy issue)

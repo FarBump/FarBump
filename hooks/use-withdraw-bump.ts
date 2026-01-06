@@ -71,9 +71,15 @@ export function useWithdrawBump() {
        * 
        * Timeout handling: Paymaster API calls can timeout, so we wrap it with a timeout
        * Coinbase CDP Paymaster API can be slow, so we use longer timeout and more retries
+       * 
+       * Note: Paymaster API timeout is often due to:
+       * 1. Network issues
+       * 2. Paymaster service overload
+       * 3. Billing configuration issues
+       * 4. Domain whitelist issues
        */
-      const MAX_RETRIES = 5 // Increased retries for Paymaster API reliability
-      const TIMEOUT_MS = 120000 // Increased to 120 seconds (2 minutes) for slow Paymaster API calls
+      const MAX_RETRIES = 6 // Increased retries for Paymaster API reliability
+      const TIMEOUT_MS = 180000 // Increased to 180 seconds (3 minutes) for very slow Paymaster API calls
       
       let txHash: `0x${string}` | null = null
       let lastError: Error | null = null
@@ -101,7 +107,7 @@ export function useWithdrawBump() {
 
           const timeoutPromise = new Promise<never>((_, reject) => {
             timeoutId = setTimeout(() => {
-              reject(new Error("Transaction request timed out. The Paymaster API may be slow or unavailable. Please try again."))
+              reject(new Error(`Transaction request timed out after ${TIMEOUT_MS / 1000}s. The Paymaster API may be slow or unavailable. Retrying...`))
             }, TIMEOUT_MS)
           })
 
@@ -250,10 +256,13 @@ export function useWithdrawBump() {
         friendlyMessage.includes("timeout") || 
         friendlyMessage.includes("timed out") || 
         friendlyMessage.includes("took too long") ||
+        friendlyMessage.includes("connection timed out") ||
+        friendlyMessage.includes("failed to fetch") ||
         err.name === "TimeoutError" ||
-        err.name === "RequestTimeoutError"
+        err.name === "RequestTimeoutError" ||
+        err.name === "HttpRequestError"
       ) {
-        friendlyMessage = "Transaction request timed out. The Paymaster API may be slow or unavailable. The system will automatically retry. Please wait..."
+        friendlyMessage = "Transaction request timed out. The Paymaster API may be slow or unavailable. The system will automatically retry up to 6 times. Please wait..."
       } else if (friendlyMessage.includes("insufficient funds")) {
         friendlyMessage = "Insufficient ETH for gas. Check if Paymaster is correctly configured in Privy Dashboard."
       } else if (friendlyMessage.includes("Failed to fetch") || friendlyMessage.includes("network")) {
