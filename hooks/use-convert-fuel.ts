@@ -5,8 +5,8 @@ import { useSmartWallets } from "@privy-io/react-auth/smart-wallets"
 import { usePublicClient } from "wagmi"
 import { parseUnits, isAddress, type Address, encodeFunctionData, encodeAbiParameters, type Hex } from "viem"
 import { Currency, CurrencyAmount, Token, TradeType, Percent } from "@uniswap/sdk-core"
-import { Pool, Route, V4Planner, Actions } from "@uniswap/v4-sdk"
-import { CommandType, RoutePlanner } from "@uniswap/universal-router-sdk"
+import { Pool, Route, V4Planner, Actions, SwapExactInSingle } from "@uniswap/v4-sdk"
+import { CommandType } from "@uniswap/universal-router-sdk"
 import {
   BUMP_TOKEN_ADDRESS,
   TREASURY_ADDRESS,
@@ -263,98 +263,65 @@ export function useConvertFuel() {
   }
 
   /**
-   * Encode V4_SWAP command for Universal Router (Command 0x10)
-   * Based on V4 v4Planner pattern: uses actions/params for Flash Accounting
+   * Create V4 swap using V4Planner (Official SDK Pattern)
+   * Based on Uniswap V4 SDK documentation:
+   * https://docs.uniswap.org/sdk/v4/guides/swaps/single-hop-swapping
    *
-   * V4 Pattern (from docs):
-   * - Uses v4Planner with actions: SWAP_EXACT_IN_SINGLE, SETTLE_ALL, TAKE_ALL
-   * - SETTLE_ALL (0x10): Pay input tokens to PoolManager
-   * - SWAP_EXACT_IN_SINGLE (0x00): Execute the swap
-   * - TAKE_ALL (0x11): Receive output tokens from PoolManager
+   * Uses:
+   * - V4Planner from @uniswap/v4-sdk
+   * - Actions: SWAP_EXACT_IN_SINGLE, SETTLE_ALL, TAKE_ALL
+   * - Returns encodedActions from v4Planner.finalize() for V4_SWAP command
    */
-  const encodeV4SwapForUniversalRouter = (
+  const createV4SwapWithSDK = (
     amountIn: bigint,
-    amountOutMinimum: bigint,
-    recipient: Address
-  ): Hex => {
-    // V4 Router Action IDs (from @uniswap/v4-periphery)
-    const SWAP_EXACT_IN_SINGLE = 0x00
-    const SETTLE_ALL = 0x10
-    const TAKE_ALL = 0x11
+    amountOutMinimum: bigint
+  ): { commandByte: string; encodedActions: Hex } => {
+    // Create SwapExactInSingle config (matches SDK documentation pattern)
+    const swapConfig: SwapExactInSingle = {
+      poolKey: {
+        currency0: BUMP_POOL_CURRENCY0 as Address, // WETH
+        currency1: BUMP_POOL_CURRENCY1 as Address, // $BUMP
+        fee: BUMP_POOL_FEE,
+        tickSpacing: BUMP_POOL_TICK_SPACING,
+        hooks: BUMP_POOL_HOOK_ADDRESS as Address, // Clanker UniV4SwapExtension hook
+      },
+      zeroForOne: false, // false = selling currency1 ($BUMP) for currency0 (WETH)
+      amountIn: amountIn.toString(),
+      amountOutMinimum: amountOutMinimum.toString(),
+      hookData: "0x" as Hex,
+    }
 
-    // Actions sequence: SETTLE -> SWAP -> TAKE (Flash Accounting pattern)
-    // Convert to hex string manually (browser-compatible)
-    const actionsHex = ("0x" +
-      SETTLE_ALL.toString(16).padStart(2, "0") +
-      SWAP_EXACT_IN_SINGLE.toString(16).padStart(2, "0") +
-      TAKE_ALL.toString(16).padStart(2, "0")
-    ) as Hex // = "0x100011"
+    // Create V4Planner and add actions (Flash Accounting pattern)
+    const v4Planner = new V4Planner()
+    
+    // Action 1: SETTLE_ALL - Pay input tokens ($BUMP) to PoolManager
+    v4Planner.addAction(Actions.SETTLE_ALL, [
+      BUMP_POOL_CURRENCY1 as Address, // currency1 ($BUMP)
+      amountIn.toString(), // maxAmount
+    ])
+    
+    // Action 2: SWAP_EXACT_IN_SINGLE - Execute the swap
+    v4Planner.addAction(Actions.SWAP_EXACT_IN_SINGLE, [swapConfig])
+    
+    // Action 3: TAKE_ALL - Receive output tokens (WETH) from PoolManager
+    v4Planner.addAction(Actions.TAKE_ALL, [
+      BUMP_POOL_CURRENCY0 as Address, // currency0 (WETH)
+      amountOutMinimum.toString(), // minAmount
+    ])
 
-    // Param 1: SETTLE_ALL params
-    // abi.encode(currency, maxAmount)
-    // We're settling currency1 ($BUMP) - the token we're selling
-    const settleParams = encodeAbiParameters(
-      [
-        { name: "currency", type: "address" },
-        { name: "maxAmount", type: "uint128" },
-      ],
-      [BUMP_POOL_CURRENCY1 as Address, amountIn]
-    ) as Hex
+    // Finalize V4Planner to get encoded actions (this is what we pass to Universal Router)
+    const encodedActions = v4Planner.finalize()
 
-    // Param 2: SWAP_EXACT_IN_SINGLE params
-    // abi.encode(poolKey, zeroForOne, amountIn, amountOutMinimum, hookData)
-    const swapParams = encodeAbiParameters(
-      [
-        {
-          components: [
-            { name: "currency0", type: "address" },
-            { name: "currency1", type: "address" },
-            { name: "fee", type: "uint24" },
-            { name: "tickSpacing", type: "int24" },
-            { name: "hooks", type: "address" },
-          ],
-          name: "poolKey",
-          type: "tuple",
-        },
-        { name: "zeroForOne", type: "bool" },
-        { name: "amountIn", type: "uint128" },
-        { name: "amountOutMinimum", type: "uint128" },
-        { name: "hookData", type: "bytes" },
-      ],
-      [
-        {
-          currency0: BUMP_POOL_CURRENCY0 as Address, // WETH
-          currency1: BUMP_POOL_CURRENCY1 as Address, // $BUMP
-          fee: BUMP_POOL_FEE,
-          tickSpacing: BUMP_POOL_TICK_SPACING,
-          hooks: BUMP_POOL_HOOK_ADDRESS as Address,
-        },
-        false, // zeroForOne: false = selling currency1 ($BUMP) for currency0 (WETH)
-        amountIn,
-        amountOutMinimum,
-        "0x" as Hex, // Empty hook data
-      ]
-    ) as Hex
+    // V4_SWAP command byte is 0x10
+    const commandByte = "10"
 
-    // Param 3: TAKE_ALL params
-    // abi.encode(currency, minAmount)
-    // We're taking currency0 (WETH) - the token we're buying
-    const takeParams = encodeAbiParameters(
-      [
-        { name: "currency", type: "address" },
-        { name: "minAmount", type: "uint128" },
-      ],
-      [BUMP_POOL_CURRENCY0 as Address, amountOutMinimum]
-    ) as Hex
+    console.log("✅ V4 Swap created using official SDK pattern:")
+    console.log(`  - V4Planner Actions: ${v4Planner.actions.length} actions`)
+    console.log(`  - Command: V4_SWAP (0x10)`)
+    console.log(`  - AmountIn: ${amountIn.toString()} $BUMP`)
+    console.log(`  - AmountOutMinimum: ${amountOutMinimum.toString()} WETH`)
 
-    // Final V4_SWAP encoding: abi.encode(actions, params[])
-    return encodeAbiParameters(
-      [
-        { name: "actions", type: "bytes" },
-        { name: "params", type: "bytes[]" },
-      ],
-      [actionsHex, [settleParams, swapParams, takeParams]]
-    ) as Hex
+    return { commandByte, encodedActions }
   }
 
   /**
@@ -417,82 +384,47 @@ export function useConvertFuel() {
   }
 
   /**
-   * Create Clanker V4 swap transaction using direct PoolManager calls
+   * Create Clanker V4 swap transaction using official Uniswap V4 SDK
+   * Based on documentation: https://docs.uniswap.org/sdk/v4/guides/swaps/single-hop-swapping
    *
    * Process for Clanker-deployed $BUMP token:
    * 1. PERMIT2_TRANSFER_FROM (0x07): Transfer 5% $BUMP to Treasury
-   * 2. Direct V4 PoolManager.swap() call (Clanker dynamic fee pool)
+   * 2. V4_SWAP (0x10): Swap 95% $BUMP to WETH using V4Planner
    * 3. UNWRAP_WETH (0x0c): Unwrap WETH to Native ETH
    * 4. PAY_PORTION (0x06): Send 5% ETH to Treasury
    * 5. SWEEP (0x04): Send remaining 90% ETH to User
    *
    * Compatible with Clanker SDK v4.0.0 dynamic fee pools
+   * Uses official V4Planner from @uniswap/v4-sdk
    */
-  const createV4SwapTransaction = async (
+  const createV4SwapTransaction = (
     totalBumpWei: bigint,
     userAddress: Address,
     treasuryAddress: Address
-  ): Promise<{
+  ): {
     commands: Hex;
     inputs: Hex[];
     permit2Approval: { to: Address; data: Hex; value: bigint };
-  }> => {
+  } => {
     // Calculate amounts
     const treasuryFeeWei = (totalBumpWei * BigInt(TREASURY_FEE_BPS)) / BigInt(10000)
     const swapAmountWei = totalBumpWei - treasuryFeeWei // 95% of total
+    const amountOutMinimum = BigInt(0) // Minimal slippage for testing
 
-    console.log("🚀 Creating V4 Swap with Uniswap V4 SDK (per docs):")
+    console.log("🚀 Using Clanker V4 Swap with Official SDK:")
+    console.log(`  - Universal Router: ${UNISWAP_UNIVERSAL_ROUTER}`)
+    console.log(`  - Clanker Token: $BUMP (${BUMP_TOKEN_ADDRESS})`)
     console.log(`  - AmountIn: ${swapAmountWei.toString()} $BUMP`)
     console.log(`  - Treasury Fee: ${treasuryFeeWei.toString()} $BUMP`)
-    console.log(`  - Hook Address: ${BUMP_POOL_HOOK_ADDRESS}`)
+    console.log(`  - Fee Type: ${CLANKER_FEE_CONFIG.type} (${CLANKER_FEE_CONFIG.preset})`)
+    console.log(`  - Fee Value: ${BUMP_POOL_FEE} (dynamic)`)
+    console.log(`  - Hook Address: ${BUMP_POOL_HOOK_ADDRESS} (Clanker UniV4SwapExtension)`)
 
-    // Create V4Planner and RoutePlanner as per Uniswap V4 SDK docs
-    const v4Planner = new V4Planner()
-    const routePlanner = new RoutePlanner()
-
-    // Deadline for transaction (1 hour from now)
-    const deadline = Math.floor(Date.now() / 1000) + 3600
-
-    // Define pool key for $BUMP/WETH pool (following docs format)
-    const poolKey = {
-      currency0: BUMP_POOL_CURRENCY0,
-      currency1: BUMP_POOL_CURRENCY1,
-      fee: BUMP_POOL_FEE,
-      tickSpacing: BUMP_POOL_TICK_SPACING,
-      hooks: BUMP_POOL_HOOK_ADDRESS,
-    }
-
-    // Add V4 swap actions to planner (following single-hop swapping docs)
-    v4Planner.addAction(Actions.SWAP_EXACT_IN_SINGLE, [
-      poolKey,           // poolKey
-      false,             // zeroForOne: false (selling $BUMP for WETH)
-      swapAmountWei.toString(), // amountIn
-      "0",               // amountOutMinimum (set to 0 for now)
-      "0x"               // hookData
-    ])
-
-    // Add settle action for input token ($BUMP)
-    v4Planner.addAction(Actions.SETTLE_ALL, [
-      BUMP_TOKEN_ADDRESS, // currency to settle
-      swapAmountWei.toString() // maxAmount
-    ])
-
-    // Add take action for output token (WETH)
-    v4Planner.addAction(Actions.TAKE_ALL, [
-      BASE_WETH_ADDRESS, // currency to take
-      "0"                // minAmount (set to 0 for now)
-    ])
-
-    // Finalize V4 planner to get encoded actions and params
-    const finalizedData = v4Planner.finalize()
-    const encodedActions = (finalizedData as any).actions || finalizedData
-    const encodedParams = (finalizedData as any).params || []
-
-    console.log(`  - V4 Actions: ${encodedActions}`)
-    console.log(`  - V4 Params Count: ${encodedParams.length}`)
-
-    // Add V4_SWAP command to route planner (following docs)
-    routePlanner.addCommand(CommandType.V4_SWAP, [encodedActions, encodedParams])
+    // Create V4 swap using official SDK pattern
+    const { commandByte: v4SwapCommandByte, encodedActions } = createV4SwapWithSDK(
+      swapAmountWei,
+      amountOutMinimum
+    )
 
     // Command 1: PERMIT2_TRANSFER_FROM (0x07) - Pull 5% $BUMP from user, send to Treasury
     const permit2TransferInput = encodePermit2TransferFromCommand(
@@ -501,13 +433,18 @@ export function useConvertFuel() {
       treasuryFeeWei
     )
 
-    // Command 2: UNWRAP_WETH (0x0c) - Unwrap all WETH to Native ETH
+    // Command 2: V4_SWAP (0x10) - Swap 95% $BUMP to WETH using V4Planner
+    // encodedActions is the result of v4Planner.finalize() - this is what we pass to Universal Router
+    // According to docs: universalRouter.execute(routePlanner.commands, [encodedActions], deadline)
+    const v4SwapInputHex = encodedActions
+
+    // Command 3: UNWRAP_WETH (0x0c) - Unwrap all WETH to Native ETH
     const unwrapInput = encodeUnwrapWethCommand(
       userAddress, // Recipient (will receive native ETH)
       BigInt(0) // amountMin = 0 (minimal slippage)
     )
 
-    // Command 3: PAY_PORTION (0x06) - Send 5% (from total initial amount) of ETH to Treasury
+    // Command 4: PAY_PORTION (0x06) - Send 5% (from total initial amount) of ETH to Treasury
     // Since we swap 95% of total, and we want 5% of total initial in ETH:
     // 5% of total = 5% / 95% = 5.263% of swap result
     // Formula: (5% of total) / (95% of total) = 5/95 = ~0.0526 = 526 bips
@@ -518,24 +455,24 @@ export function useConvertFuel() {
       payPortionBips
     )
 
-    // Command 4: SWEEP (0x04) - Send remaining 90% native ETH to user
+    // Command 5: SWEEP (0x04) - Send remaining 90% native ETH to user
     const sweepInput = encodeSweepCommand(
       "0x0000000000000000000000000000000000000000" as Address, // Native ETH (address(0))
       userAddress,
       BigInt(0) // amountMin = 0 (minimal slippage, sweep all)
     )
 
-    // Universal Router commands: PERMIT2_TRANSFER_FROM + V4_SWAP + UNWRAP_WETH + PAY_PORTION + SWEEP
-    // Note: V4_SWAP is handled through routePlanner, not direct command
-    const commands = "0x07010c0604" as Hex
+    // Combine all commands: PERMIT2_TRANSFER_FROM + V4_SWAP + UNWRAP_WETH + PAY_PORTION + SWEEP
+    // Command IDs: 0x07 (PERMIT2_TRANSFER_FROM) + 0x10 (V4_SWAP) + 0x0c (UNWRAP_WETH) + 0x06 (PAY_PORTION) + 0x04 (SWEEP)
+    const commands = ("0x07" + v4SwapCommandByte + "0c0604") as Hex
 
-    // Inputs array: one input per command
+    // Inputs array: one input per command (in same order as commands)
     const inputs: Hex[] = [
-      permit2TransferInput,     // Command 1: PERMIT2_TRANSFER_FROM (0x07)
-      encodedActions as Hex,    // Command 2: V4_SWAP (0x10) - actions
-      unwrapInput,              // Command 3: UNWRAP_WETH (0x0c)
-      payPortionInput,          // Command 4: PAY_PORTION (0x06)
-      sweepInput,               // Command 5: SWEEP (0x04)
+      permit2TransferInput,  // Command 1: PERMIT2_TRANSFER_FROM (0x07) - 5% $BUMP to Treasury
+      v4SwapInputHex,        // Command 2: V4_SWAP (0x10) - Swap 95% $BUMP to WETH
+      unwrapInput,           // Command 3: UNWRAP_WETH (0x0c) - Unwrap WETH to Native ETH
+      payPortionInput,       // Command 4: PAY_PORTION (0x06) - 5% ETH to Treasury
+      sweepInput,            // Command 5: SWEEP (0x04) - 90% ETH to User
     ]
 
     // Permit2 approval for Universal Router
@@ -725,21 +662,20 @@ export function useConvertFuel() {
       
       console.log("✅ ERC20 allowance to Permit2 confirmed")
 
-      // 5. Create V4 swap transaction
-      console.log("📦 Creating V4 swap transaction...")
-      const { commands, inputs, permit2Approval } = await createV4SwapTransaction(
+      // 5. Create V4 swap transaction using official SDK
+      console.log("📦 Creating V4 swap transaction with official SDK...")
+      const { commands, inputs, permit2Approval } = createV4SwapTransaction(
         totalAmountWei,
         userAddress as Address,
         TREASURY_ADDRESS as Address
       )
       
-      // 6. Execute batch transaction
-      console.log(`📤 Executing batch transaction...`)
+      // 6. Execute transaction
+      console.log(`📤 Executing Universal Router transaction...`)
       console.log("  Step 1: Permit2.approve() - Authorize Universal Router")
-      console.log("  Step 2: Permit2.approve() - Authorize V4 PoolManager")
-      console.log("  Step 3: V4 PoolManager.swap() - Direct V4 swap")
-      console.log("  Step 4: Universal Router Commands")
+      console.log("  Step 2: UniversalRouter.execute() - All operations in one call")
       console.log(`    - PERMIT2_TRANSFER_FROM (0x07): 5% $BUMP to Treasury`)
+      console.log(`    - V4_SWAP (0x10): Swap 95% $BUMP to WETH (using V4Planner)`)
       console.log(`    - UNWRAP_WETH (0x0c): Unwrap WETH to Native ETH`)
       console.log(`    - PAY_PORTION (0x06): 5% ETH to Treasury`)
       console.log(`    - SWEEP (0x04): 90% ETH to User`)
@@ -768,13 +704,13 @@ export function useConvertFuel() {
           }
           
           // For Smart Wallet (UserOperation), set manual gas limit to prevent simulation failures
-          // 1,500,000 gas units should be sufficient for Permit2 approve + Universal Router execute
-          const MANUAL_GAS_LIMIT = BigInt(1500000)
+          // 2,000,000 gas units should be sufficient for Permit2 approve + Universal Router execute with V4 swap
+          const MANUAL_GAS_LIMIT = BigInt(2000000)
           console.log(`⛽ Setting manual gas limit: ${MANUAL_GAS_LIMIT.toString()}`)
           
           // Bundle calls in a single UserOperation using Smart Wallet batch
           // Call 1: Permit2.approve() for Universal Router
-          // Call 2: UniversalRouter.execute() - V4 Swap + ETH Distribution
+          // Call 2: UniversalRouter.execute() - All operations (V4 swap + ETH distribution)
           console.log("✅ Sending batch transaction...")
           console.log("  Call 1: Permit2.approve(Universal Router)")
           console.log("  Call 2: UniversalRouter.execute(V4 Swap + ETH Distribution)")
