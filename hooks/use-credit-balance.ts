@@ -46,10 +46,23 @@ export function useCreditBalance(userAddress: string | null) {
         }
         
         // Error 406 (Not Acceptable) = RLS policy issue - return default instead of throwing
-        // This prevents errors from interfering with other operations (e.g., withdraw)
-        if (error.message?.includes("406") || error.message?.includes("Not Acceptable")) {
-          console.warn("⚠️ Credit balance fetch failed (RLS policy issue). Returning default values.")
-          console.warn("💡 Please update RLS policy in Supabase. See FIX-RLS-POLICY.md for instructions.")
+        // Check error code and message
+        // Note: Browser console will still show the 406 network error, but we handle it gracefully
+        // Supabase PostgrestError doesn't have status property, so we check code and message
+        const is406Error = 
+          error.code === "406" ||
+          error.message?.includes("406") || 
+          error.message?.includes("Not Acceptable") ||
+          error.details?.includes("406") ||
+          String(error).includes("406")
+        
+        if (is406Error) {
+          // Only log warning once per session to avoid console spam
+          if (!sessionStorage.getItem("credit_406_warned")) {
+            console.warn("⚠️ Credit balance fetch failed (RLS policy issue). Returning default values.")
+            console.warn("💡 Please update RLS policy in Supabase. See FIX-RLS-POLICY.md for instructions.")
+            sessionStorage.setItem("credit_406_warned", "true")
+          }
           return {
             balanceWei: "0",
             balanceEth: "0",
@@ -101,7 +114,14 @@ export function useCreditBalance(userAddress: string | null) {
     staleTime: 10000, // Consider data stale after 10 seconds
     retry: (failureCount, error: any) => {
       // Don't retry on 406 errors (RLS policy issue)
-      if (error?.message?.includes("406") || error?.message?.includes("Not Acceptable")) {
+      const is406Error = 
+        error?.code === "406" ||
+        error?.message?.includes("406") || 
+        error?.message?.includes("Not Acceptable") ||
+        error?.details?.includes("406") ||
+        String(error).includes("406")
+      
+      if (is406Error) {
         return false
       }
       // Retry up to 2 times for other errors

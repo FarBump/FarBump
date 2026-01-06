@@ -160,7 +160,7 @@ export function useWithdrawBump() {
             throw attemptError // Don't retry billing errors
           }
           
-          // Check if it's a timeout error - retry these
+          // Check if it's a timeout or connection error - retry these
           // Paymaster API can timeout with various error messages
           const isTimeout = 
             errorMessage.includes("timeout") || 
@@ -168,13 +168,22 @@ export function useWithdrawBump() {
             errorMessage.includes("took too long") ||
             errorMessage.includes("request took too long") ||
             errorMessage.includes("too long to respond") ||
+            errorMessage.includes("connection timed out") ||
+            errorMessage.includes("failed to fetch") ||
+            errorMessage.includes("network error") ||
             errorDetails.includes("timeout") ||
             errorDetails.includes("took too long") ||
             errorDetails.includes("too long to respond") ||
+            errorDetails.includes("connection timed out") ||
+            errorDetails.includes("failed to fetch") ||
             errorString.includes("timeout") ||
             errorString.includes("took too long") ||
+            errorString.includes("connection timed out") ||
+            errorString.includes("err_connection_timed_out") ||
             errorName === "TimeoutError" ||
-            errorName === "RequestTimeoutError"
+            errorName === "RequestTimeoutError" ||
+            errorName === "HttpRequestError" ||
+            (errorName === "TypeError" && errorMessage.includes("Failed to fetch"))
           
           if (isTimeout && attempt < MAX_RETRIES) {
             console.log(`⚠️ Timeout detected, will retry (${attempt + 1}/${MAX_RETRIES})...`)
