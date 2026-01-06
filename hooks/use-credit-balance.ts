@@ -32,8 +32,33 @@ export function useCreditBalance(userAddress: string | null) {
         .eq("user_address", userAddress.toLowerCase())
         .single()
 
-      if (error && error.code !== "PGRST116") {
+      // Handle errors gracefully
+      if (error) {
         // PGRST116 = no rows returned, which is OK for new users
+        if (error.code === "PGRST116") {
+          // New user, no credits yet - return default
+          return {
+            balanceWei: "0",
+            balanceEth: "0",
+            balanceUsd: 0,
+            lastUpdated: null,
+          }
+        }
+        
+        // Error 406 (Not Acceptable) = RLS policy issue - return default instead of throwing
+        // This prevents errors from interfering with other operations (e.g., withdraw)
+        if (error.message?.includes("406") || error.message?.includes("Not Acceptable")) {
+          console.warn("⚠️ Credit balance fetch failed (RLS policy issue). Returning default values.")
+          console.warn("💡 Please update RLS policy in Supabase. See FIX-RLS-POLICY.md for instructions.")
+          return {
+            balanceWei: "0",
+            balanceEth: "0",
+            balanceUsd: 0,
+            lastUpdated: null,
+          }
+        }
+        
+        // For other errors, still throw to maintain error visibility
         throw error
       }
 
@@ -74,6 +99,16 @@ export function useCreditBalance(userAddress: string | null) {
     enabled: !!userAddress,
     refetchInterval: 30000, // Refetch every 30 seconds
     staleTime: 10000, // Consider data stale after 10 seconds
+    retry: (failureCount, error: any) => {
+      // Don't retry on 406 errors (RLS policy issue)
+      if (error?.message?.includes("406") || error?.message?.includes("Not Acceptable")) {
+        return false
+      }
+      // Retry up to 2 times for other errors
+      return failureCount < 2
+    },
+    retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 30000),
   })
 }
+
 
