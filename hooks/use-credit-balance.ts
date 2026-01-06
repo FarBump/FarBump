@@ -66,8 +66,10 @@ export function useCreditBalance(userAddress: string | null) {
         
         if (is406Error) {
           // Only log warning once per session to avoid console spam
+          // This error does NOT affect withdraw operations (which use useBumpBalance)
           if (!sessionStorage.getItem("credit_406_warned")) {
             console.warn("⚠️ Credit balance fetch failed (RLS policy issue). Returning default values.")
+            console.warn("💡 This does NOT affect withdraw - withdraw uses $BUMP token balance from blockchain.")
             console.warn("💡 Please update RLS policy in Supabase. See FIX-RLS-POLICY.md for instructions.")
             sessionStorage.setItem("credit_406_warned", "true")
           }
