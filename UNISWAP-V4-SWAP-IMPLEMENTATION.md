@@ -172,3 +172,4 @@ For a **single-hop swap** (direct $BUMP → WETH):
 - PathKey encoding follows V4 specification for single-hop swaps with custom hooks and dynamic fees.
 - All operations are atomic - either all succeed or all revert.
 
+

@@ -11,7 +11,8 @@ import {
   WETH_DECIMALS,
 } from "@/lib/constants"
 
-// 0x API Configuration
+// 0x API v2 Configuration
+// Base URL for Base network using v2 API
 const ZEROX_API_BASE_URL = "https://base.api.0x.org"
 const ZEROX_API_KEY = process.env.NEXT_PUBLIC_ZEROX_API_KEY || ""
 
@@ -22,8 +23,13 @@ const PERMIT2_ADDRESS = "0x000000000022D473030F116dDEE9F6B43aC78BA3" as const
 const BASE_CHAIN_ID = 8453
 
 /**
- * 0x Swap API Response Structure
- * Based on: https://0x.org/docs/api/swap-permit2
+ * 0x Swap API v2 Response Structure
+ * Based on: https://0x.org/docs/api/swap-v2
+ * 
+ * v2 API includes:
+ * - Improved error handling with `issues` object
+ * - Better price execution
+ * - Enhanced security features
  */
 interface ZeroXQuoteResponse {
   chainId: number
@@ -53,6 +59,12 @@ interface ZeroXQuoteResponse {
       v: number
     }
   }
+  // v2 API includes issues object for better error handling
+  issues?: Array<{
+    type: string
+    reason: string
+    severity: "error" | "warning" | "info"
+  }>
 }
 
 interface ZeroXSwapParams {
@@ -65,13 +77,16 @@ interface ZeroXSwapParams {
 }
 
 /**
- * Hook for swapping tokens using 0x Swap API with Permit2
+ * Hook for swapping tokens using 0x Swap API v2 with Permit2
  * 
- * This hook uses 0x Swap API which:
+ * This hook uses 0x Swap API v2 which:
  * - Aggregates liquidity from multiple DEXs
  * - Uses Permit2 for efficient token approvals
  * - Returns ready-to-execute transaction data
  * - Supports smart wallet execution
+ * - Enhanced error handling with issues object
+ * - Better price execution
+ * - Improved security features
  */
 export function use0xSwap() {
   const { client: smartWalletClient } = useSmartWallets()
@@ -92,8 +107,13 @@ export function use0xSwap() {
   }
 
   /**
-   * Get quote from 0x Swap API
-   * Uses /swap/permit2/quote endpoint for Permit2-enabled quotes
+   * Get quote from 0x Swap API v2
+   * Uses /swap/v2/quote endpoint for v2 API with Permit2 support
+   * 
+   * v2 API features:
+   * - Better price execution
+   * - Enhanced error handling with issues object
+   * - Improved security
    */
   const getQuote = async (params: ZeroXSwapParams): Promise<ZeroXQuoteResponse> => {
     if (!ZEROX_API_KEY) {
@@ -105,6 +125,8 @@ export function use0xSwap() {
       buyToken: params.buyToken,
       takerAddress: params.takerAddress,
       slippagePercentage: (params.slippagePercentage || 0.5).toString(), // 0.5% default slippage
+      // v2 API parameters
+      enablePermit2: "true", // Enable Permit2 for efficient approvals
     })
 
     if (params.sellAmount) {
@@ -115,13 +137,15 @@ export function use0xSwap() {
       throw new Error("Either sellAmount or buyAmount must be provided")
     }
 
-    const url = `${ZEROX_API_BASE_URL}/swap/permit2/quote?${queryParams.toString()}`
+    // Use v2 endpoint: /swap/v2/quote
+    const url = `${ZEROX_API_BASE_URL}/swap/v2/quote?${queryParams.toString()}`
     
-    console.log("📊 Fetching 0x Swap quote...")
+    console.log("📊 Fetching 0x Swap API v2 quote...")
     console.log(`  URL: ${url}`)
     console.log(`  Sell Token: ${params.sellToken}`)
     console.log(`  Buy Token: ${params.buyToken}`)
     console.log(`  Amount: ${params.sellAmount || params.buyAmount}`)
+    console.log(`  API Version: v2`)
 
     const response = await fetch(url, {
       method: "GET",
@@ -133,11 +157,37 @@ export function use0xSwap() {
 
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({ message: "Unknown error" }))
-      throw new Error(`0x API error: ${errorData.reason || errorData.message || response.statusText}`)
+      
+      // v2 API provides better error messages with issues array
+      if (errorData.issues && Array.isArray(errorData.issues)) {
+        const errorMessages = errorData.issues
+          .filter((issue: any) => issue.severity === "error")
+          .map((issue: any) => issue.reason)
+          .join(", ")
+        throw new Error(`0x API v2 error: ${errorMessages || errorData.reason || errorData.message || response.statusText}`)
+      }
+      
+      throw new Error(`0x API v2 error: ${errorData.reason || errorData.message || response.statusText}`)
     }
 
     const quoteData: ZeroXQuoteResponse = await response.json()
-    console.log("✅ 0x Quote received:")
+    
+    // Check for issues in v2 response
+    if (quoteData.issues && quoteData.issues.length > 0) {
+      const errors = quoteData.issues.filter(issue => issue.severity === "error")
+      if (errors.length > 0) {
+        const errorMessages = errors.map(issue => issue.reason).join(", ")
+        throw new Error(`0x API v2 issues detected: ${errorMessages}`)
+      }
+      
+      // Log warnings if any
+      const warnings = quoteData.issues.filter(issue => issue.severity === "warning")
+      if (warnings.length > 0) {
+        console.warn("⚠️ 0x API v2 warnings:", warnings.map(w => w.reason).join(", "))
+      }
+    }
+    
+    console.log("✅ 0x API v2 Quote received:")
     console.log(`  - Price: ${quoteData.price}`)
     console.log(`  - Buy Amount: ${quoteData.buyAmount}`)
     console.log(`  - Sell Amount: ${quoteData.sellAmount}`)

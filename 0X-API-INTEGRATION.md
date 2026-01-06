@@ -1,8 +1,10 @@
-# 0x Swap API Integration
+# 0x Swap API v2 Integration
 
 ## Overview
 
-This document explains how to use 0x Swap API for token swaps on Base network with Smart Wallet support.
+This document explains how to use 0x Swap API **v2** for token swaps on Base network with Smart Wallet support.
+
+**API Version**: v2 (latest)
 
 ## Features
 
@@ -108,15 +110,22 @@ function MyComponent() {
 }
 ```
 
-## API Endpoints
+## API Endpoints (v2)
 
 ### Base Network
 
 - **Base URL**: `https://base.api.0x.org`
-- **Quote Endpoint**: `/swap/permit2/quote`
-- **Price Endpoint**: `/swap/permit2/price`
+- **Quote Endpoint (v2)**: `/swap/v2/quote`
+- **Price Endpoint (v2)**: `/swap/v2/price`
 
-## Response Structure
+### v2 API Features
+
+- **Better Price Execution**: Optimized trade execution
+- **Enhanced Error Handling**: `issues` object provides detailed error information
+- **Improved Security**: Enhanced security features
+- **Permit2 Support**: Built-in Permit2 support with `enablePermit2=true` parameter
+
+## Response Structure (v2)
 
 ```typescript
 {
@@ -144,7 +153,15 @@ function MyComponent() {
       s: "0x...",
       v: 27,
     }
-  }
+  },
+  // v2 API includes issues array for better error handling
+  issues?: [
+    {
+      type: "INSUFFICIENT_ALLOWANCE",
+      reason: "Token allowance is insufficient",
+      severity: "error" | "warning" | "info"
+    }
+  ]
 }
 ```
 
@@ -171,13 +188,35 @@ The hook is designed to work with Privy Smart Wallets:
 3. **Permit2 Built-in**: No need to manually handle Permit2 approvals
 4. **Cross-DEX Routing**: Automatically finds best route across DEXs
 
-## Error Handling
+## Error Handling (v2)
 
-Common errors and solutions:
+v2 API provides enhanced error handling with `issues` array:
 
-- **"0x API error: Insufficient liquidity"**: Not enough liquidity for the swap amount
-- **"Slippage tolerance exceeded"**: Price moved too much, increase slippage
+### Common Errors
+
+- **"0x API v2 error: Insufficient liquidity"**: Not enough liquidity for the swap amount
+- **"0x API v2 error: Slippage tolerance exceeded"**: Price moved too much, increase slippage
+- **"0x API v2 error: Insufficient allowance"**: Token allowance is insufficient (check Permit2 approval)
+- **"0x API v2 error: Insufficient balance"**: User doesn't have enough tokens
 - **"0x API key not configured"**: Add `NEXT_PUBLIC_ZEROX_API_KEY` to `.env.local`
+
+### Issues Array
+
+v2 API returns an `issues` array with detailed error information:
+
+```typescript
+{
+  issues: [
+    {
+      type: "INSUFFICIENT_ALLOWANCE",
+      reason: "Token allowance is insufficient",
+      severity: "error"
+    }
+  ]
+}
+```
+
+The hook automatically checks for errors in the `issues` array and throws appropriate errors.
 
 ## Rate Limits
 
@@ -189,7 +228,8 @@ Check your usage at [0x Dashboard](https://dashboard.0x.org)
 
 ## References
 
-- [0x Swap API Documentation](https://0x.org/docs/api/swap-permit2)
+- [0x Swap API v2 Documentation](https://0x.org/docs/api/swap-v2)
+- [Upgrading to 0x API v2](https://0x.org/docs/upgrading/upgrading_to_swap_v2)
 - [0x Dashboard](https://dashboard.0x.org)
 - [Permit2 Documentation](https://docs.uniswap.org/contracts/permit2/overview)
 

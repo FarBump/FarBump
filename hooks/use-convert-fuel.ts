@@ -4,26 +4,20 @@ import { useState } from "react"
 import { useSmartWallets } from "@privy-io/react-auth/smart-wallets"
 import { usePublicClient } from "wagmi"
 import { parseUnits, isAddress, type Address, encodeFunctionData, encodeAbiParameters, type Hex } from "viem"
-import { Currency, CurrencyAmount, Token, TradeType, Percent } from "@uniswap/sdk-core"
-import { Pool, Route, V4Planner, Actions, SwapExactInSingle } from "@uniswap/v4-sdk"
-import { CommandType } from "@uniswap/universal-router-sdk"
 import {
   BUMP_TOKEN_ADDRESS,
   TREASURY_ADDRESS,
   BASE_WETH_ADDRESS,
   UNISWAP_UNIVERSAL_ROUTER,
   PERMIT2_ADDRESS,
-  BUMP_POOL_CURRENCY0,
-  BUMP_POOL_CURRENCY1,
-  BUMP_POOL_FEE,
-  BUMP_POOL_TICK_SPACING,
-  BUMP_POOL_HOOK_ADDRESS,
   BUMP_DECIMALS,
   TREASURY_FEE_BPS,
-  APP_FEE_BPS,
-  USER_CREDIT_BPS,
-  CLANKER_FEE_CONFIG
+  WETH_DECIMALS,
 } from "@/lib/constants"
+
+// Import 0x API hook
+const ZEROX_API_BASE_URL = "https://base.api.0x.org"
+const ZEROX_API_KEY = process.env.NEXT_PUBLIC_ZEROX_API_KEY || ""
 
 // ERC20 ABI for transfer
 const ERC20_ABI = [
@@ -105,50 +99,59 @@ const PERMIT2_ABI = [
   },
 ] as const
 
-// Max values for Permit2 approval
-const MAX_UINT160 = BigInt("0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF") // 2^160 - 1
-const MAX_UINT48 = 281474976710655 // 2^48 - 1 (far future expiration, fits in JS number)
-
-// V4 SDK Token instances for Clanker integration
-const CHAIN_ID = 8453 // Base mainnet
-const WETH_TOKEN = new Token(CHAIN_ID, BASE_WETH_ADDRESS, 18, "WETH", "Wrapped Ether")
-const BUMP_TOKEN = new Token(CHAIN_ID, BUMP_TOKEN_ADDRESS, BUMP_DECIMALS, "BUMP", "BUMP (Clanker Token)")
-
-// Uniswap V4 PoolManager address on Base
-const UNISWAP_V4_POOL_MANAGER = "0x498581fF718922c3f8e6A244956aF099B2652b2b" as const
-
-// Uniswap V4 PoolManager ABI for swap
-const UNISWAP_V4_POOL_MANAGER_ABI = [
+// WETH ABI for unwrapping
+const WETH_ABI = [
   {
-    inputs: [
-      {
-        components: [
-          { name: "currency0", type: "address" },
-          { name: "currency1", type: "address" },
-          { name: "fee", type: "uint24" },
-          { name: "tickSpacing", type: "int24" },
-          { name: "hooks", type: "address" },
-        ],
-        name: "key",
-        type: "tuple",
-      },
-      {
-        components: [
-          { name: "zeroForOne", type: "bool" },
-          { name: "amountSpecified", type: "int256" },
-          { name: "sqrtPriceLimitX96", type: "uint160" },
-        ],
-        name: "params",
-        type: "tuple",
-      },
-      { name: "hookData", type: "bytes" },
-    ],
-    name: "swap",
-    outputs: [{ name: "delta", type: "int256" }],
+    inputs: [{ name: "wad", type: "uint256" }],
+    name: "withdraw",
+    outputs: [],
     stateMutability: "nonpayable",
     type: "function",
   },
+  {
+    inputs: [],
+    name: "balanceOf",
+    outputs: [{ name: "", type: "uint256" }],
+    stateMutability: "view",
+    type: "function",
+  },
 ] as const
+
+// 0x API v2 Response Structure
+interface ZeroXQuoteResponse {
+  chainId: number
+  price: string
+  estimatedPriceImpact: string
+  buyAmount: string
+  sellAmount: string
+  buyToken: string
+  sellToken: string
+  allowanceTarget: string
+  transaction: {
+    to: string
+    data: string
+    value: string
+    gas?: string
+    gasPrice?: string
+  }
+  permit2?: {
+    token: string
+    spender: string
+    amount: string
+    expiration: string
+    nonce: string
+    sig: {
+      r: string
+      s: string
+      v: number
+    }
+  }
+  issues?: Array<{
+    type: string
+    reason: string
+    severity: "error" | "warning" | "info"
+  }>
+}
 
 export function useConvertFuel() {
   const { client: smartWalletClient } = useSmartWallets()
@@ -240,88 +243,87 @@ export function useConvertFuel() {
   }
 
   /**
-   * Encode PERMIT2_TRANSFER_FROM command input for Universal Router
-   * Command: 0x07
-   * This pulls tokens FROM the user's wallet via Permit2 and sends to recipient
-   * Input: abi.encode(token, recipient, amount)
-   * 
-   * IMPORTANT: This is different from TRANSFER (0x05) which transfers from Router's balance
+   * Get quote from 0x Swap API v2
+   * Uses /swap/v2/quote endpoint for v2 API with Permit2 support
    */
-  const encodePermit2TransferFromCommand = (
-    token: Address,
-    recipient: Address,
-    amount: bigint
-  ): Hex => {
-    return encodeAbiParameters(
-      [
-        { name: "token", type: "address" },
-        { name: "recipient", type: "address" },
-        { name: "amount", type: "uint256" },
-      ],
-      [token, recipient, amount]
-    ) as Hex
-  }
-
-  /**
-   * Create V4 swap using V4Planner (Official SDK Pattern)
-   * Based on Uniswap V4 SDK documentation:
-   * https://docs.uniswap.org/sdk/v4/guides/swaps/single-hop-swapping
-   *
-   * Uses:
-   * - V4Planner from @uniswap/v4-sdk
-   * - Actions: SWAP_EXACT_IN_SINGLE, SETTLE_ALL, TAKE_ALL
-   * - Returns encodedActions from v4Planner.finalize() for V4_SWAP command
-   */
-  const createV4SwapWithSDK = (
-    amountIn: bigint,
-    amountOutMinimum: bigint
-  ): { commandByte: string; encodedActions: Hex } => {
-    // Create SwapExactInSingle config (matches SDK documentation pattern)
-    const swapConfig: SwapExactInSingle = {
-      poolKey: {
-        currency0: BUMP_POOL_CURRENCY0 as Address, // WETH
-        currency1: BUMP_POOL_CURRENCY1 as Address, // $BUMP
-        fee: BUMP_POOL_FEE,
-        tickSpacing: BUMP_POOL_TICK_SPACING,
-        hooks: BUMP_POOL_HOOK_ADDRESS as Address, // Clanker UniV4SwapExtension hook
-      },
-      zeroForOne: false, // false = selling currency1 ($BUMP) for currency0 (WETH)
-      amountIn: amountIn.toString(),
-      amountOutMinimum: amountOutMinimum.toString(),
-      hookData: "0x" as Hex,
+  const get0xQuote = async (
+    sellToken: Address,
+    buyToken: Address,
+    sellAmountWei: bigint,
+    takerAddress: Address,
+    slippagePercentage: number = 0.5
+  ): Promise<ZeroXQuoteResponse> => {
+    if (!ZEROX_API_KEY) {
+      throw new Error("0x API key not configured. Please set NEXT_PUBLIC_ZEROX_API_KEY in .env.local")
     }
 
-    // Create V4Planner and add actions (Flash Accounting pattern)
-    const v4Planner = new V4Planner()
+    const queryParams = new URLSearchParams({
+      sellToken,
+      buyToken,
+      sellAmount: sellAmountWei.toString(),
+      takerAddress,
+      slippagePercentage: slippagePercentage.toString(),
+      enablePermit2: "true", // Enable Permit2 for efficient approvals
+    })
+
+    const url = `${ZEROX_API_BASE_URL}/swap/v2/quote?${queryParams.toString()}`
     
-    // Action 1: SETTLE_ALL - Pay input tokens ($BUMP) to PoolManager
-    v4Planner.addAction(Actions.SETTLE_ALL, [
-      BUMP_POOL_CURRENCY1 as Address, // currency1 ($BUMP)
-      amountIn.toString(), // maxAmount
-    ])
+    console.log("📊 Fetching 0x Swap API v2 quote...")
+    console.log(`  URL: ${url}`)
+    console.log(`  Sell Token: ${sellToken}`)
+    console.log(`  Buy Token: ${buyToken}`)
+    console.log(`  Sell Amount: ${sellAmountWei.toString()} wei`)
+    console.log(`  API Version: v2`)
+
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        "0x-api-key": ZEROX_API_KEY,
+        "Accept": "application/json",
+      },
+    })
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({ message: "Unknown error" }))
+      
+      // v2 API provides better error messages with issues array
+      if (errorData.issues && Array.isArray(errorData.issues)) {
+        const errorMessages = errorData.issues
+          .filter((issue: any) => issue.severity === "error")
+          .map((issue: any) => issue.reason)
+          .join(", ")
+        throw new Error(`0x API v2 error: ${errorMessages || errorData.reason || errorData.message || response.statusText}`)
+      }
+      
+      throw new Error(`0x API v2 error: ${errorData.reason || errorData.message || response.statusText}`)
+    }
+
+    const quoteData: ZeroXQuoteResponse = await response.json()
     
-    // Action 2: SWAP_EXACT_IN_SINGLE - Execute the swap
-    v4Planner.addAction(Actions.SWAP_EXACT_IN_SINGLE, [swapConfig])
+    // Check for issues in v2 response
+    if (quoteData.issues && quoteData.issues.length > 0) {
+      const errors = quoteData.issues.filter(issue => issue.severity === "error")
+      if (errors.length > 0) {
+        const errorMessages = errors.map(issue => issue.reason).join(", ")
+        throw new Error(`0x API v2 issues detected: ${errorMessages}`)
+      }
+      
+      // Log warnings if any
+      const warnings = quoteData.issues.filter(issue => issue.severity === "warning")
+      if (warnings.length > 0) {
+        console.warn("⚠️ 0x API v2 warnings:", warnings.map(w => w.reason).join(", "))
+      }
+    }
     
-    // Action 3: TAKE_ALL - Receive output tokens (WETH) from PoolManager
-    v4Planner.addAction(Actions.TAKE_ALL, [
-      BUMP_POOL_CURRENCY0 as Address, // currency0 (WETH)
-      amountOutMinimum.toString(), // minAmount
-    ])
+    console.log("✅ 0x API v2 Quote received:")
+    console.log(`  - Price: ${quoteData.price}`)
+    console.log(`  - Buy Amount: ${quoteData.buyAmount}`)
+    console.log(`  - Sell Amount: ${quoteData.sellAmount}`)
+    console.log(`  - Estimated Price Impact: ${quoteData.estimatedPriceImpact}%`)
+    console.log(`  - Transaction To: ${quoteData.transaction.to}`)
+    console.log(`  - Has Permit2: ${!!quoteData.permit2}`)
 
-    // Finalize V4Planner to get encoded actions (this is what we pass to Universal Router)
-    const encodedActions = v4Planner.finalize()
-
-    // V4_SWAP command byte is 0x10
-    const commandByte = "10"
-
-    console.log("✅ V4 Swap created using official SDK pattern:")
-    console.log(`  - V4Planner Actions: ${v4Planner.actions.length} actions`)
-    console.log(`  - Command: V4_SWAP (0x10)`)
-    console.log(`  - AmountIn: ${amountIn.toString()} $BUMP`)
-    console.log(`  - AmountOutMinimum: ${amountOutMinimum.toString()} WETH`)
-
-    return { commandByte, encodedActions }
+    return quoteData
   }
 
   /**
@@ -345,24 +347,6 @@ export function useConvertFuel() {
   }
 
   /**
-   * Encode UNWRAP_WETH command input for Universal Router
-   * Command: 0x0C (or 0x0D depending on Universal Router version)
-   * Input: abi.encode(recipient, amountMin)
-   */
-  const encodeUnwrapWethCommand = (
-    recipient: Address,
-    amountMin: bigint
-  ): Hex => {
-    return encodeAbiParameters(
-      [
-        { name: "recipient", type: "address" },
-        { name: "amountMin", type: "uint256" },
-      ],
-      [recipient, amountMin]
-    ) as Hex
-  }
-
-  /**
    * Encode SWEEP command input for Universal Router
    * Command: 0x04
    * Input: abi.encode(token, recipient, amountMin)
@@ -381,119 +365,6 @@ export function useConvertFuel() {
       ],
       [token, recipient, amountMin]
     ) as Hex
-  }
-
-  /**
-   * Create Clanker V4 swap transaction using official Uniswap V4 SDK
-   * Based on documentation: https://docs.uniswap.org/sdk/v4/guides/swaps/single-hop-swapping
-   *
-   * Process for Clanker-deployed $BUMP token:
-   * 1. PERMIT2_TRANSFER_FROM (0x07): Transfer 5% $BUMP to Treasury
-   * 2. V4_SWAP (0x10): Swap 95% $BUMP to WETH using V4Planner
-   * 3. UNWRAP_WETH (0x0c): Unwrap WETH to Native ETH
-   * 4. PAY_PORTION (0x06): Send 5% ETH to Treasury
-   * 5. SWEEP (0x04): Send remaining 90% ETH to User
-   *
-   * Compatible with Clanker SDK v4.0.0 dynamic fee pools
-   * Uses official V4Planner from @uniswap/v4-sdk
-   */
-  const createV4SwapTransaction = (
-    totalBumpWei: bigint,
-    userAddress: Address,
-    treasuryAddress: Address
-  ): {
-    commands: Hex;
-    inputs: Hex[];
-    permit2Approval: { to: Address; data: Hex; value: bigint };
-  } => {
-    // Calculate amounts
-    const treasuryFeeWei = (totalBumpWei * BigInt(TREASURY_FEE_BPS)) / BigInt(10000)
-    const swapAmountWei = totalBumpWei - treasuryFeeWei // 95% of total
-    const amountOutMinimum = BigInt(0) // Minimal slippage for testing
-
-    console.log("🚀 Using Clanker V4 Swap with Official SDK:")
-    console.log(`  - Universal Router: ${UNISWAP_UNIVERSAL_ROUTER}`)
-    console.log(`  - Clanker Token: $BUMP (${BUMP_TOKEN_ADDRESS})`)
-    console.log(`  - AmountIn: ${swapAmountWei.toString()} $BUMP`)
-    console.log(`  - Treasury Fee: ${treasuryFeeWei.toString()} $BUMP`)
-    console.log(`  - Fee Type: ${CLANKER_FEE_CONFIG.type} (${CLANKER_FEE_CONFIG.preset})`)
-    console.log(`  - Fee Value: ${BUMP_POOL_FEE} (dynamic)`)
-    console.log(`  - Hook Address: ${BUMP_POOL_HOOK_ADDRESS} (Clanker UniV4SwapExtension)`)
-
-    // Create V4 swap using official SDK pattern
-    const { commandByte: v4SwapCommandByte, encodedActions } = createV4SwapWithSDK(
-      swapAmountWei,
-      amountOutMinimum
-    )
-
-    // Command 1: PERMIT2_TRANSFER_FROM (0x07) - Pull 5% $BUMP from user, send to Treasury
-    const permit2TransferInput = encodePermit2TransferFromCommand(
-      BUMP_TOKEN_ADDRESS as Address,
-      treasuryAddress,
-      treasuryFeeWei
-    )
-
-    // Command 2: V4_SWAP (0x10) - Swap 95% $BUMP to WETH using V4Planner
-    // encodedActions is the result of v4Planner.finalize() - this is what we pass to Universal Router
-    // According to docs: universalRouter.execute(routePlanner.commands, [encodedActions], deadline)
-    const v4SwapInputHex = encodedActions
-
-    // Command 3: UNWRAP_WETH (0x0c) - Unwrap all WETH to Native ETH
-    const unwrapInput = encodeUnwrapWethCommand(
-      userAddress, // Recipient (will receive native ETH)
-      BigInt(0) // amountMin = 0 (minimal slippage)
-    )
-
-    // Command 4: PAY_PORTION (0x06) - Send 5% (from total initial amount) of ETH to Treasury
-    // Since we swap 95% of total, and we want 5% of total initial in ETH:
-    // 5% of total = 5% / 95% = 5.263% of swap result
-    // Formula: (5% of total) / (95% of total) = 5/95 = ~0.0526 = 526 bips
-    const payPortionBips = Math.floor((TREASURY_FEE_BPS * 10000) / (10000 - TREASURY_FEE_BPS)) // ~526 bips
-    const payPortionInput = encodePayPortionCommand(
-      "0x0000000000000000000000000000000000000000" as Address, // Native ETH (address(0))
-      treasuryAddress,
-      payPortionBips
-    )
-
-    // Command 5: SWEEP (0x04) - Send remaining 90% native ETH to user
-    const sweepInput = encodeSweepCommand(
-      "0x0000000000000000000000000000000000000000" as Address, // Native ETH (address(0))
-      userAddress,
-      BigInt(0) // amountMin = 0 (minimal slippage, sweep all)
-    )
-
-    // Combine all commands: PERMIT2_TRANSFER_FROM + V4_SWAP + UNWRAP_WETH + PAY_PORTION + SWEEP
-    // Command IDs: 0x07 (PERMIT2_TRANSFER_FROM) + 0x10 (V4_SWAP) + 0x0c (UNWRAP_WETH) + 0x06 (PAY_PORTION) + 0x04 (SWEEP)
-    const commands = ("0x07" + v4SwapCommandByte + "0c0604") as Hex
-
-    // Inputs array: one input per command (in same order as commands)
-    const inputs: Hex[] = [
-      permit2TransferInput,  // Command 1: PERMIT2_TRANSFER_FROM (0x07) - 5% $BUMP to Treasury
-      v4SwapInputHex,        // Command 2: V4_SWAP (0x10) - Swap 95% $BUMP to WETH
-      unwrapInput,           // Command 3: UNWRAP_WETH (0x0c) - Unwrap WETH to Native ETH
-      payPortionInput,       // Command 4: PAY_PORTION (0x06) - 5% ETH to Treasury
-      sweepInput,            // Command 5: SWEEP (0x04) - 90% ETH to User
-    ]
-
-    // Permit2 approval for Universal Router
-    const permit2ApprovalData = encodeFunctionData({
-      abi: PERMIT2_ABI,
-      functionName: "approve",
-      args: [
-        BUMP_TOKEN_ADDRESS as Address,           // token
-        UNISWAP_UNIVERSAL_ROUTER as Address,     // spender
-        MAX_UINT160,                              // amount
-        MAX_UINT48,                               // expiration
-      ],
-    })
-
-    const permit2Approval = {
-      to: PERMIT2_ADDRESS as Address,
-      data: permit2ApprovalData,
-      value: BigInt(0),
-    }
-
-    return { commands, inputs, permit2Approval }
   }
 
   /**
@@ -662,34 +533,89 @@ export function useConvertFuel() {
       
       console.log("✅ ERC20 allowance to Permit2 confirmed")
 
-      // 5. Create V4 swap transaction using official SDK
-      console.log("📦 Creating V4 swap transaction with official SDK...")
-      const { commands, inputs, permit2Approval } = createV4SwapTransaction(
-        totalAmountWei,
+      // 5. Get 0x API v2 quote for swap
+      console.log("📊 Getting 0x API v2 quote for swap...")
+      const zeroXQuote = await get0xQuote(
+        BUMP_TOKEN_ADDRESS as Address,
+        BASE_WETH_ADDRESS as Address,
+        swapAmountWei,
         userAddress as Address,
-        TREASURY_ADDRESS as Address
+        0.5 // 0.5% slippage
       )
+
+      console.log("✅ 0x API v2 quote received:")
+      console.log(`  - Buy Amount (WETH): ${zeroXQuote.buyAmount}`)
+      console.log(`  - Price: ${zeroXQuote.price}`)
+      console.log(`  - Estimated Price Impact: ${zeroXQuote.estimatedPriceImpact}%`)
+
+      // 6. Prepare transactions:
+      // Step 1: Transfer 5% $BUMP to Treasury
+      // Step 2: Execute 0x swap (95% $BUMP to WETH) - result goes to smart wallet
+      // Step 3: Unwrap WETH to ETH
+      // Step 4: Distribute ETH (5% to Treasury, 90% stays in wallet as credit)
+
+      // Step 1: Transfer 5% $BUMP to Treasury
+      const transferTreasuryData = encodeFunctionData({
+        abi: ERC20_ABI,
+        functionName: "transfer",
+        args: [TREASURY_ADDRESS as Address, treasuryFeeWei],
+      })
+
+      // Step 2: Execute 0x swap transaction (swap 95% $BUMP to WETH)
+      // 0x API returns transaction data that we execute directly
+      const zeroXSwapTx = {
+        to: zeroXQuote.transaction.to as Address,
+        data: zeroXQuote.transaction.data as Hex,
+        value: BigInt(zeroXQuote.transaction.value || "0"),
+      }
+
+      // Step 3: Unwrap WETH to ETH (after swap, we'll have WETH in wallet)
+      // We'll unwrap the amount we expect from the swap (from quote)
+      // Note: If there's other WETH in wallet, this will only unwrap the swap amount
+      // For batch execution, we use the buyAmount from quote
+      const unwrapWethData = encodeFunctionData({
+        abi: WETH_ABI,
+        functionName: "withdraw",
+        args: [BigInt(zeroXQuote.buyAmount)], // Unwrap WETH received from swap
+      })
+
+      // Step 4: Calculate ETH distribution
+      // After unwrap, we have ETH in wallet
+      // 5% of total initial = 5% / 95% = ~5.263% of swap result
+      const payPortionBips = Math.floor((TREASURY_FEE_BPS * 10000) / (10000 - TREASURY_FEE_BPS)) // ~526 bips
       
-      // 6. Execute transaction
-      console.log(`📤 Executing Universal Router transaction...`)
-      console.log("  Step 1: Permit2.approve() - Authorize Universal Router")
-      console.log("  Step 2: UniversalRouter.execute() - All operations in one call")
-      console.log(`    - PERMIT2_TRANSFER_FROM (0x07): 5% $BUMP to Treasury`)
-      console.log(`    - V4_SWAP (0x10): Swap 95% $BUMP to WETH (using V4Planner)`)
-      console.log(`    - UNWRAP_WETH (0x0c): Unwrap WETH to Native ETH`)
-      console.log(`    - PAY_PORTION (0x06): 5% ETH to Treasury`)
-      console.log(`    - SWEEP (0x04): 90% ETH to User`)
-      console.log(`📋 Universal Router Commands: ${commands}`)
-      
-      // 6. Prepare Universal Router execute call
-      const universalRouterData = encodeFunctionData({
+      // Use Universal Router for ETH distribution (PAY_PORTION + SWEEP)
+      const payPortionInput = encodePayPortionCommand(
+        "0x0000000000000000000000000000000000000000" as Address, // Native ETH
+        TREASURY_ADDRESS as Address,
+        payPortionBips
+      )
+
+      const sweepInput = encodeSweepCommand(
+        "0x0000000000000000000000000000000000000000" as Address, // Native ETH
+        userAddress as Address,
+        BigInt(0) // Sweep all remaining
+      )
+
+      // Universal Router commands for ETH distribution: PAY_PORTION (0x06) + SWEEP (0x04)
+      const distributionCommands = "0x0604" as Hex
+      const distributionInputs: Hex[] = [payPortionInput, sweepInput]
+
+      const distributionData = encodeFunctionData({
         abi: UNISWAP_UNIVERSAL_ROUTER_ABI,
         functionName: "execute",
-        args: [commands, inputs],
+        args: [distributionCommands, distributionInputs],
       })
-      
+
+      // 7. Execute all transactions in batch
+      console.log("📤 Executing transactions using 0x API v2...")
+      console.log("  Step 1: Transfer 5% $BUMP to Treasury")
+      console.log("  Step 2: 0x API swap (95% $BUMP to WETH)")
+      console.log("  Step 3: Unwrap WETH to ETH")
+      console.log("  Step 4: Distribute ETH (5% to Treasury, 90% to user)")
+
       const MAX_RETRIES = 2
-      const TIMEOUT_MS = 30000
+      const TIMEOUT_MS = 60000 // 60 seconds for 0x API
       
       let txHash: `0x${string}` | null = null
       let lastError: Error | null = null
@@ -702,95 +628,68 @@ export function useConvertFuel() {
             console.log(`⏳ Waiting ${delay}ms before retry...`)
             await new Promise(resolve => setTimeout(resolve, delay))
           }
-          
-          // For Smart Wallet (UserOperation), set manual gas limit to prevent simulation failures
-          // 2,000,000 gas units should be sufficient for Permit2 approve + Universal Router execute with V4 swap
-          const MANUAL_GAS_LIMIT = BigInt(2000000)
-          console.log(`⛽ Setting manual gas limit: ${MANUAL_GAS_LIMIT.toString()}`)
-          
-          // Bundle calls in a single UserOperation using Smart Wallet batch
-          // Call 1: Permit2.approve() for Universal Router
-          // Call 2: UniversalRouter.execute() - All operations (V4 swap + ETH distribution)
-          console.log("✅ Sending batch transaction...")
-          console.log("  Call 1: Permit2.approve(Universal Router)")
-          console.log("  Call 2: UniversalRouter.execute(V4 Swap + ETH Distribution)")
 
-          // Smart Wallet batch transaction: array of calls processed atomically
+          // Batch all operations:
+          // 1. Transfer 5% $BUMP to Treasury
+          // 2. 0x swap (95% $BUMP to WETH)
+          // 3. Unwrap WETH to ETH
+          // 4. Distribute ETH (5% Treasury, 90% user)
           const batchCalls = [
-            permit2Approval,  // Permit2 approval for Universal Router
+            {
+              to: BUMP_TOKEN_ADDRESS as Address,
+              data: transferTreasuryData,
+              value: BigInt(0),
+            },
+            zeroXSwapTx, // 0x swap transaction
+            {
+              to: BASE_WETH_ADDRESS as Address,
+              data: unwrapWethData,
+              value: BigInt(0),
+            },
             {
               to: UNISWAP_UNIVERSAL_ROUTER as Address,
-              data: universalRouterData,
+              data: distributionData,
               value: BigInt(0),
             },
           ]
-          
-          // Try different batch methods depending on Smart Wallet SDK version
-          // Privy Smart Wallet should support sendTransaction with batch or separate method
-          try {
-            // Method 1: Try sendTransaction with calls array (newer Privy SDK)
-            if (typeof (smartWalletClient as any).sendTransactions === 'function') {
-              console.log("📦 Using sendTransactions() method...")
-              txHash = await Promise.race([
-                (smartWalletClient as any).sendTransactions(batchCalls, { gas: MANUAL_GAS_LIMIT }),
+
+          // Try batch execution
+          if (typeof (smartWalletClient as any).sendTransactions === 'function') {
+            console.log("📦 Using sendTransactions() method...")
+            txHash = await Promise.race([
+              (smartWalletClient as any).sendTransactions(batchCalls),
+              new Promise<never>((_, reject) => {
+                setTimeout(() => reject(new Error("Transaction timeout")), TIMEOUT_MS)
+              })
+            ]) as `0x${string}`
+          } else if (typeof (smartWalletClient as any).executeBatch === 'function') {
+            console.log("📦 Using executeBatch() method...")
+            txHash = await Promise.race([
+              (smartWalletClient as any).executeBatch(batchCalls),
+              new Promise<never>((_, reject) => {
+                setTimeout(() => reject(new Error("Transaction timeout")), TIMEOUT_MS)
+              })
+            ]) as `0x${string}`
+          } else {
+            // Sequential execution as fallback
+            console.log("📦 Batch method not available, executing sequentially...")
+            let currentHash: `0x${string}` | null = null
+            
+            for (let i = 0; i < batchCalls.length; i++) {
+              console.log(`  Step ${i + 1}/${batchCalls.length}...`)
+              currentHash = await Promise.race([
+                smartWalletClient.sendTransaction(batchCalls[i]),
                 new Promise<never>((_, reject) => {
                   setTimeout(() => reject(new Error("Transaction timeout")), TIMEOUT_MS)
                 })
               ]) as `0x${string}`
-            } 
-            // Method 2: Try executeBatch (alternative SDK method)
-            else if (typeof (smartWalletClient as any).executeBatch === 'function') {
-              console.log("📦 Using executeBatch() method...")
-              txHash = await Promise.race([
-                (smartWalletClient as any).executeBatch(batchCalls, { gas: MANUAL_GAS_LIMIT }),
-                new Promise<never>((_, reject) => {
-                  setTimeout(() => reject(new Error("Transaction timeout")), TIMEOUT_MS)
-                })
-              ]) as `0x${string}`
-            }
-            // Method 3: Fallback - Execute sequentially as single UserOp
-            // Encode multicall manually if batch methods not available
-            else {
-              console.log("📦 Batch method not available, using sequential transactions...")
-              // First approve Permit2
-              console.log("  Step 1/2: Permit2.approve()...")
-              const approveHash = await Promise.race([
-                smartWalletClient.sendTransaction({
-                  to: PERMIT2_ADDRESS as Address,
-                  data: permit2Approval.data,
-                  value: BigInt(0),
-                  gas: BigInt(100000),
-                }),
-                new Promise<never>((_, reject) => {
-                  setTimeout(() => reject(new Error("Approve timeout")), TIMEOUT_MS)
-                })
-              ]) as `0x${string}`
               
-              console.log(`  ✅ Permit2 approve sent: ${approveHash}`)
-              
-              // Wait for approve confirmation
-              if (publicClient) {
-                await publicClient.waitForTransactionReceipt({ hash: approveHash })
-                console.log("  ✅ Permit2 approve confirmed")
+              if (i < batchCalls.length - 1 && publicClient) {
+                await publicClient.waitForTransactionReceipt({ hash: currentHash })
               }
-              
-              // Then execute Universal Router
-              console.log("  Step 2/2: UniversalRouter.execute()...")
-              txHash = await Promise.race([
-                smartWalletClient.sendTransaction({
-                  to: UNISWAP_UNIVERSAL_ROUTER as Address,
-                  data: universalRouterData,
-                  value: BigInt(0),
-                  gas: MANUAL_GAS_LIMIT,
-                }),
-                new Promise<never>((_, reject) => {
-                  setTimeout(() => reject(new Error("Transaction timeout")), TIMEOUT_MS)
-                })
-              ]) as `0x${string}`
             }
-          } catch (batchError: any) {
-            console.error("❌ Batch/Sequential transaction failed:", batchError)
-            throw batchError
+            
+            txHash = currentHash
           }
 
           break // Success
