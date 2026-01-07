@@ -597,13 +597,9 @@ export function useConvertFuel() {
         slippagePercentage
       )
     } catch (error: any) {
-      // If 0x API doesn't have a route, provide helpful error message
-      if (error.message?.includes("no Route matched") || error.message?.includes("No liquidity route")) {
-        throw new Error(
-          "Insufficient liquidity for this swap amount. Please try a smaller amount or wait for more liquidity."
-        )
-      }
-      // Re-throw other errors
+      // Note: "Insufficient Liquidity" errors should be handled by get0xQuote with automatic retry
+      // This function is kept for backward compatibility but the new flow uses get0xQuote directly
+      // Re-throw errors to let the caller handle retry logic
       throw error
     }
 
