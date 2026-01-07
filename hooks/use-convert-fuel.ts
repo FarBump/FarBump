@@ -178,15 +178,26 @@ export function useConvertFuel() {
       // Wait for transaction confirmation
       if (publicClient) {
         try {
-          await publicClient.waitForTransactionReceipt({ hash: txHash })
+          console.log("⏳ Waiting for transaction confirmation...")
+          await publicClient.waitForTransactionReceipt({ 
+            hash: txHash,
+            timeout: 120000, // 2 minutes timeout
+            confirmations: 1 // Wait for at least 1 confirmation
+          })
           console.log("✅ Transaction confirmed on-chain")
+          
+          // Add a small delay to ensure receipt is fully indexed
+          await new Promise(resolve => setTimeout(resolve, 2000))
         } catch (confirmationError: any) {
-          console.warn("Transaction confirmation timeout, but transaction was sent:", confirmationError)
+          console.warn("⚠️ Transaction confirmation timeout, but transaction was sent:", confirmationError)
+          // Still try to sync credit - API will retry fetching receipt
+          console.log("   Will attempt to sync credit anyway (API will retry receipt fetch)")
         }
       }
 
       // Sync credit to database
       try {
+        console.log("📤 Syncing credit to database...")
         const response = await fetch("/api/sync-credit", {
           method: "POST",
           headers: {

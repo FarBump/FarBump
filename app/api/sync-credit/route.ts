@@ -63,9 +63,39 @@ async function verifyAndCalculateCredit(
     console.log(`   User: ${userAddress}`)
     console.log(`   Expected ETH: ${expectedEthWei || "not provided"}`)
     
-    // 1. Get transaction receipt
-    console.log(`   Step 1: Fetching transaction receipt...`)
-    const receipt = await publicClient.getTransactionReceipt({ hash: txHash })
+    // 1. Get transaction receipt with retry logic
+    // Transaction may not be confirmed yet, so we retry with exponential backoff
+    console.log(`   Step 1: Fetching transaction receipt (with retry)...`)
+    let receipt = null
+    const maxRetries = 10
+    const initialDelay = 2000 // 2 seconds
+    const maxDelay = 30000 // 30 seconds
+    
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        receipt = await publicClient.getTransactionReceipt({ hash: txHash })
+        if (receipt) {
+          console.log(`   ✅ Transaction receipt found on attempt ${attempt}`)
+          break
+        }
+      } catch (error: any) {
+        if (error.shortMessage?.includes("could not be found") || error.shortMessage?.includes("not be processed")) {
+          // Transaction not confirmed yet, retry
+          const delay = Math.min(initialDelay * Math.pow(2, attempt - 1), maxDelay)
+          console.log(`   ⏳ Transaction receipt not found yet (attempt ${attempt}/${maxRetries}), retrying in ${delay}ms...`)
+          if (attempt < maxRetries) {
+            await new Promise(resolve => setTimeout(resolve, delay))
+            continue
+          } else {
+            console.error(`   ❌ Transaction receipt not found after ${maxRetries} attempts`)
+            return { ethAmountWei: BigInt(0), isValid: false }
+          }
+        } else {
+          // Other error, throw it
+          throw error
+        }
+      }
+    }
 
     if (!receipt || receipt.status !== "success") {
       console.warn(`   ❌ Transaction not found or failed`)
@@ -73,7 +103,7 @@ async function verifyAndCalculateCredit(
       return { ethAmountWei: BigInt(0), isValid: false }
     }
     
-    console.log(`   ✅ Transaction receipt found (status: ${receipt.status})`)
+    console.log(`   ✅ Transaction receipt confirmed (status: ${receipt.status})`)
     console.log(`      Block number: ${receipt.blockNumber}`)
     console.log(`      Transaction to: ${receipt.to}`)
     console.log(`      Total logs: ${receipt.logs.length}`)
