@@ -30,13 +30,15 @@ export function PrivyProvider({ children }: PrivyProviderProps) {
     throw new Error("NEXT_PUBLIC_PRIVY_APP_ID environment variable is required")
   }
 
-  // Suppress SecurityError for window.ethereum access in Farcaster Mini App
-  // This error occurs because Privy tries to detect browser wallets in cross-origin iframe
+  // Suppress SecurityError and showWalletLoginFirst warning for Farcaster Mini App
+  // These warnings occur because Privy tries to detect browser wallets in cross-origin iframe
   useEffect(() => {
     if (typeof window !== "undefined") {
       const originalError = window.console.error
+      const originalWarn = window.console.warn
+      
+      // Suppress SecurityError about window.ethereum
       window.console.error = (...args: any[]) => {
-        // Filter out SecurityError about window.ethereum in Farcaster Mini App
         const errorMessage = args[0]?.toString() || ""
         if (
           errorMessage.includes("Failed to read a named property 'ethereum'") ||
@@ -49,8 +51,23 @@ export function PrivyProvider({ children }: PrivyProviderProps) {
         originalError.apply(console, args)
       }
 
+      // Suppress showWalletLoginFirst warning
+      window.console.warn = (...args: any[]) => {
+        const warnMessage = args[0]?.toString() || ""
+        if (
+          warnMessage.includes("showWalletLoginFirst") ||
+          warnMessage.includes("wallet logins are also enabled")
+        ) {
+          // Silently ignore this warning - we only use Farcaster login, not wallet login
+          return
+        }
+        // Log other warnings normally
+        originalWarn.apply(console, args)
+      }
+
       return () => {
         window.console.error = originalError
+        window.console.warn = originalWarn
       }
     }
   }, [])
@@ -60,6 +77,14 @@ export function PrivyProvider({ children }: PrivyProviderProps) {
       appId={appId}
       config={{
         loginMethods: ["farcaster"],
+        // Explicitly configure to prevent showWalletLoginFirst warning
+        // We only use Farcaster login for Mini App, no external wallet connections
+        // Setting externalWallets to smartWalletOnly prevents wallet detection
+        externalWallets: {
+          coinbaseWallet: {
+            connectionOptions: "smartWalletOnly" as const,
+          },
+        },
         appearance: {
           theme: "light",
           accentColor: "#676FFF",
