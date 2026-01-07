@@ -13,6 +13,10 @@ export const UNISWAP_UNIVERSAL_ROUTER = "0x6fF5693b99212Da76ad316178A184AB56D299
 // Permit2 on Base Mainnet
 export const PERMIT2_ADDRESS = "0x000000000022D473030F116dDEE9F6B43aC78BA3" as const
 
+// 0x Protocol Settler Contract on Base Mainnet
+// Used for executing swaps via 0x Swap API v2
+export const ZEROX_SETTLER_CONTRACT = "0x785648669b8e90a75a6a8de682258957f9028462" as const
+
 // Clanker V4 $BUMP/WETH Pool Configuration
 // Based on Clanker SDK v4.0.0 documentation
 // $BUMP token deployed via Clanker platform using Uniswap V4

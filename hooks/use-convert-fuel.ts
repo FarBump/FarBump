@@ -975,12 +975,11 @@ export function useConvertFuel() {
       }
       
       // 6.7. Verify transaction is sent to Settler contract
-      const settlerContractAddress = "0x785648669b8e90a75a6a8de682258957f9028462" as Address
-      if (quoteData.transaction.to.toLowerCase() !== settlerContractAddress.toLowerCase()) {
-        console.warn(`Warning: Transaction target (${quoteData.transaction.to}) does not match expected Settler contract (${settlerContractAddress})`)
+      if (quoteData.transaction.to.toLowerCase() !== ZEROX_SETTLER_CONTRACT.toLowerCase()) {
+        console.warn(`Warning: Transaction target (${quoteData.transaction.to}) does not match expected Settler contract (${ZEROX_SETTLER_CONTRACT})`)
         // Still proceed, but log warning
       } else {
-        console.log(`Transaction will be sent to Settler contract: ${settlerContractAddress}`)
+        console.log(`Transaction will be sent to Settler contract: ${ZEROX_SETTLER_CONTRACT}`)
       }
 
       // 7. Check for allowance issues in 0x response
