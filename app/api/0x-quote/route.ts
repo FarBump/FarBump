@@ -78,25 +78,26 @@ export async function GET(request: NextRequest) {
     let lastError: any = null
     let quoteData: any = null
     
-    for (const baseUrl of ZEROX_API_BASE_URLS) {
-      const url = `${baseUrl}/swap/v2/quote?${queryParams.toString()}`
-      
-      console.log(`📊 Proxying 0x Swap API v2 quote request to ${baseUrl}...`)
-      console.log(`  URL: ${url}`)
-      console.log(`  Sell Token: ${sellToken}`)
-      console.log(`  Buy Token: ${buyToken}`)
-      console.log(`  Sell Amount: ${sellAmount}`)
-      console.log(`  Slippage: ${slippagePercentage}%`)
+    // Use unified 0x Swap API v2 endpoint
+    // Based on 0x documentation: https://0x.org/docs/upgrading/upgrading_to_swap_v2
+    const baseUrl = ZEROX_API_BASE_URLS[0] // Use unified endpoint
+    const apiUrl = `${baseUrl}/swap/v1/quote?${queryParams.toString()}`
+    console.log(`📊 Proxying 0x Swap API v2 quote request to ${baseUrl}...`)
+    console.log(`  URL: ${apiUrl}`)
+    console.log(`  Sell Token: ${sellToken}`)
+    console.log(`  Buy Token: ${buyToken}`)
+    console.log(`  Sell Amount: ${sellAmount}`)
+    console.log(`  Slippage: ${slippagePercentage}%`)
 
-      try {
-        // Make request to 0x API from server-side (no CORS issues)
-        const response = await fetch(url, {
-          method: "GET",
-          headers: {
-            "0x-api-key": ZEROX_API_KEY,
-            "Accept": "application/json",
-          },
-        })
+    // Make request with proper headers for v2 API
+    const response = await fetch(apiUrl, {
+      method: "GET",
+      headers: {
+        "0x-api-key": ZEROX_API_KEY,
+        "0x-version": "v2", // Required header for v2 API
+        "Accept": "application/json",
+      },
+    })
 
         if (!response.ok) {
           const errorText = await response.text()
