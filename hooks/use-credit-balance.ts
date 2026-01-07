@@ -16,9 +16,20 @@ interface CreditBalance {
  * Uses real-time ETH price from CoinGecko API
  * 
  * IMPORTANT: This is NOT the $BUMP token balance!
- * - Credit Balance = ETH value from converting $BUMP to ETH (stored in Supabase)
+ * - Credit Balance = ETH value from converting $BUMP to ETH (stored in Supabase as wei)
+ * - Database stores: balance_wei (90% of ETH from each convert transaction)
+ * - Display: Converts wei → ETH → USD using real-time ETH price
  * - Used for paying for bump bot services in the future
  * - For $BUMP token balance, use useBumpBalance() instead
+ * 
+ * Credit Calculation:
+ * - Each convert transaction: 90% of ETH result is stored in database (in wei)
+ * - Total credit = Sum of all 90% portions from all convert transactions
+ * - USD value = Total ETH credit × Current ETH price (refreshed every 15 seconds)
+ * 
+ * This ensures:
+ * 1. Credit amount in ETH matches the actual ETH in Smart Wallet (90% of swap results)
+ * 2. Credit value in USD follows ETH price fluctuations in real-time
  * 
  * This hook is completely independent from withdraw operations.
  * Withdraw uses useBumpBalance() which reads directly from blockchain.
@@ -98,28 +109,38 @@ export function useCreditBalance(userAddress: string | null, options?: { enabled
       const balanceWei = data?.balance_wei || "0"
       const balanceEth = formatUnits(BigInt(balanceWei), 18)
 
-      // Fetch ETH price in USD from CoinGecko
+      // Fetch ETH price in USD from CoinGecko (real-time)
+      // IMPORTANT: ETH price is fetched fresh every time to reflect current market price
+      // This ensures credit value in USD follows ETH price fluctuations
       let balanceUsd: number | null = null
       try {
+        // Add cache-busting parameter to ensure fresh price data
+        const cacheBuster = Date.now()
         const priceResponse = await fetch(
-          "https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd",
+          `https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd&_=${cacheBuster}`,
           {
             headers: {
               Accept: "application/json",
             },
+            // Don't cache ETH price - we want real-time updates
+            cache: "no-store",
           }
         )
 
         if (priceResponse.ok) {
           const priceData = await priceResponse.json()
           const ethPriceUsd = priceData.ethereum?.usd
-          if (ethPriceUsd) {
+          if (ethPriceUsd && typeof ethPriceUsd === "number") {
+            // Calculate USD value: ETH amount * current ETH price
             balanceUsd = parseFloat(balanceEth) * ethPriceUsd
+            console.log(`💰 Credit conversion: ${balanceEth} ETH × $${ethPriceUsd.toFixed(2)} = $${balanceUsd.toFixed(2)}`)
           }
+        } else {
+          console.warn(`⚠️ Failed to fetch ETH price: ${priceResponse.status} ${priceResponse.statusText}`)
         }
       } catch (priceError) {
         console.warn("⚠️ Failed to fetch ETH price:", priceError)
-        // Don't throw - USD conversion is optional
+        // Don't throw - USD conversion is optional, but log for debugging
       }
 
       return {
@@ -130,8 +151,10 @@ export function useCreditBalance(userAddress: string | null, options?: { enabled
       }
     },
     enabled: enabled,
-    refetchInterval: enabled ? 30000 : false, // Disable refetch if 406 error occurred
-    staleTime: 10000, // Consider data stale after 10 seconds
+    // Refetch every 15 seconds to keep ETH price and credit value up-to-date
+    // This ensures credit value in USD follows ETH price fluctuations in real-time
+    refetchInterval: enabled ? 15000 : false, // Refresh every 15 seconds
+    staleTime: 5000, // Consider data stale after 5 seconds (for faster price updates)
     retry: (failureCount, error: any) => {
       // Don't retry on 406 errors (RLS policy issue)
       const is406Error = 

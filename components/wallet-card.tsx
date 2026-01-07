@@ -5,10 +5,11 @@ import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Copy, Check, Shield, RefreshCw } from "lucide-react"
 import { useBumpBalance } from "@/hooks/use-bump-balance"
+import { useCreditBalance } from "@/hooks/use-credit-balance"
 
 interface WalletCardProps {
   fuelBalance?: number
-  credits?: number
+  credits?: number // Deprecated: kept for backward compatibility, but credit is now fetched from database
   walletAddress?: string | null
   isSmartAccountActive?: boolean
   bumpBalance?: string // Pass formatted balance to ConfigPanel
@@ -26,6 +27,20 @@ export function WalletCard({ fuelBalance = 0, credits = 0, walletAddress, isSmar
     enabled: isSmartAccountActive && smartWalletAddress !== "0x000...000",
   })
 
+  // Fetch credit balance from database (ETH value from converting $BUMP to Credit)
+  // IMPORTANT: This only shows credit from valid convert transactions, not from direct ETH transfers
+  const { 
+    data: creditData, 
+    isLoading: isLoadingCredit,
+    refetch: refetchCredit 
+  } = useCreditBalance(
+    smartWalletAddress !== "0x000...000" ? smartWalletAddress : null,
+    { enabled: isSmartAccountActive && smartWalletAddress !== "0x000...000" }
+  )
+
+  // Use credit from database if available, otherwise fallback to prop (for backward compatibility)
+  const displayCredit = creditData?.balanceUsd ?? credits
+
   const handleCopy = () => {
     navigator.clipboard.writeText(smartWalletAddress)
     setCopied(true)
@@ -34,6 +49,7 @@ export function WalletCard({ fuelBalance = 0, credits = 0, walletAddress, isSmar
 
   const handleRefreshBalance = () => {
     refetchBalance()
+    refetchCredit()
   }
 
   return (
@@ -93,8 +109,31 @@ export function WalletCard({ fuelBalance = 0, credits = 0, walletAddress, isSmar
         </div>
 
         <div className="rounded-lg bg-secondary border border-border p-3">
-          <p className="text-[10px] text-muted-foreground uppercase tracking-wide">Credits</p>
-          <p className="mt-1 font-mono text-sm font-semibold text-foreground">${credits.toFixed(2)}</p>
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex-1">
+              <p className="text-[10px] text-muted-foreground uppercase tracking-wide mb-1">Credits</p>
+              <p className="font-mono text-sm font-semibold text-foreground">
+                {isLoadingCredit ? (
+                  <span className="text-muted-foreground">Loading...</span>
+                ) : (
+                  `$${displayCredit.toFixed(2)}`
+                )}
+              </p>
+            </div>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={handleRefreshBalance}
+              disabled={isLoadingCredit || !isSmartAccountActive}
+              className="h-6 w-6 p-0 hover:bg-muted/50 shrink-0"
+              title="Refresh credit balance"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 text-muted-foreground ${isLoadingCredit ? "animate-spin" : ""}`} />
+            </Button>
+          </div>
+          <p className="text-[9px] text-muted-foreground mt-2">
+            Credit from Convert $BUMP transactions only
+          </p>
         </div>
       </div>
     </Card>
