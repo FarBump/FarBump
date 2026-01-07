@@ -3,47 +3,32 @@ import { NextRequest, NextResponse } from "next/server";
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
 
-  // Ambil parameter dari frontend
   const sellToken = searchParams.get("sellToken");
   const buyToken = searchParams.get("buyToken");
   const sellAmount = searchParams.get("sellAmount");
-  const takerAddress = searchParams.get("takerAddress");
-  const slippageInput = searchParams.get("slippagePercentage") || "3";
+  const taker = searchParams.get("takerAddress");
 
-  // Konversi slippage: jika frontend kirim "3", jadi 0.03
-  const slippagePercentage = parseFloat(slippageInput) / 100;
-
-  if (!sellToken || !buyToken || !sellAmount || !takerAddress) {
+  if (!sellToken || !buyToken || !sellAmount || !taker) {
     return NextResponse.json({ error: "Missing required parameters" }, { status: 400 });
   }
 
   try {
+    // 0x API v2 menggunakan Basis Points (Bps)
+    // 100 Bps = 1%, jadi 300 Bps = 3%
     const queryParams = new URLSearchParams({
       chainId: "8453", // Base Mainnet
       sellToken,
       buyToken,
       sellAmount,
-      takerAddress,
-      slippagePercentage: slippagePercentage.toString(),
+      taker, 
+      slippageBps: "300", 
       enablePermit2: "true",
-      intentOnFill: "true", // WAJIB untuk Settler
-      enableSlippageProtection: "false", // MEMAKSA rute meskipun liquidity rendah
     });
 
-    const ZEROX_API_KEY = process.env.ZEROX_API_KEY;
-    if (!ZEROX_API_KEY) {
-      console.error("0x API Key is missing in environment variables");
-      return NextResponse.json({ error: "Server configuration error" }, { status: 500 });
-    }
-
-    // Menggunakan API v2 /swap/v2/quote
-    const apiUrl = `https://api.0x.org/swap/v2/quote?${queryParams.toString()}`;
-    
-    console.log("📡 Proxying request to 0x API v2...");
-
-    const response = await fetch(apiUrl, {
+    const response = await fetch(`https://api.0x.org/swap/v2/quote?${queryParams.toString()}`, {
       headers: {
-        "0x-api-key": ZEROX_API_KEY,
+        "0x-api-key": process.env.ZEROX_API_KEY || "",
+        "0x-version": "v2", // WAJIB untuk Uniswap v4
         "Accept": "application/json",
       },
     });
@@ -51,16 +36,13 @@ export async function GET(request: NextRequest) {
     const data = await response.json();
 
     if (!response.ok) {
-      console.error("❌ 0x API Error Details:", data);
-      return NextResponse.json(
-        { error: data.reason || data.message || "0x API returned an error", details: data },
-        { status: response.status }
-      );
+      console.error("0x API v2 Error:", data);
+      return NextResponse.json(data, { status: response.status });
     }
 
     return NextResponse.json(data);
   } catch (error) {
-    console.error("❌ Proxy error:", error);
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+    console.error("Internal API Error:", error);
+    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
 }
