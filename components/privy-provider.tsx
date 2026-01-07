@@ -6,7 +6,7 @@ import { WagmiProvider } from "@privy-io/wagmi"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { http, createConfig } from "wagmi"
 import { base } from "wagmi/chains"
-import { ReactNode, useEffect } from "react"
+import { ReactNode } from "react"
 
 // 1. Inisialisasi Wagmi Config
 const wagmiConfig = createConfig({
@@ -30,61 +30,11 @@ export function PrivyProvider({ children }: PrivyProviderProps) {
     throw new Error("NEXT_PUBLIC_PRIVY_APP_ID environment variable is required")
   }
 
-  // Suppress SecurityError and showWalletLoginFirst warning for Farcaster Mini App
-  // These warnings occur because Privy tries to detect browser wallets in cross-origin iframe
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      const originalError = window.console.error
-      const originalWarn = window.console.warn
-      
-      // Suppress SecurityError about window.ethereum
-      window.console.error = (...args: any[]) => {
-        const errorMessage = args[0]?.toString() || ""
-        if (
-          errorMessage.includes("Failed to read a named property 'ethereum'") ||
-          errorMessage.includes("Blocked a frame with origin")
-        ) {
-          // Silently ignore this error - it's expected in Farcaster Mini App context
-          return
-        }
-        // Log other errors normally
-        originalError.apply(console, args)
-      }
-
-      // Suppress showWalletLoginFirst warning
-      window.console.warn = (...args: any[]) => {
-        const warnMessage = args[0]?.toString() || ""
-        if (
-          warnMessage.includes("showWalletLoginFirst") ||
-          warnMessage.includes("wallet logins are also enabled")
-        ) {
-          // Silently ignore this warning - we only use Farcaster login, not wallet login
-          return
-        }
-        // Log other warnings normally
-        originalWarn.apply(console, args)
-      }
-
-      return () => {
-        window.console.error = originalError
-        window.console.warn = originalWarn
-      }
-    }
-  }, [])
-
   return (
     <PrivyProviderBase
       appId={appId}
       config={{
         loginMethods: ["farcaster"],
-        // Explicitly configure to prevent showWalletLoginFirst warning
-        // We only use Farcaster login for Mini App, no external wallet connections
-        // Setting externalWallets to smartWalletOnly prevents wallet detection
-        externalWallets: {
-          coinbaseWallet: {
-            connectionOptions: "smartWalletOnly" as const,
-          },
-        },
         appearance: {
           theme: "light",
           accentColor: "#676FFF",
@@ -102,7 +52,6 @@ export function PrivyProvider({ children }: PrivyProviderProps) {
         embeddedWallets: {
           ethereum: {
             createOnLogin: "all-users" as const,
-            requireUserPasswordOnCreate: false, // CRITICAL: No password prompt in Farcaster Mini App
           },
         },
         /**
@@ -132,7 +81,7 @@ export function PrivyProvider({ children }: PrivyProviderProps) {
         // Base Mainnet sebagai default
         defaultChain: base,
         supportedChains: [base],
-      }}
+      } as any}
     >
       <QueryClientProvider client={queryClient}>
         <WagmiProvider config={wagmiConfig}>
