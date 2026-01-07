@@ -112,34 +112,35 @@ export function useCreditBalance(userAddress: string | null, options?: { enabled
       // Fetch ETH price in USD from CoinGecko (real-time)
       // IMPORTANT: ETH price is fetched fresh every time to reflect current market price
       // This ensures credit value in USD follows ETH price fluctuations
+      // Use server-side API route to avoid CORS and rate limiting
       let balanceUsd: number | null = null
       try {
-        // Add cache-busting parameter to ensure fresh price data
-        const cacheBuster = Date.now()
-        const priceResponse = await fetch(
-          `https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd&_=${cacheBuster}`,
-          {
-            headers: {
-              Accept: "application/json",
-            },
-            // Don't cache ETH price - we want real-time updates
-            cache: "no-store",
-          }
-        )
+        const priceResponse = await fetch("/api/eth-price", {
+          headers: {
+            Accept: "application/json",
+          },
+          // Cache for 30 seconds (matches server-side cache)
+          next: { revalidate: 30 },
+        })
 
         if (priceResponse.ok) {
           const priceData = await priceResponse.json()
-          const ethPriceUsd = priceData.ethereum?.usd
-          if (ethPriceUsd && typeof ethPriceUsd === "number") {
+          if (priceData.success && typeof priceData.price === "number") {
+            const ethPriceUsd = priceData.price
             // Calculate USD value: ETH amount * current ETH price
             balanceUsd = parseFloat(balanceEth) * ethPriceUsd
-            console.log(`💰 Credit conversion: ${balanceEth} ETH × $${ethPriceUsd.toFixed(2)} = $${balanceUsd.toFixed(2)}`)
+            console.log(
+              `💰 Credit conversion: ${balanceEth} ETH × $${ethPriceUsd.toFixed(2)} = $${balanceUsd.toFixed(2)}${priceData.cached ? " (cached)" : ""}`
+            )
           }
         } else {
-          console.warn(`⚠️ Failed to fetch ETH price: ${priceResponse.status} ${priceResponse.statusText}`)
+          const errorData = await priceResponse.json().catch(() => ({}))
+          console.warn(
+            `⚠️ Failed to fetch ETH price: ${priceResponse.status} ${errorData.error || priceResponse.statusText}`
+          )
         }
-      } catch (priceError) {
-        console.warn("⚠️ Failed to fetch ETH price:", priceError)
+      } catch (priceError: any) {
+        console.warn("⚠️ Failed to fetch ETH price:", priceError.message || priceError)
         // Don't throw - USD conversion is optional, but log for debugging
       }
 
@@ -151,10 +152,11 @@ export function useCreditBalance(userAddress: string | null, options?: { enabled
       }
     },
     enabled: enabled,
-    // Refetch every 15 seconds to keep ETH price and credit value up-to-date
+    // Refetch every 30 seconds to keep ETH price and credit value up-to-date
+    // This matches the server-side cache duration (30 seconds) to reduce API calls
     // This ensures credit value in USD follows ETH price fluctuations in real-time
-    refetchInterval: enabled ? 15000 : false, // Refresh every 15 seconds
-    staleTime: 5000, // Consider data stale after 5 seconds (for faster price updates)
+    refetchInterval: enabled ? 30000 : false, // Refresh every 30 seconds (matches server cache)
+    staleTime: 30000, // Consider data stale after 30 seconds (matches server cache)
     retry: (failureCount, error: any) => {
       // Don't retry on 406 errors (RLS policy issue)
       const is406Error = 
