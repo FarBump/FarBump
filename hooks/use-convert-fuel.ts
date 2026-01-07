@@ -1158,14 +1158,9 @@ export function useConvertFuel() {
       const errorDetails = err.details || err.cause?.details || ""
       const errorName = err.name || err.cause?.name || ""
       
-      // Handle "Insufficient Liquidity" error specifically (400 with no Route matched)
-      if (friendlyMessage.includes("Insufficient Liquidity") || 
-          friendlyMessage.includes("Insufficient liquidity") ||
-          friendlyMessage.includes("no Route matched") ||
-          friendlyMessage.includes("No liquidity route") ||
-          friendlyMessage.includes("NO_ROUTE_MATCHED")) {
-        friendlyMessage = "Insufficient liquidity for this swap amount. Please try a smaller amount or wait for more liquidity."
-      } else if (
+      // Note: "Insufficient Liquidity" errors are now handled automatically with high slippage retry
+      // This catch block only handles errors that couldn't be resolved with retry
+      if (
         friendlyMessage.includes("No billing attached") ||
         friendlyMessage.includes("billing attached to account") ||
         friendlyMessage.includes("request denied") ||
