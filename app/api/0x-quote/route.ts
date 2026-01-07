@@ -55,6 +55,8 @@ export async function GET(request: NextRequest) {
     // IMPORTANT: enablePermit2 is required for efficient token approvals
     // We don't restrict liquidity sources to allow Uniswap V4 to be accessible
     // includePriceImpact=true to get price impact estimates
+    // intentOnFill=true: Indicates intent to fill the quote (required for Settler contract)
+    // enableSlippageProtection=false: Disable slippage protection to allow higher slippage for large swaps
     const queryParams = new URLSearchParams({
       sellToken,
       buyToken,
@@ -63,6 +65,8 @@ export async function GET(request: NextRequest) {
       slippagePercentage,
       enablePermit2: "true", // Required: Enable Permit2 for efficient approvals
       includePriceImpact: "true", // Include price impact in response
+      intentOnFill: "true", // Required: Indicates intent to fill the quote (for Settler contract)
+      enableSlippageProtection: "false", // Disable slippage protection for large swaps
     })
     
     // Note: We don't add 'excludedSources' or 'includedSources' to allow all liquidity sources

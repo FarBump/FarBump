@@ -484,7 +484,7 @@ export function useConvertFuel() {
     const apiPath = `/api/0x-quote?${queryParams.toString()}`
     const url = baseUrl ? `${baseUrl}${apiPath}` : apiPath
     
-    console.log("📊 Fetching 0x Swap API v2 quote via proxy...")
+    console.log("Fetching 0x Swap API v2 quote via proxy...")
     console.log(`  API Route: ${url}`)
     console.log(`  Base URL: ${baseUrl || "relative"}`)
     console.log(`  Sell Token: ${sellToken}`)
@@ -509,7 +509,7 @@ export function useConvertFuel() {
         errorData = { error: errorText || response.statusText }
       }
       
-      console.error("❌ 0x API proxy error:", {
+      console.error("0x API proxy error:", {
         status: response.status,
         statusText: response.statusText,
         error: errorData,
@@ -525,9 +525,14 @@ export function useConvertFuel() {
       )
       
       if (isInsufficientLiquidity && retryWithHighSlippage) {
-        console.log("⚠️ Insufficient Liquidity detected. Retrying with high slippage (20%)...")
+        console.log("Insufficient Liquidity detected. Retrying with high slippage (20%)...")
         // Retry with 20% slippage (high slippage mode)
         return get0xQuote(sellToken, buyToken, sellAmountWei, takerAddress, 20, false)
+      }
+      
+      // Show English UX alert for 400 error
+      if (response.status === 400) {
+        throw new Error("Liquidity is too low for this amount. Please try a smaller swap or increase slippage.")
       }
       
       throw new Error(errorData.error || `0x API v2 error: ${response.status} ${response.statusText}`)
@@ -535,11 +540,12 @@ export function useConvertFuel() {
 
     const quoteData: ZeroXQuoteResponse = await response.json()
     
-    console.log("✅ 0x API v2 Quote received:")
+    console.log("0x API v2 Quote received:")
     console.log(`  - Price: ${quoteData.price}`)
     console.log(`  - Buy Amount: ${quoteData.buyAmount}`)
     console.log(`  - Sell Amount: ${quoteData.sellAmount}`)
     console.log(`  - Estimated Price Impact: ${quoteData.estimatedPriceImpact}%`)
+    console.log(`  - Settler Contract: ${quoteData.transaction.to}`)
 
     return quoteData
   }
@@ -870,24 +876,25 @@ export function useConvertFuel() {
         args: [userAddress as Address, PERMIT2_ADDRESS as Address],
       })
       
-      console.log(`📊 ERC20 Allowance to Permit2: ${erc20ToPermit2Allowance.toString()}, Required: ${totalAmountWei.toString()}`)
+      console.log(`ERC20 Allowance to Permit2: ${erc20ToPermit2Allowance.toString()}, Required: ${totalAmountWei.toString()}`)
       
       if (erc20ToPermit2Allowance < totalAmountWei) {
         throw new Error("Insufficient ERC20 allowance to Permit2. Please approve first by clicking the 'Approve' button.")
       }
       
-      console.log("✅ ERC20 allowance to Permit2 confirmed")
+      console.log("ERC20 allowance to Permit2 confirmed")
 
       // 5. Get dynamic slippage based on token
       const dynamicSlippage = getDynamicSlippage(BUMP_TOKEN_ADDRESS as Address)
-      console.log(`📊 Using dynamic slippage: ${(dynamicSlippage * 100).toFixed(1)}% for $BUMP token`)
+      console.log(`Using dynamic slippage: ${(dynamicSlippage * 100).toFixed(1)}% for $BUMP token`)
 
       // 6. Get 0x API quote with Smart Wallet address as taker
       // Will automatically retry with high slippage (20%) if "Insufficient Liquidity" error occurs
       setSwapStatus("Fetching quote from 0x API...")
-      console.log("📦 Fetching 0x API v2 quote...")
+      console.log("Fetching 0x API v2 quote...")
       let quoteData: ZeroXQuoteResponse
       let usedHighSlippage = false
+      let adjustedSlippage = dynamicSlippage * 100 // Start with dynamic slippage
       
       try {
         quoteData = await get0xQuote(
@@ -895,26 +902,43 @@ export function useConvertFuel() {
           BASE_WETH_ADDRESS as Address,
           swapAmountWei,
           userAddress as Address, // Smart Wallet address as taker
-          dynamicSlippage * 100, // Convert to percentage
+          adjustedSlippage, // Use adjusted slippage
           true // Enable retry with high slippage
         )
         
-        // Check if we used high slippage by comparing with original slippage
-        // If estimatedPriceImpact is very high, we likely used high slippage mode
+        // 6.5. Check price impact and auto-adjust slippage if needed (> 5%)
         const priceImpact = parseFloat(quoteData.estimatedPriceImpact || "0")
-        if (priceImpact > 5 || quoteData.estimatedPriceImpact === undefined) {
-          // Likely used high slippage mode
+        if (priceImpact > 5 && adjustedSlippage < 20) {
+          console.log(`High price impact detected (${priceImpact.toFixed(2)}%). Auto-adjusting slippage to 20%...`)
+          adjustedSlippage = 20
           usedHighSlippage = true
-          console.log("⚠️ High slippage mode activated due to liquidity constraints")
+          setSwapStatus("High price impact detected. Adjusting slippage to 20%...")
+          
+          // Retry with 20% slippage
+          quoteData = await get0xQuote(
+            BUMP_TOKEN_ADDRESS as Address,
+            BASE_WETH_ADDRESS as Address,
+            swapAmountWei,
+            userAddress as Address,
+            20, // 20% slippage for large swaps
+            false // Don't retry again
+          )
+        }
+        
+        // Check if we used high slippage by comparing with original slippage
+        if (adjustedSlippage >= 20 || priceImpact > 5) {
+          usedHighSlippage = true
+          console.log("High slippage mode activated due to large swap or liquidity constraints")
         }
       } catch (error: any) {
         // If retry with high slippage also fails, try final fallback
         const errorMessage = error.message || ""
         if (errorMessage.includes("Insufficient liquidity") || 
             errorMessage.includes("no Route matched") ||
-            errorMessage.includes("NO_ROUTE_MATCHED")) {
+            errorMessage.includes("NO_ROUTE_MATCHED") ||
+            errorMessage.includes("400")) {
           // Final fallback: try with maximum slippage (20%)
-          console.log("🔄 Final attempt with maximum slippage (20%)...")
+          console.log("Final attempt with maximum slippage (20%)...")
           setSwapStatus("Retrying with high slippage mode...")
           try {
             quoteData = await get0xQuote(
@@ -926,10 +950,11 @@ export function useConvertFuel() {
               false // Don't retry again
             )
             usedHighSlippage = true
-            console.log("✅ Quote obtained with high slippage mode")
+            console.log("Quote obtained with high slippage mode")
           } catch (finalError: any) {
+            // Show English UX alert for 400 error
             throw new Error(
-              "Unable to find a route for this swap. Please try a smaller amount or contact support."
+              "Liquidity is too low for this amount. Please try a smaller swap or increase slippage."
             )
           }
         } else {
@@ -938,15 +963,24 @@ export function useConvertFuel() {
         }
       }
       
-      // 6.5. Check price impact and warn user if very high (> 10%)
-      const priceImpact = parseFloat(quoteData.estimatedPriceImpact || "0")
-      if (priceImpact > 10) {
-        const warningMessage = `Large swap detected. You will experience a significant price impact of ${priceImpact.toFixed(2)}%. Proceeding anyway...`
-        console.warn(`⚠️ ${warningMessage}`)
+      // 6.6. Final price impact check and warning (> 10%)
+      const finalPriceImpact = parseFloat(quoteData.estimatedPriceImpact || "0")
+      if (finalPriceImpact > 10) {
+        const warningMessage = `Large swap detected. You will experience a significant price impact of ${finalPriceImpact.toFixed(2)}%. Proceeding anyway...`
+        console.warn(warningMessage)
         setSwapStatus(warningMessage)
         // Continue with swap but user is warned
       } else if (usedHighSlippage) {
         setSwapStatus("High slippage mode activated. Proceeding with swap...")
+      }
+      
+      // 6.7. Verify transaction is sent to Settler contract
+      const settlerContractAddress = "0x785648669b8e90a75a6a8de682258957f9028462" as Address
+      if (quoteData.transaction.to.toLowerCase() !== settlerContractAddress.toLowerCase()) {
+        console.warn(`Warning: Transaction target (${quoteData.transaction.to}) does not match expected Settler contract (${settlerContractAddress})`)
+        // Still proceed, but log warning
+      } else {
+        console.log(`Transaction will be sent to Settler contract: ${settlerContractAddress}`)
       }
 
       // 7. Check for allowance issues in 0x response
@@ -958,7 +992,7 @@ export function useConvertFuel() {
         
         if (allowanceIssue && allowanceIssue.data?.allowance) {
           allowanceSpender = allowanceIssue.data.allowance.spender as Address
-          console.log("⚠️ Allowance issue detected:")
+          console.log("Allowance issue detected:")
           console.log(`  Token: ${allowanceIssue.data.allowance.token}`)
           console.log(`  Spender: ${allowanceSpender}`)
           console.log(`  Required Amount: ${allowanceIssue.data.allowance.amount}`)
@@ -967,13 +1001,13 @@ export function useConvertFuel() {
 
       // 8. Prepare atomic batch transaction
       setSwapStatus("Processing on Uniswap V4...")
-      console.log("🔄 Preparing atomic batch transaction...")
+      console.log("Preparing atomic batch transaction...")
       
       const batchCalls: Array<{ to: Address; data: Hex; value: bigint }> = []
 
       // Call 1: Token approval if allowance issue exists
       if (allowanceSpender) {
-        console.log("📝 Adding token approval to batch...")
+        console.log("Adding token approval to batch...")
         const approveData = encodeFunctionData({
           abi: ERC20_ABI,
           functionName: "approve",
@@ -985,23 +1019,27 @@ export function useConvertFuel() {
           data: approveData,
           value: BigInt(0),
         })
-        console.log(`  ✅ Approval call added for spender: ${allowanceSpender}`)
+        console.log(`  Approval call added for spender: ${allowanceSpender}`)
       }
 
-      // Call 2: 0x Swap transaction
-      console.log("💱 Adding 0x swap transaction to batch...")
-      batchCalls.push({
-        to: quoteData.transaction.to as Address,
-        data: quoteData.transaction.data as Hex,
-        value: BigInt(quoteData.transaction.value || "0"),
-      })
-      console.log(`  ✅ Swap call added: ${quoteData.transaction.to}`)
+      // Call 2: 0x Swap transaction (sent directly to Settler contract)
+      const settlerContractAddress = "0x785648669b8e90a75a6a8de682258957f9028462" as Address
+      console.log("Adding 0x swap transaction to batch (Settler contract)...")
       
-      console.log(`📦 Total batch calls: ${batchCalls.length}`)
+      // Ensure transaction is sent to Settler contract
+      const swapTransaction = {
+        to: settlerContractAddress, // Always use Settler contract address
+        data: quoteData.transaction.data as Hex, // Transaction data from 0x API
+        value: BigInt(quoteData.transaction.value || "0"),
+      }
+      
+      batchCalls.push(swapTransaction)
+      console.log(`  Swap call added to Settler contract: ${settlerContractAddress}`)
+      console.log(`Total batch calls: ${batchCalls.length}`)
       
       // 9. Execute atomic batch transaction
       setSwapStatus("Processing on Uniswap V4...")
-      console.log(`📤 Executing atomic batch transaction...`)
+      console.log(`Executing atomic batch transaction...`)
       console.log(`  Batch contains ${batchCalls.length} calls:`)
       batchCalls.forEach((call, index) => {
         console.log(`    Call ${index + 1}: ${call.to}`)
@@ -1074,14 +1112,14 @@ export function useConvertFuel() {
               }
             }
           } catch (batchError: any) {
-            console.error("❌ Batch/Sequential transaction failed:", batchError)
+            console.error("Batch/Sequential transaction failed:", batchError)
             throw batchError
           }
 
           break // Success
         } catch (attemptError: any) {
           lastError = attemptError
-          console.error(`❌ Convert attempt ${attempt + 1} failed:`, attemptError)
+          console.error(`Convert attempt ${attempt + 1} failed:`, attemptError)
           
           const errorMessage = attemptError.message || ""
           const errorDetails = attemptError.details || attemptError.cause?.details || ""
@@ -1116,7 +1154,7 @@ export function useConvertFuel() {
         throw lastError || new Error("Failed to send transaction after retries")
       }
 
-      console.log("✅ Atomic batch transaction sent! Hash:", txHash)
+      console.log("Atomic batch transaction sent! Hash:", txHash)
       setHash(txHash)
       setSwapStatus("Transaction confirmed on-chain")
 
@@ -1134,12 +1172,12 @@ export function useConvertFuel() {
           ])
           console.log("🎉 Transaction Confirmed:", receipt)
         } catch (confirmationError: any) {
-          console.warn("⚠️ Confirmation timeout, but transaction was sent:", confirmationError)
+          console.warn("Confirmation timeout, but transaction was sent:", confirmationError)
         }
       }
 
       // 7. Call API to sync credit
-      console.log("🔄 Syncing credit to database...")
+      console.log("Syncing credit to database...")
       try {
         const response = await fetch("/api/sync-credit", {
           method: "POST",
@@ -1160,16 +1198,16 @@ export function useConvertFuel() {
         }
 
         const result = await response.json()
-        console.log("✅ Credit synced:", result)
+        console.log("Credit synced:", result)
       } catch (syncError: any) {
-        console.error("⚠️ Failed to sync credit (transaction succeeded):", syncError)
+        console.error("Failed to sync credit (transaction succeeded):", syncError)
         // Don't throw - transaction succeeded, sync can be retried
       }
 
       setIsSuccess(true)
       setSwapStatus("")
     } catch (err: any) {
-      console.error("❌ Convert Error:", err)
+      console.error("Convert Error:", err)
       setSwapStatus("")
       
       let friendlyMessage = err.message || "Transaction failed"
