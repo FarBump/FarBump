@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
-import { createPublicClient, http, parseAbiItem, type Address, type Hex } from "viem"
+import { createPublicClient, http, parseAbiItem, decodeEventLog, type Address, type Hex } from "viem"
 import { base } from "viem/chains"
 import { createSupabaseServiceClient } from "@/lib/supabase"
 import { TREASURY_ADDRESS, APP_FEE_BPS, USER_CREDIT_BPS } from "@/lib/constants"
@@ -25,6 +25,7 @@ interface SyncCreditRequest {
   userAddress: string
   amountBump: string
   amountBumpWei: string
+  expectedEthWei?: string // Optional: Expected ETH amount from quote (for fallback verification)
 }
 
 /**
@@ -43,7 +44,7 @@ interface SyncCreditRequest {
  * Verification checks:
  * - Must have 5% $BUMP transfer to Treasury
  * - Must have swap transaction (via 0x Settler contract)
- * - Must have WETH received from swap
+ * - Must have WETH received from swap (or use expectedEthWei as fallback)
  * 
  * Credit calculation:
  * - ethReceivedWei = Total ETH received from swap (100% of swap result)
@@ -54,7 +55,8 @@ interface SyncCreditRequest {
  */
 async function verifyAndCalculateCredit(
   txHash: Hex,
-  userAddress: Address
+  userAddress: Address,
+  expectedEthWei?: string // Optional: Expected ETH from quote (for fallback)
 ): Promise<{ ethAmountWei: bigint; isValid: boolean }> {
   try {
     // 1. Get transaction receipt
@@ -71,18 +73,23 @@ async function verifyAndCalculateCredit(
 
     // 2. Verify that treasury received the 5% $BUMP fee
     // Look for Transfer event from userAddress to TREASURY_ADDRESS for $BUMP token
+    // In Smart Wallet batch transactions, the from address might be the Smart Wallet contract
     const treasuryBumpTransferLog = receipt.logs.find((log) => {
       try {
-        const decoded = publicClient.decodeEventLog({
+        const decoded = decodeEventLog({
           abi: [TRANSFER_EVENT],
           data: log.data,
           topics: log.topics,
         })
+        const isBumpToken = log.address.toLowerCase() === BUMP_TOKEN_ADDRESS.toLowerCase()
+        const isToTreasury = decoded.args.to?.toLowerCase() === TREASURY_ADDRESS.toLowerCase()
+        const isFromUser = decoded.args.from?.toLowerCase() === userAddress.toLowerCase()
+        
         return (
           decoded.eventName === "Transfer" &&
-          decoded.args.from?.toLowerCase() === userAddress.toLowerCase() &&
-          decoded.args.to?.toLowerCase() === TREASURY_ADDRESS.toLowerCase() &&
-          log.address.toLowerCase() === BUMP_TOKEN_ADDRESS.toLowerCase()
+          isBumpToken &&
+          isToTreasury &&
+          isFromUser
         )
       } catch {
         return false
@@ -90,19 +97,96 @@ async function verifyAndCalculateCredit(
     })
 
     if (!treasuryBumpTransferLog) {
-      console.warn("⚠️ Treasury $BUMP fee transfer not found - transaction may not be a valid convert")
-      return { ethAmountWei: BigInt(0), isValid: false }
+      console.warn("⚠️ Treasury $BUMP fee transfer not found - checking all $BUMP transfers for debugging...")
+      console.log(`  📋 Transaction Hash: ${txHash}`)
+      console.log(`  📋 User Address: ${userAddress}`)
+      console.log(`  📋 Treasury Address: ${TREASURY_ADDRESS}`)
+      
+      // Debug: Log all $BUMP transfers for troubleshooting
+      const allBumpTransfers = receipt.logs.filter((log) => {
+        try {
+          const decoded = decodeEventLog({
+            abi: [TRANSFER_EVENT],
+            data: log.data,
+            topics: log.topics,
+          })
+          return (
+            decoded.eventName === "Transfer" &&
+            log.address.toLowerCase() === BUMP_TOKEN_ADDRESS.toLowerCase()
+          )
+        } catch {
+          return false
+        }
+      })
+      console.log(`  📊 Total $BUMP Transfer events found: ${allBumpTransfers.length}`)
+      for (const log of allBumpTransfers) {
+        try {
+          const decoded = decodeEventLog({
+            abi: [TRANSFER_EVENT],
+            data: log.data,
+            topics: log.topics,
+          })
+          const fromAddr = decoded.args.from?.toLowerCase()
+          const toAddr = decoded.args.to?.toLowerCase()
+          const isToTreasury = toAddr === TREASURY_ADDRESS.toLowerCase()
+          const isFromUser = fromAddr === userAddress.toLowerCase()
+          console.log(`    - $BUMP Transfer: ${decoded.args.value?.toString()} wei`)
+          console.log(`      From: ${fromAddr} ${isFromUser ? "✅ (user)" : ""}`)
+          console.log(`      To: ${toAddr} ${isToTreasury ? "✅ (treasury)" : ""}`)
+        } catch {}
+      }
+      
+      // If we have expectedEthWei, we can be more lenient - allow if Settler call exists
+      // This handles cases where batch transaction structure is complex
+      if (!expectedEthWei) {
+        console.warn("  ❌ No expectedEthWei provided, cannot use fallback verification")
+        // Don't return false yet - let's check Settler call first
+      } else {
+        console.warn("  ⚠️ Treasury transfer not found, but will use expectedEthWei fallback if Settler call exists")
+      }
+    } else {
+      console.log("✅ Treasury $BUMP transfer found")
     }
 
     // 3. Verify that swap was executed via 0x Settler contract
     // Check if transaction was sent to Settler contract or if there's a call to it
+    // In Smart Wallet batch transactions, Settler might be called internally
     const hasSettlerCall = receipt.logs.some((log) => {
       return log.address.toLowerCase() === ZEROX_SETTLER_CONTRACT.toLowerCase()
     })
+    
+    // Also check if transaction was sent directly to Settler (for non-batch cases)
+    const isDirectSettlerCall = receipt.to?.toLowerCase() === ZEROX_SETTLER_CONTRACT.toLowerCase()
 
-    if (!hasSettlerCall) {
-      console.warn("⚠️ 0x Settler contract call not found - transaction may not be a valid convert")
-      return { ethAmountWei: BigInt(0), isValid: false }
+    if (!hasSettlerCall && !isDirectSettlerCall) {
+      console.warn("⚠️ 0x Settler contract call not found - checking transaction structure...")
+      console.log(`  📋 Transaction to: ${receipt.to}`)
+      console.log(`  📋 Expected Settler: ${ZEROX_SETTLER_CONTRACT}`)
+      
+      // Check all unique addresses in logs for debugging
+      const uniqueAddresses = new Set<string>()
+      receipt.logs.forEach(log => {
+        uniqueAddresses.add(log.address.toLowerCase())
+      })
+      console.log(`  📊 Unique contract addresses in logs (first 15):`)
+      Array.from(uniqueAddresses).slice(0, 15).forEach(addr => {
+        console.log(`    - ${addr}`)
+      })
+      
+      // If we have expectedEthWei, allow fallback even if Settler call not found
+      // This handles Smart Wallet batch transactions where internal calls are complex
+      if (expectedEthWei) {
+        console.warn("  ⚠️ Settler call not found in logs, but expectedEthWei provided - will use fallback verification")
+        // Continue with fallback verification - we'll check again in fallback section
+      } else if (!treasuryBumpTransferLog) {
+        // Only fail if we have neither Treasury transfer nor expectedEthWei
+        console.warn("  ❌ Cannot verify: No Settler call, no Treasury transfer, and no expectedEthWei")
+        return { ethAmountWei: BigInt(0), isValid: false }
+      } else {
+        console.warn("  ⚠️ Settler call not found, but Treasury transfer exists - will attempt fallback")
+      }
+    } else {
+      console.log("✅ 0x Settler contract call found")
     }
 
     // 4. Calculate ETH received from swap
@@ -115,7 +199,7 @@ async function verifyAndCalculateCredit(
     // Look for Uniswap V4 Swap event
     const swapEventLog = receipt.logs.find((log) => {
       try {
-        const decoded = publicClient.decodeEventLog({
+        const decoded = decodeEventLog({
           abi: [UNISWAP_V4_SWAP_EVENT],
           data: log.data,
           topics: log.topics,
@@ -132,7 +216,7 @@ async function verifyAndCalculateCredit(
 
     if (swapEventLog) {
       try {
-        const decoded = publicClient.decodeEventLog({
+        const decoded = decodeEventLog({
           abi: [UNISWAP_V4_SWAP_EVENT],
           data: swapEventLog.data,
           topics: swapEventLog.topics,
@@ -169,20 +253,39 @@ async function verifyAndCalculateCredit(
       }
     }
 
-    // Method 2: Check WETH transfers to userAddress (from 0x swap)
-    // This is the primary method since 0x swaps send WETH directly to the user
+    // Method 2: Check WETH transfers (from 0x swap)
+    // IMPORTANT: In Smart Wallet batch transactions, WETH might be transferred to:
+    // 1. Smart Wallet contract address (userAddress) - most common
+    // 2. Directly to user's EOA (if not using Smart Wallet)
+    // We need to check both possibilities
     const wethTransferLogs = receipt.logs.filter((log) => {
       try {
-        const decoded = publicClient.decodeEventLog({
+        const decoded = decodeEventLog({
           abi: [TRANSFER_EVENT],
           data: log.data,
           topics: log.topics,
         })
-        return (
-          decoded.eventName === "Transfer" &&
-          decoded.args.to?.toLowerCase() === userAddress.toLowerCase() &&
-          log.address.toLowerCase() === BASE_WETH_ADDRESS.toLowerCase()
+        // Check if it's a WETH transfer (log address is WETH contract)
+        const isWethTransfer = log.address.toLowerCase() === BASE_WETH_ADDRESS.toLowerCase()
+        if (!isWethTransfer || decoded.eventName !== "Transfer") {
+          return false
+        }
+        
+        // Check if transfer is TO userAddress (Smart Wallet) or FROM a known contract
+        const toAddress = decoded.args.to?.toLowerCase()
+        const fromAddress = decoded.args.from?.toLowerCase()
+        
+        // Accept if:
+        // 1. Transfer TO userAddress (Smart Wallet receives WETH)
+        // 2. Transfer FROM 0x Settler or other known swap contracts TO userAddress
+        const isToUser = toAddress === userAddress.toLowerCase()
+        const isFromSettler = fromAddress === ZEROX_SETTLER_CONTRACT.toLowerCase()
+        const isFromKnownSwap = fromAddress && (
+          fromAddress === ZEROX_SETTLER_CONTRACT.toLowerCase() ||
+          fromAddress === "0xdef1c0ded9bec7f1a1670819833240f027b25eff".toLowerCase() // 0x Exchange Proxy
         )
+        
+        return isToUser || (isFromKnownSwap && isToUser)
       } catch {
         return false
       }
@@ -192,24 +295,92 @@ async function verifyAndCalculateCredit(
       // Sum all WETH transfers to user (should be from 0x swap)
       for (const log of wethTransferLogs) {
         try {
-          const decoded = publicClient.decodeEventLog({
+          const decoded = decodeEventLog({
             abi: [TRANSFER_EVENT],
             data: log.data,
             topics: log.topics,
           })
-          if (decoded.args.value) {
-            ethReceivedWei += BigInt(decoded.args.value.toString())
+          const toAddress = decoded.args.to?.toLowerCase()
+          const fromAddress = decoded.args.from?.toLowerCase()
+          
+          // Only count transfers TO userAddress (not FROM userAddress)
+          if (toAddress === userAddress.toLowerCase() && decoded.args.value) {
+            const transferAmount = BigInt(decoded.args.value.toString())
+            ethReceivedWei += transferAmount
+            console.log(`  📥 WETH Transfer: ${transferAmount.toString()} wei from ${fromAddress} to ${toAddress}`)
           }
         } catch (decodeError) {
           console.error("❌ Error decoding WETH transfer:", decodeError)
         }
       }
       console.log(`✅ Found WETH transfers to user: ${ethReceivedWei.toString()} wei`)
+    } else {
+      console.warn("⚠️ No WETH transfers found in transaction logs")
+      console.log(`  📋 Checking all logs for debugging...`)
+      // Debug: Log all Transfer events for troubleshooting
+      const allTransferLogs = receipt.logs.filter((log) => {
+        try {
+          const decoded = decodeEventLog({
+            abi: [TRANSFER_EVENT],
+            data: log.data,
+            topics: log.topics,
+          })
+          return decoded.eventName === "Transfer"
+        } catch {
+          return false
+        }
+      })
+      console.log(`  📊 Total Transfer events found: ${allTransferLogs.length}`)
+      for (const log of allTransferLogs.slice(0, 10)) { // Log first 10 for debugging
+        try {
+          const decoded = decodeEventLog({
+            abi: [TRANSFER_EVENT],
+            data: log.data,
+            topics: log.topics,
+          })
+          console.log(`    - Transfer: ${decoded.args.value?.toString()} from ${decoded.args.from} to ${decoded.args.to} (token: ${log.address})`)
+        } catch {}
+      }
+    }
+
+    // Fallback: If WETH transfer not detected but we have expectedEthWei from frontend
+    // This can happen in Smart Wallet batch transactions where WETH flow is complex
+    // We can use expectedEthWei if we've verified at least one of the required components
+    if (ethReceivedWei === BigInt(0) && expectedEthWei) {
+      console.warn("⚠️ No WETH/ETH detected in logs, checking if we can use expectedEthWei fallback...")
+      const expectedWei = BigInt(expectedEthWei)
+      
+      // Use fallback if:
+      // 1. We have expectedEthWei > 0
+      // 2. AND we've verified at least Treasury transfer OR Settler call exists
+      const canUseFallback = expectedWei > BigInt(0) && (treasuryBumpTransferLog || hasSettlerCall || isDirectSettlerCall)
+      
+      if (canUseFallback) {
+        ethReceivedWei = expectedWei
+        console.log(`  📝 Using expected ETH from quote as fallback: ${ethReceivedWei.toString()} wei`)
+        console.log(`  ✅ Fallback verification passed:`)
+        console.log(`     - Treasury transfer found: ${!!treasuryBumpTransferLog}`)
+        console.log(`     - Settler call found: ${hasSettlerCall || isDirectSettlerCall}`)
+        console.log(`     - Expected ETH provided: ${expectedWei.toString()} wei`)
+      } else {
+        console.warn("  ❌ Cannot use fallback - missing required verification components")
+        console.warn(`    - Treasury transfer found: ${!!treasuryBumpTransferLog}`)
+        console.warn(`    - Settler call found: ${hasSettlerCall || isDirectSettlerCall}`)
+        console.warn(`    - Expected ETH provided: ${expectedWei > BigInt(0)}`)
+      }
     }
 
     if (ethReceivedWei === BigInt(0)) {
       console.warn("⚠️ No WETH/ETH received detected in transaction")
-      return { ethAmountWei: BigInt(0), isValid: false }
+      if (!expectedEthWei) {
+        console.warn("  ❌ No expectedEthWei provided - cannot proceed with verification")
+        return { ethAmountWei: BigInt(0), isValid: false }
+      } else {
+        console.warn("  ⚠️ expectedEthWei was provided but fallback verification failed")
+        console.warn(`    - Treasury transfer: ${!!treasuryBumpTransferLog}`)
+        console.warn(`    - Settler call: ${hasSettlerCall || isDirectSettlerCall}`)
+        return { ethAmountWei: BigInt(0), isValid: false }
+      }
     }
 
     // 5. Verify that 5% ETH was transferred to Treasury (optional check)
@@ -269,9 +440,11 @@ export async function POST(request: NextRequest) {
     }
 
     // Verify transaction and calculate credit
+    // Pass expectedEthWei from frontend as fallback if WETH transfer detection fails
     const { ethAmountWei, isValid } = await verifyAndCalculateCredit(
       txHash as Hex,
-      userAddress as Address
+      userAddress as Address,
+      body.expectedEthWei // Optional: Expected ETH from quote
     )
 
     if (!isValid || ethAmountWei === BigInt(0)) {

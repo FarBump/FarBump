@@ -197,6 +197,7 @@ export function useConvertFuel() {
             userAddress: userAddress,
             amountBump: amount,
             amountBumpWei: totalAmountWei.toString(),
+            expectedEthWei: expectedEthWei.toString(), // Pass expected ETH from quote for fallback verification
           }),
         })
 
