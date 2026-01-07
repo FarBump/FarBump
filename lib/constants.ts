@@ -72,4 +72,3 @@ export const WETH_DECIMALS = 18
 export const TREASURY_FEE_BPS = 500 // 5% = 500 basis points
 export const APP_FEE_BPS = 500 // 5% = 500 basis points
 export const USER_CREDIT_BPS = 9000 // 90% = 9000 basis points
-

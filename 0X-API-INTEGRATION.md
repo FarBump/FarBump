@@ -27,23 +27,23 @@ This document explains how to use 0x Swap API **v2** for token swaps on Base net
 
 Add to `.env.local`:
 
-```env
+\`\`\`env
 # IMPORTANT: Use ZEROX_API_KEY (not NEXT_PUBLIC_ZEROX_API_KEY) for security
 # API key is server-side only and never exposed to client
 ZEROX_API_KEY=bec0c136-9487-4a50-9ceb-995e8d6a1419
-```
+\`\`\`
 
 ### 3. Restart Development Server
 
-```bash
+\`\`\`bash
 npm run dev
-```
+\`\`\`
 
 ## Usage
 
 ### Basic Swap
 
-```typescript
+\`\`\`typescript
 import { use0xSwap } from "@/hooks/use-0x-swap"
 
 function MyComponent() {
@@ -66,11 +66,11 @@ function MyComponent() {
     </button>
   )
 }
-```
+\`\`\`
 
 ### Swap $BUMP to WETH (Convenience Method)
 
-```typescript
+\`\`\`typescript
 import { use0xSwap } from "@/hooks/use-0x-swap"
 
 function MyComponent() {
@@ -86,11 +86,11 @@ function MyComponent() {
     </button>
   )
 }
-```
+\`\`\`
 
 ### Get Quote Only
 
-```typescript
+\`\`\`typescript
 import { use0xSwap } from "@/hooks/use-0x-swap"
 
 function MyComponent() {
@@ -110,7 +110,7 @@ function MyComponent() {
     console.log("Estimated Price Impact:", quote.estimatedPriceImpact)
   }
 }
-```
+\`\`\`
 
 ## API Endpoints (v2)
 
@@ -129,7 +129,7 @@ function MyComponent() {
 
 ## Response Structure (v2)
 
-```typescript
+\`\`\`typescript
 {
   chainId: 8453,
   price: "0.001234",
@@ -165,7 +165,7 @@ function MyComponent() {
     }
   ]
 }
-```
+\`\`\`
 
 ## Permit2 Integration
 
@@ -206,7 +206,7 @@ v2 API provides enhanced error handling with `issues` array:
 
 v2 API returns an `issues` array with detailed error information:
 
-```typescript
+\`\`\`typescript
 {
   issues: [
     {
@@ -216,7 +216,7 @@ v2 API returns an `issues` array with detailed error information:
     }
   ]
 }
-```
+\`\`\`
 
 The hook automatically checks for errors in the `issues` array and throws appropriate errors.
 
@@ -234,4 +234,3 @@ Check your usage at [0x Dashboard](https://dashboard.0x.org)
 - [Upgrading to 0x API v2](https://0x.org/docs/upgrading/upgrading_to_swap_v2)
 - [0x Dashboard](https://dashboard.0x.org)
 - [Permit2 Documentation](https://docs.uniswap.org/contracts/permit2/overview)
-

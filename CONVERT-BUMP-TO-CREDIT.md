@@ -18,7 +18,7 @@ Setiap konversi melakukan:
 
 ## 📁 File Structure
 
-```
+\`\`\`
 FarBump/
 ├── lib/
 │   ├── constants.ts          # Contract addresses & constants
@@ -31,7 +31,7 @@ FarBump/
 │       └── sync-credit/
 │           └── route.ts      # Backend API untuk sync credit ke database
 └── DATABASE-SCHEMA.md        # Database schema documentation
-```
+\`\`\`
 
 ## 🔧 Setup
 
@@ -39,7 +39,7 @@ FarBump/
 
 Pastikan file `.env.local` memiliki:
 
-```env
+\`\`\`env
 # Supabase
 NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
@@ -47,7 +47,7 @@ SUPABASE_SERVICE_ROLE_KEY=your-service-role-key  # Server-side only!
 
 # Base RPC (optional)
 NEXT_PUBLIC_BASE_RPC_URL=https://mainnet.base.org
-```
+\`\`\`
 
 ### 2. Database Setup
 
@@ -68,7 +68,7 @@ Semua address sudah dikonfigurasi di `lib/constants.ts`:
 
 ### Frontend: Convert $BUMP to Credit
 
-```typescript
+\`\`\`typescript
 import { useConvertFuel } from "@/hooks/use-convert-fuel"
 
 function ConvertButton() {
@@ -84,11 +84,11 @@ function ConvertButton() {
     </button>
   )
 }
-```
+\`\`\`
 
 ### Frontend: Display Credit Balance
 
-```typescript
+\`\`\`typescript
 import { useCreditBalance } from "@/hooks/use-credit-balance"
 
 function CreditDisplay({ userAddress }: { userAddress: string }) {
@@ -103,13 +103,13 @@ function CreditDisplay({ userAddress }: { userAddress: string }) {
     </div>
   )
 }
-```
+\`\`\`
 
 ### Backend: Sync Credit (Automatic)
 
 API `/api/sync-credit` dipanggil otomatis setelah transaksi sukses. Manual call:
 
-```typescript
+\`\`\`typescript
 const response = await fetch("/api/sync-credit", {
   method: "POST",
   headers: { "Content-Type": "application/json" },
@@ -120,7 +120,7 @@ const response = await fetch("/api/sync-credit", {
     amountBumpWei: "100000000000000000000",
   }),
 })
-```
+\`\`\`
 
 ## 🔐 Security Features
 
@@ -185,7 +185,7 @@ Lihat `DATABASE-SCHEMA.md` untuk detail lengkap schema dan SQL scripts.
 
 ## 🔄 Flow Diagram
 
-```
+\`\`\`
 User clicks "Convert"
     ↓
 Frontend: useConvertFuel.convert()
@@ -207,7 +207,7 @@ Backend: Update user_credits.balance_wei
 Backend: Save conversion_logs
     ↓
 Success ✅
-```
+\`\`\`
 
 ## 🚀 Next Steps
 
@@ -216,5 +216,3 @@ Success ✅
 3. **Transaction History**: Tampilkan history konversi dari `conversion_logs`
 4. **Multi-step UI**: Tampilkan progress untuk setiap step konversi
 5. **Error Recovery**: Implement retry mechanism untuk failed sync
-
-

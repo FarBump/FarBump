@@ -20,7 +20,7 @@ Update RLS policy di Supabase untuk allow public read access dengan filter `user
 
 Copy dan paste SQL berikut ke SQL Editor:
 
-```sql
+\`\`\`sql
 -- Fix RLS Policy untuk user_credits table
 DROP POLICY IF EXISTS "Users can view own credits" ON user_credits;
 CREATE POLICY "Users can view own credits"
@@ -34,7 +34,7 @@ CREATE POLICY "Users can view own conversion logs"
   ON conversion_logs
   FOR SELECT
   USING (true); -- Allow public read - filtering by user_address is done in application code
-```
+\`\`\`
 
 ### 3. Verifikasi
 
@@ -59,4 +59,3 @@ Setelah menjalankan SQL, coba fetch data lagi dari aplikasi. Error 406 seharusny
 - [ ] Policy `Users can view own conversion logs` sudah diupdate
 - [ ] Test fetch data dari aplikasi - Error 406 sudah teratasi
 - [ ] Verifikasi query masih menggunakan `.eq("user_address", ...)` di application code
-
