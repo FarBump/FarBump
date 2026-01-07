@@ -152,11 +152,16 @@ export function useCreditBalance(userAddress: string | null, options?: { enabled
       }
     },
     enabled: enabled,
-    // Refetch every 30 seconds to keep ETH price and credit value up-to-date
-    // This matches the server-side cache duration (30 seconds) to reduce API calls
-    // This ensures credit value in USD follows ETH price fluctuations in real-time
-    refetchInterval: enabled ? 30000 : false, // Refresh every 30 seconds (matches server cache)
-    staleTime: 30000, // Consider data stale after 30 seconds (matches server cache)
+    // Fetch strategy: Only fetch when user opens/app opens the app (on mount)
+    // Not using constant polling to save API quota
+    // - Fetch once when component mounts (app opens)
+    // - Refetch when window regains focus (user returns to tab)
+    // - Server-side cache (5 minutes) reduces API calls
+    refetchInterval: false, // No constant polling - fetch on demand only
+    refetchOnMount: true, // Fetch when component mounts (app opens)
+    refetchOnWindowFocus: true, // Refetch when user returns to tab
+    refetchOnReconnect: true, // Refetch when internet reconnects
+    staleTime: 5 * 60 * 1000, // Consider data stale after 5 minutes (matches server cache)
     retry: (failureCount, error: any) => {
       // Don't retry on 406 errors (RLS policy issue)
       const is406Error = 

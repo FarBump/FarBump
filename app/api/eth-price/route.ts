@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from "next/server"
 
-// Cache ETH price for 30 seconds to reduce API calls
-// This helps avoid rate limiting (429 errors) while still keeping price relatively fresh
+// Cache ETH price for 5 minutes to reduce API calls
+// ETH price doesn't change drastically in short periods, so longer cache is safe
 let cachedPrice: { price: number; timestamp: number } | null = null
-const CACHE_DURATION = 30000 // 30 seconds
+const CACHE_DURATION = 5 * 60 * 1000 // 5 minutes (300000 ms)
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
@@ -14,8 +14,9 @@ export const runtime = "nodejs"
  * 
  * Features:
  * - Server-side fetch (no CORS issues)
- * - 30-second caching to reduce API calls
- * - Graceful error handling
+ * - 5-minute caching to reduce API calls (ETH price doesn't change drastically)
+ * - CoinGecko API key support (if provided) for higher rate limits
+ * - Graceful error handling with cached fallback
  * - Returns price in USD
  */
 export async function GET(request: NextRequest) {
@@ -30,17 +31,26 @@ export async function GET(request: NextRequest) {
       })
     }
 
+    // Prepare CoinGecko API URL and headers
+    const COINGECKO_API_KEY = process.env.COINGECKO_API_KEY // Server-side only
+    const apiUrl = "https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd"
+    
+    const headers: HeadersInit = {
+      Accept: "application/json",
+    }
+    
+    // Add API key header if available (for higher rate limits)
+    // CoinGecko uses x-cg-pro-api-key header for API key authentication
+    if (COINGECKO_API_KEY) {
+      headers["x-cg-pro-api-key"] = COINGECKO_API_KEY
+    }
+
     // Fetch fresh price from CoinGecko
-    const priceResponse = await fetch(
-      "https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd",
-      {
-        headers: {
-          Accept: "application/json",
-        },
-        // Add cache to reduce requests
-        next: { revalidate: 30 }, // Revalidate every 30 seconds
-      }
-    )
+    const priceResponse = await fetch(apiUrl, {
+      headers,
+      // Add cache to reduce requests
+      next: { revalidate: 300 }, // Revalidate every 5 minutes (matches CACHE_DURATION)
+    })
 
     if (!priceResponse.ok) {
       // If we have a cached price, return it even if expired

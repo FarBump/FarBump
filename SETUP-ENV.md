@@ -47,6 +47,15 @@ NEXT_PUBLIC_PRIVY_APP_ID=your-privy-app-id-here
 ZEROX_API_KEY=bec0c136-9487-4a50-9ceb-995e8d6a1419
 \`\`\`
 
+### CoinGecko API (Optional but recommended for ETH price)
+\`\`\`env
+# IMPORTANT: Server-side only - never expose to client
+# Without API key: Free tier (30 calls/minute)
+# With API key: Higher rate limits (varies by plan)
+# Get your API key from: https://www.coingecko.com/en/api
+COINGECKO_API_KEY=CG-8ZfuGSPd2sQzpuVVKk6aL7rK
+\`\`\`
+
 ## Database Setup
 
 1. **Buka Supabase Dashboard**: https://supabase.com/dashboard
