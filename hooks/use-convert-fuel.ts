@@ -23,7 +23,8 @@ import {
   APP_FEE_BPS,
   USER_CREDIT_BPS,
   CLANKER_FEE_CONFIG,
-  WETH_DECIMALS
+  WETH_DECIMALS,
+  ZEROX_SETTLER_CONTRACT
 } from "@/lib/constants"
 
 // 0x API v2 Configuration
