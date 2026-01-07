@@ -48,14 +48,19 @@ export async function GET(request: NextRequest) {
     }
 
     // Build query parameters for 0x API
+    // IMPORTANT: enablePermit2 is required for efficient token approvals
+    // We don't restrict liquidity sources to allow Uniswap V4 to be accessible
     const queryParams = new URLSearchParams({
       sellToken,
       buyToken,
       sellAmount,
       takerAddress,
       slippagePercentage,
-      enablePermit2: "true",
+      enablePermit2: "true", // Required: Enable Permit2 for efficient approvals
     })
+    
+    // Note: We don't add 'excludedSources' or 'includedSources' to allow all liquidity sources
+    // This ensures Uniswap V4 pools are accessible
 
     const url = `${ZEROX_API_BASE_URL}/swap/v2/quote?${queryParams.toString()}`
     

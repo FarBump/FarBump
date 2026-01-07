@@ -43,7 +43,8 @@ export function ConfigPanel({ fuelBalance = 0, credits = 0, smartWalletAddress }
     error: convertError, 
     hash: convertHash,
     approvalHash,
-    reset: resetConvert 
+    reset: resetConvert,
+    swapStatus 
   } = useConvertFuel()
   
   // Check if approval is needed when amount changes
@@ -197,6 +198,15 @@ export function ConfigPanel({ fuelBalance = 0, credits = 0, smartWalletAddress }
                     </div>
                   )}
                   
+                  {swapStatus && isConverting && (
+                    <div className="rounded-lg bg-blue-500/10 border border-blue-500/20 p-3">
+                      <p className="text-sm text-blue-600 dark:text-blue-400 font-medium flex items-center gap-2">
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        {swapStatus}
+                      </p>
+                    </div>
+                  )}
+                  
                   {convertSuccess && convertHash && (
                     <div className="rounded-lg bg-green-500/10 border border-green-500/20 p-3">
                       <p className="text-sm text-green-600 dark:text-green-400 font-medium">
@@ -262,7 +272,7 @@ export function ConfigPanel({ fuelBalance = 0, credits = 0, smartWalletAddress }
                       ) : isConverting ? (
                         <>
                           <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                          Converting...
+                          {swapStatus || "Converting..."}
                         </>
                       ) : (
                         "Convert"

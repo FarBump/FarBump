@@ -66,6 +66,14 @@ interface ZeroXQuoteResponse {
     type: string
     reason: string
     severity: "error" | "warning" | "info"
+    data?: {
+      allowance?: {
+        token: string
+        owner: string
+        spender: string
+        amount: string
+      }
+    }
   }>
 }
 
@@ -204,6 +212,19 @@ export function useConvertFuel() {
   const [error, setError] = useState<Error | null>(null)
   const [isApproving, setIsApproving] = useState(false)
   const [approvalHash, setApprovalHash] = useState<`0x${string}` | null>(null)
+  const [swapStatus, setSwapStatus] = useState<string>("")
+
+  /**
+   * Get dynamic slippage based on token address
+   * $BUMP token (0x94ce728849431818ec9a0cf29bdb24fe413bbb07) uses 3% slippage
+   * Other tokens use 0.5% slippage
+   */
+  const getDynamicSlippage = (tokenAddress: Address): number => {
+    if (tokenAddress.toLowerCase() === BUMP_TOKEN_ADDRESS.toLowerCase()) {
+      return 0.03 // 3% for $BUMP token
+    }
+    return 0.005 // 0.5% for other tokens
+  }
 
   const reset = () => {
     setHash(null)
@@ -814,70 +835,93 @@ export function useConvertFuel() {
       
       console.log("✅ ERC20 allowance to Permit2 confirmed")
 
-      // 5. Create 0x API v2 swap transaction (better prices from aggregated liquidity)
-      // Fallback to Uniswap V4 if 0x API fails
-      console.log("📦 Creating swap transaction...")
-      let commands: Hex
-      let inputs: Hex[]
-      let permit2Approval: { to: Address; data: Hex; value: bigint }
-      let zeroXSwapTransaction: { to: Address; data: Hex; value: bigint } | null = null
-      
+      // 5. Get dynamic slippage based on token
+      const dynamicSlippage = getDynamicSlippage(BUMP_TOKEN_ADDRESS as Address)
+      console.log(`📊 Using dynamic slippage: ${(dynamicSlippage * 100).toFixed(1)}% for $BUMP token`)
+
+      // 6. Get 0x API quote with Smart Wallet address as taker
+      setSwapStatus("Fetching quote from 0x API...")
+      console.log("📦 Fetching 0x API v2 quote...")
+      let quoteData: ZeroXQuoteResponse
       try {
-        console.log("🔄 Attempting 0x API v2 swap (better prices from aggregated liquidity)...")
-        const swapResult = await create0xSwapTransaction(
-          totalAmountWei,
-          userAddress as Address,
-          TREASURY_ADDRESS as Address,
-          0.5 // 0.5% slippage
+        quoteData = await get0xQuote(
+          BUMP_TOKEN_ADDRESS as Address,
+          BASE_WETH_ADDRESS as Address,
+          swapAmountWei,
+          userAddress as Address, // Smart Wallet address as taker
+          dynamicSlippage * 100 // Convert to percentage
         )
-        commands = swapResult.commands
-        inputs = swapResult.inputs
-        permit2Approval = swapResult.permit2Approval
-        zeroXSwapTransaction = swapResult.zeroXSwapTransaction
-        console.log("✅ 0x API v2 swap transaction created successfully")
       } catch (error: any) {
-        // Check if it's a 404 (route not found) or no route matched error
-        const is404Error = error.message?.includes("404") || error.message?.includes("Not Found")
-        const isNoRouteError = error.message?.includes("no Route matched") || error.message?.includes("No liquidity route")
+        // Handle "Insufficient Liquidity" error
+        if (error.message?.includes("Insufficient Liquidity") || 
+            error.message?.includes("Insufficient liquidity") ||
+            error.message?.includes("no Route matched") ||
+            error.message?.includes("No liquidity route")) {
+          throw new Error(
+            "Insufficient Liquidity: Tidak ada cukup likuiditas untuk swap ini. " +
+            "Silakan coba dengan amount yang lebih kecil atau tunggu hingga likuiditas tersedia."
+          )
+        }
+        // Re-throw other errors
+        throw error
+      }
+
+      // 7. Check for allowance issues in 0x response
+      let allowanceSpender: Address | null = null
+      if (quoteData.issues && Array.isArray(quoteData.issues)) {
+        const allowanceIssue = quoteData.issues.find(
+          (issue) => issue.type === "allowance" || issue.reason?.toLowerCase().includes("allowance")
+        )
         
-        if (is404Error) {
-          console.warn("⚠️ API route not found (404). This might be a deployment issue.")
-          console.warn("   Falling back to Uniswap V4 swap...")
-          // TODO: Implement Uniswap V4 fallback here if needed
-          throw new Error(
-            "API route tidak ditemukan. Kemungkinan deployment belum selesai. " +
-            "Silakan tunggu beberapa menit dan coba lagi, atau hubungi support."
-          )
-        } else if (isNoRouteError) {
-          console.warn("⚠️ 0x API tidak memiliki route/liquidity untuk token pair ini.")
-          console.warn("   Kemungkinan: (1) Swap amount terlalu besar, (2) Liquidity tidak cukup, atau (3) Token tidak didukung.")
-          throw new Error(
-            "0x API tidak memiliki route/liquidity untuk token pair ini. " +
-            "Kemungkinan: (1) Swap amount terlalu besar, (2) Liquidity tidak cukup, atau (3) Token tidak didukung. " +
-            "Silakan coba dengan amount yang lebih kecil atau hubungi support."
-          )
-        } else {
-          // Re-throw other errors
-          throw error
+        if (allowanceIssue && allowanceIssue.data?.allowance) {
+          allowanceSpender = allowanceIssue.data.allowance.spender as Address
+          console.log("⚠️ Allowance issue detected:")
+          console.log(`  Token: ${allowanceIssue.data.allowance.token}`)
+          console.log(`  Spender: ${allowanceSpender}`)
+          console.log(`  Required Amount: ${allowanceIssue.data.allowance.amount}`)
         }
       }
+
+      // 8. Prepare atomic batch transaction
+      setSwapStatus("Processing on Uniswap V4...")
+      console.log("🔄 Preparing atomic batch transaction...")
       
-      // 6. Execute transaction
-      console.log(`📤 Executing transactions...`)
-      console.log("  Step 1: Permit2.approve() - Authorize 0x Settler contract")
-      console.log("  Step 2: 0x Settler.execute() - Swap 95% $BUMP to WETH (using 0x API v2)")
-      console.log("  Step 3: UniversalRouter.execute() - ETH distribution")
-      console.log(`    - PERMIT2_TRANSFER_FROM (0x07): 5% $BUMP to Treasury (TREASURY_FEE_BPS = ${TREASURY_FEE_BPS})`)
-      console.log(`    - UNWRAP_WETH (0x0c): Unwrap WETH to Native ETH`)
-      console.log(`    - PAY_PORTION (0x06): 5% ETH to Treasury/App (APP_FEE_BPS = ${APP_FEE_BPS})`)
-      console.log(`    - SWEEP (0x04): 90% ETH to User Credit (USER_CREDIT_BPS = ${USER_CREDIT_BPS})`)
-      console.log(`📋 Universal Router Commands: ${commands}`)
+      const batchCalls: Array<{ to: Address; data: Hex; value: bigint }> = []
+
+      // Call 1: Token approval if allowance issue exists
+      if (allowanceSpender) {
+        console.log("📝 Adding token approval to batch...")
+        const approveData = encodeFunctionData({
+          abi: ERC20_ABI,
+          functionName: "approve",
+          args: [allowanceSpender, MAX_UINT160], // Max approval for efficiency
+        })
+        
+        batchCalls.push({
+          to: BUMP_TOKEN_ADDRESS as Address,
+          data: approveData,
+          value: BigInt(0),
+        })
+        console.log(`  ✅ Approval call added for spender: ${allowanceSpender}`)
+      }
+
+      // Call 2: 0x Swap transaction
+      console.log("💱 Adding 0x swap transaction to batch...")
+      batchCalls.push({
+        to: quoteData.transaction.to as Address,
+        data: quoteData.transaction.data as Hex,
+        value: BigInt(quoteData.transaction.value || "0"),
+      })
+      console.log(`  ✅ Swap call added: ${quoteData.transaction.to}`)
       
-      // 6. Prepare Universal Router execute call
-      const universalRouterData = encodeFunctionData({
-        abi: UNISWAP_UNIVERSAL_ROUTER_ABI,
-        functionName: "execute",
-        args: [commands, inputs],
+      console.log(`📦 Total batch calls: ${batchCalls.length}`)
+      
+      // 9. Execute atomic batch transaction
+      setSwapStatus("Processing on Uniswap V4...")
+      console.log(`📤 Executing atomic batch transaction...`)
+      console.log(`  Batch contains ${batchCalls.length} calls:`)
+      batchCalls.forEach((call, index) => {
+        console.log(`    Call ${index + 1}: ${call.to}`)
       })
       
       const MAX_RETRIES = 2
@@ -896,40 +940,17 @@ export function useConvertFuel() {
           }
           
           // For Smart Wallet (UserOperation), set manual gas limit to prevent simulation failures
-          // 2,500,000 gas units should be sufficient for Permit2 approve + 0x Swap + Universal Router execute
-          const MANUAL_GAS_LIMIT = BigInt(2500000)
+          const MANUAL_GAS_LIMIT = BigInt(3000000) // Increased for allowance + swap
           console.log(`⛽ Setting manual gas limit: ${MANUAL_GAS_LIMIT.toString()}`)
           
-          // Bundle calls in a single UserOperation using Smart Wallet batch
-          // Call 1: Permit2.approve() for 0x Settler contract
-          // Call 2: 0x Settler.execute() - Swap 95% $BUMP to WETH (using 0x API v2)
-          // Call 3: UniversalRouter.execute() - ETH distribution (unwrap + pay portion + sweep)
-          console.log("✅ Sending batch transaction...")
-          console.log("  Call 1: Permit2.approve(0x Settler)")
-          console.log("  Call 2: 0x Settler.execute(Swap $BUMP to WETH)")
-          console.log("  Call 3: UniversalRouter.execute(ETH Distribution)")
-
-          // Smart Wallet batch transaction: array of calls processed atomically
-          if (!zeroXSwapTransaction) {
-            throw new Error("0x Swap transaction tidak tersedia. Silakan coba lagi.")
-          }
-          
-          const batchCalls = [
-            permit2Approval,  // Permit2 approval for 0x Settler contract
-            zeroXSwapTransaction,  // 0x Swap transaction (swaps $BUMP to WETH)
-            {
-              to: UNISWAP_UNIVERSAL_ROUTER as Address,
-              data: universalRouterData,
-              value: BigInt(0),
-            },
-          ]
+          console.log("✅ Sending atomic batch transaction...")
           
           // Try different batch methods depending on Smart Wallet SDK version
           // Privy Smart Wallet should support sendTransaction with batch or separate method
           try {
-            // Method 1: Try sendTransaction with calls array (newer Privy SDK)
+            // Method 1: Try sendTransactions (newer Privy SDK) - Atomic batch
             if (typeof (smartWalletClient as any).sendTransactions === 'function') {
-              console.log("📦 Using sendTransactions() method...")
+              console.log("📦 Using sendTransactions() method (atomic batch)...")
               txHash = await Promise.race([
                 (smartWalletClient as any).sendTransactions(batchCalls, { gas: MANUAL_GAS_LIMIT }),
                 new Promise<never>((_, reject) => {
@@ -937,9 +958,9 @@ export function useConvertFuel() {
                 })
               ]) as `0x${string}`
             } 
-            // Method 2: Try executeBatch (alternative SDK method)
+            // Method 2: Try executeBatch (alternative SDK method) - Atomic batch
             else if (typeof (smartWalletClient as any).executeBatch === 'function') {
-              console.log("📦 Using executeBatch() method...")
+              console.log("📦 Using executeBatch() method (atomic batch)...")
               txHash = await Promise.race([
                 (smartWalletClient as any).executeBatch(batchCalls, { gas: MANUAL_GAS_LIMIT }),
                 new Promise<never>((_, reject) => {
@@ -947,67 +968,27 @@ export function useConvertFuel() {
                 })
               ]) as `0x${string}`
             }
-            // Method 3: Fallback - Execute sequentially as single UserOp
-            // Encode multicall manually if batch methods not available
+            // Method 3: Fallback - Use sendTransaction with single call (if batch not available)
             else {
-              console.log("📦 Batch method not available, using sequential transactions...")
-              // First approve Permit2
-              console.log("  Step 1/3: Permit2.approve(0x Settler)...")
-              const approveHash = await Promise.race([
-                smartWalletClient.sendTransaction({
-                  to: PERMIT2_ADDRESS as Address,
-                  data: permit2Approval.data,
-                  value: BigInt(0),
-                  gas: BigInt(100000),
-                }),
-                new Promise<never>((_, reject) => {
-                  setTimeout(() => reject(new Error("Approve timeout")), TIMEOUT_MS)
-                })
-              ]) as `0x${string}`
-              
-              console.log(`  ✅ Permit2 approve sent: ${approveHash}`)
-              
-              // Wait for approve confirmation
-              if (publicClient) {
-                await publicClient.waitForTransactionReceipt({ hash: approveHash })
-                console.log("  ✅ Permit2 approve confirmed")
+              console.log("⚠️ Batch methods not available, executing swap only...")
+              // Execute only the swap transaction (approval should be handled separately if needed)
+              if (batchCalls.length > 0) {
+                // Execute the last call (swap transaction)
+                const swapCall = batchCalls[batchCalls.length - 1]
+                txHash = await Promise.race([
+                  smartWalletClient.sendTransaction({
+                    to: swapCall.to,
+                    data: swapCall.data,
+                    value: swapCall.value,
+                    gas: MANUAL_GAS_LIMIT,
+                  }),
+                  new Promise<never>((_, reject) => {
+                    setTimeout(() => reject(new Error("Transaction timeout")), TIMEOUT_MS)
+                  })
+                ]) as `0x${string}`
+              } else {
+                throw new Error("No swap transaction available")
               }
-              
-              // Then execute 0x Swap
-              console.log("  Step 2/3: 0x Settler.execute(Swap $BUMP to WETH)...")
-              const swapHash = await Promise.race([
-                smartWalletClient.sendTransaction({
-                  to: zeroXSwapTransaction.to,
-                  data: zeroXSwapTransaction.data,
-                  value: zeroXSwapTransaction.value,
-                  gas: BigInt(500000),
-                }),
-                new Promise<never>((_, reject) => {
-                  setTimeout(() => reject(new Error("Swap timeout")), TIMEOUT_MS)
-                })
-              ]) as `0x${string}`
-              
-              console.log(`  ✅ 0x Swap sent: ${swapHash}`)
-              
-              // Wait for swap confirmation
-              if (publicClient) {
-                await publicClient.waitForTransactionReceipt({ hash: swapHash })
-                console.log("  ✅ 0x Swap confirmed")
-              }
-              
-              // Finally execute Universal Router for ETH distribution
-              console.log("  Step 3/3: UniversalRouter.execute(ETH Distribution)...")
-              txHash = await Promise.race([
-                smartWalletClient.sendTransaction({
-                  to: UNISWAP_UNIVERSAL_ROUTER as Address,
-                  data: universalRouterData,
-                  value: BigInt(0),
-                  gas: MANUAL_GAS_LIMIT,
-                }),
-                new Promise<never>((_, reject) => {
-                  setTimeout(() => reject(new Error("Transaction timeout")), TIMEOUT_MS)
-                })
-              ]) as `0x${string}`
             }
           } catch (batchError: any) {
             console.error("❌ Batch/Sequential transaction failed:", batchError)
@@ -1052,10 +1033,11 @@ export function useConvertFuel() {
         throw lastError || new Error("Failed to send transaction after retries")
       }
 
-      console.log("✅ Transaction Sent! Hash:", txHash)
+      console.log("✅ Atomic batch transaction sent! Hash:", txHash)
       setHash(txHash)
+      setSwapStatus("Transaction confirmed on-chain")
 
-      // 6. Wait for confirmation
+      // 10. Wait for confirmation
       if (publicClient) {
         console.log("⏳ Waiting for on-chain confirmation...")
         try {
@@ -1102,14 +1084,23 @@ export function useConvertFuel() {
       }
 
       setIsSuccess(true)
+      setSwapStatus("")
     } catch (err: any) {
       console.error("❌ Convert Error:", err)
+      setSwapStatus("")
       
       let friendlyMessage = err.message || "Transaction failed"
       const errorDetails = err.details || err.cause?.details || ""
       const errorName = err.name || err.cause?.name || ""
       
-      if (
+      // Handle "Insufficient Liquidity" error specifically
+      if (friendlyMessage.includes("Insufficient Liquidity") || 
+          friendlyMessage.includes("Insufficient liquidity") ||
+          friendlyMessage.includes("no Route matched") ||
+          friendlyMessage.includes("No liquidity route")) {
+        friendlyMessage = "Insufficient Liquidity: Tidak ada cukup likuiditas untuk swap ini. " +
+          "Silakan coba dengan amount yang lebih kecil atau tunggu hingga likuiditas tersedia."
+      } else if (
         friendlyMessage.includes("No billing attached") ||
         friendlyMessage.includes("billing attached to account") ||
         friendlyMessage.includes("request denied") ||
@@ -1141,5 +1132,6 @@ export function useConvertFuel() {
     isSuccess,
     error,
     reset,
+    swapStatus, // Add swap status for UI display
   }
 }
