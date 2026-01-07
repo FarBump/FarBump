@@ -19,7 +19,14 @@ export async function GET(request: NextRequest) {
       buyToken,
       sellAmount,
       taker,
-      slippageBps: "500", // 5% toleransi untuk dynamic fee v4
+      // 1. NAIKKAN SLIPPAGE: Kita gunakan 25% (2500 Bps) karena LP tipis
+      // Ini memberi ruang bagi 0x untuk tetap memproses rute v4 meskipun harganya jatuh
+      slippageBps: "2500", 
+      
+      // 2. MATIKAN PROTEKSI: Memaksa 0x tetap memberikan rute meskipun price impact tinggi
+      enableSlippageProtection: "false",
+      
+      // 3. FITUR V4:
       enablePermit2: "true",
       intentOnFill: "true",
       includedSources: "Uniswap_V4",
@@ -35,23 +42,20 @@ export async function GET(request: NextRequest) {
 
     const data = await response.json();
 
-    // LOG AUDIT: Untuk memantau interaksi dengan Hook 0xd60D...68Cc
+    // Log Audit untuk memantau Price Impact
     if (response.ok) {
-      console.log("--- 0x v4 QUOTE SUCCESS ---");
-      console.log("Buy Amount (Expected):", data.buyAmount);
-      console.log("Estimated Gas:", data.transaction?.gas);
-      if (data.route) {
-        console.log("Route Source:", data.route.fills?.[0]?.source);
+      console.log("--- HIGH IMPACT QUOTE SUCCESS ---");
+      console.log("Expected Buy Amount:", data.buyAmount);
+      // Cek apakah 0x memberikan peringatan soal price impact
+      if (data.issues?.priceImpact) {
+        console.warn("Price Impact Warning:", data.issues.priceImpact);
       }
     } else {
-      console.error("--- 0x v4 QUOTE FAILED ---");
-      console.error("Reason:", data.reason || data.message);
-      console.error("Full Error Data:", JSON.stringify(data, null, 2));
+      console.error("--- QUOTE FAILED ---", data.reason);
     }
 
     return NextResponse.json(data, { status: response.status });
   } catch (error) {
-    console.error("System Error:", error);
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
 }
