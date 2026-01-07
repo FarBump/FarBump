@@ -7,28 +7,24 @@ import { parseUnits, type Address, encodeFunctionData, type Hex } from "viem"
 import {
   BUMP_TOKEN_ADDRESS,
   BASE_WETH_ADDRESS,
-  PERMIT2_ADDRESS,
   BUMP_DECIMALS,
-  TREASURY_FEE_BPS,
 } from "@/lib/constants"
 
-const PERMIT2_ABI = [
+// Alamat Spender Resmi 0x v2 (AllowanceHolder) untuk jaringan Base
+const ZEROX_ALLOWANCE_HOLDER = "0x0000000000001fF3684f28c67538d4D072C22734";
+
+const ERC20_ABI = [
   {
     inputs: [
-      { name: "token", type: "address" },
       { name: "spender", type: "address" },
-      { name: "amount", type: "uint160" },
-      { name: "expiration", type: "uint48" },
+      { name: "amount", type: "uint256" },
     ],
     name: "approve",
-    outputs: [],
+    outputs: [{ name: "", type: "bool" }],
     stateMutability: "nonpayable",
     type: "function",
   },
-] as const
-
-const MAX_UINT160 = BigInt("0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF")
-const MAX_UINT48 = 281474976710655
+] as const;
 
 export function useConvertFuel() {
   const { client: smartWalletClient } = useSmartWallets()
@@ -44,14 +40,15 @@ export function useConvertFuel() {
       sellToken: BUMP_TOKEN_ADDRESS,
       buyToken: BASE_WETH_ADDRESS,
       sellAmount: sellAmountWei.toString(),
-      takerAddress: taker,
+      takerAddress: taker, // Akan dikirim ke API route kita
     });
 
     const res = await fetch(`/api/0x-quote?${params.toString()}`);
     const data = await res.json();
     
     if (!res.ok) {
-      throw new Error(data.message || data.reason || "Gagal mengambil rute swap v4");
+      // Menangkap detail error dari 0x (seperti Insufficient Liquidity)
+      throw new Error(data.reason || data.message || "Gagal mendapatkan rute swap");
     }
     return data;
   }
@@ -65,24 +62,21 @@ export function useConvertFuel() {
       if (!smartWalletClient || !publicClient) throw new Error("Wallet tidak terhubung");
 
       const userAddress = smartWalletClient.account.address as Address;
-      const totalAmountWei = parseUnits(amount, BUMP_DECIMALS);
-      
-      // Hitung fee treasury
-      const treasuryFeeWei = (totalAmountWei * BigInt(TREASURY_FEE_BPS)) / BigInt(10000);
-      const swapAmountWei = totalAmountWei - treasuryFeeWei;
+      const swapAmountWei = parseUnits(amount, BUMP_DECIMALS);
 
-      // 1. Ambil Quote v2 (Uniswap v4 support)
+      // 1. Ambil Quote menggunakan jalur AllowanceHolder
       const quote = await get0xQuote(swapAmountWei, userAddress);
 
-      // 2. Kirim Batch Transaction (Permit2 + Swap)
+      // 2. Batch Transaction: Standard Approval + Swap Execution
+      // AllowanceHolder tidak memerlukan Permit2 signature, cukup approval biasa
       const txHash = await smartWalletClient.sendTransaction({
         calls: [
           {
-            to: PERMIT2_ADDRESS as Address,
+            to: BUMP_TOKEN_ADDRESS as Address,
             data: encodeFunctionData({
-              abi: PERMIT2_ABI,
+              abi: ERC20_ABI,
               functionName: "approve",
-              args: [BUMP_TOKEN_ADDRESS as Address, quote.transaction.to as Address, MAX_UINT160, MAX_UINT48],
+              args: [ZEROX_ALLOWANCE_HOLDER as Address, swapAmountWei],
             }),
           },
           {
@@ -97,18 +91,12 @@ export function useConvertFuel() {
       setIsSuccess(true);
       return txHash;
     } catch (err: any) {
-      console.error("Convert Error:", err);
+      console.error("Convert Flow Error:", err);
       setError(err);
       throw err;
     } finally {
       setIsPending(false);
     }
-  }
-
-  // Mock function untuk ConfigPanel agar flow UI tidak rusak
-  const approve = async () => {
-    console.log("Uniswap v4: Approval handled via Permit2 in Batch.");
-    return true;
   }
 
   const reset = () => {
@@ -120,13 +108,14 @@ export function useConvertFuel() {
 
   return { 
     convert, 
-    approve, 
     reset,
     hash, 
-    approvalHash: null,
     isPending, 
-    isApproving: false, 
     isSuccess, 
-    error 
+    error,
+    // Tetap kembalikan ini agar UI ConfigPanel tidak error jika memanggilnya
+    approve: async () => true,
+    isApproving: false,
+    approvalHash: null
   }
 }
