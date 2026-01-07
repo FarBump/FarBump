@@ -27,13 +27,19 @@ const ZEROX_API_KEY = process.env.ZEROX_API_KEY || ""
  */
 export async function GET(request: NextRequest) {
   try {
+    // Log request for debugging
+    console.log("[0x-quote] GET request received:", request.nextUrl.pathname)
+    
     // Check API key
     if (!ZEROX_API_KEY) {
+      console.error("[0x-quote] ZEROX_API_KEY not configured")
       return NextResponse.json(
         { error: "0x API key not configured" },
         { status: 500 }
       )
     }
+    
+    console.log("[0x-quote] API key found, processing request...")
 
     // Get query parameters
     const searchParams = request.nextUrl.searchParams
