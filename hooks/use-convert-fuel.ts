@@ -481,7 +481,6 @@ export function useConvertFuel() {
     
     console.log("Fetching 0x Swap API v2 quote via proxy...")
     console.log(`  API Route: ${url}`)
-    console.log(`  Base URL: ${baseUrl || "relative"}`)
     console.log(`  Sell Token: ${sellToken}`)
     console.log(`  Buy Token: ${buyToken}`)
     console.log(`  Sell Amount: ${sellAmountWei.toString()}`)
