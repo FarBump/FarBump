@@ -6,7 +6,7 @@ import { WagmiProvider } from "@privy-io/wagmi"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { http, createConfig } from "wagmi"
 import { base } from "wagmi/chains"
-import { ReactNode } from "react"
+import { ReactNode, useEffect } from "react"
 
 // 1. Inisialisasi Wagmi Config
 const wagmiConfig = createConfig({
@@ -29,6 +29,31 @@ export function PrivyProvider({ children }: PrivyProviderProps) {
   if (!appId) {
     throw new Error("NEXT_PUBLIC_PRIVY_APP_ID environment variable is required")
   }
+
+  // Suppress SecurityError for window.ethereum access in Farcaster Mini App
+  // This error occurs because Privy tries to detect browser wallets in cross-origin iframe
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const originalError = window.console.error
+      window.console.error = (...args: any[]) => {
+        // Filter out SecurityError about window.ethereum in Farcaster Mini App
+        const errorMessage = args[0]?.toString() || ""
+        if (
+          errorMessage.includes("Failed to read a named property 'ethereum'") ||
+          errorMessage.includes("Blocked a frame with origin")
+        ) {
+          // Silently ignore this error - it's expected in Farcaster Mini App context
+          return
+        }
+        // Log other errors normally
+        originalError.apply(console, args)
+      }
+
+      return () => {
+        window.console.error = originalError
+      }
+    }
+  }, [])
 
   return (
     <PrivyProviderBase
