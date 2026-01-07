@@ -3,36 +3,37 @@ import { NextRequest, NextResponse } from "next/server";
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
 
+  // Mengambil parameter dari frontend
   const sellToken = searchParams.get("sellToken");
   const buyToken = searchParams.get("buyToken");
   const sellAmount = searchParams.get("sellAmount");
   const taker = searchParams.get("takerAddress");
 
+  // Validasi parameter wajib
   if (!sellToken || !buyToken || !sellAmount || !taker) {
-    return NextResponse.json({ error: "Missing required parameters" }, { status: 400 });
+    return NextResponse.json(
+      { error: "Missing required parameters (sellToken, buyToken, sellAmount, takerAddress)" },
+      { status: 400 }
+    );
   }
 
   try {
+    // Parameter Query sesuai dokumentasi 0x v2 AllowanceHolder
     const queryParams = new URLSearchParams({
-      chainId: "8453",
+      chainId: "8453", // Base Mainnet
       sellToken,
       buyToken,
       sellAmount,
       taker,
-      // 1. NAIKKAN SLIPPAGE: Kita gunakan 25% (2500 Bps) karena LP tipis
-      // Ini memberi ruang bagi 0x untuk tetap memproses rute v4 meskipun harganya jatuh
-      slippageBps: "2500", 
-      
-      // 2. MATIKAN PROTEKSI: Memaksa 0x tetap memberikan rute meskipun price impact tinggi
-      enableSlippageProtection: "false",
-      
-      // 3. FITUR V4:
-      enablePermit2: "true",
-      intentOnFill: "true",
-      includedSources: "Uniswap_V4",
+      // Karena likuiditas $BUMP di v4 sangat tipis, kita gunakan slippage 10% (1000 Bps)
+      // agar rute tetap bisa ditemukan meskipun price impact tinggi.
+      slippageBps: "1000", 
     });
 
-    const response = await fetch(`https://api.0x.org/swap/v2/quote?${queryParams.toString()}`, {
+    // Menggunakan Endpoint Allowance-Holder (Recommended for Smart Wallets)
+    const apiUrl = `https://api.0x.org/swap/allowance-holder/quote?${queryParams.toString()}`;
+
+    const response = await fetch(apiUrl, {
       headers: {
         "0x-api-key": process.env.ZEROX_API_KEY || "",
         "0x-version": "v2",
@@ -42,20 +43,33 @@ export async function GET(request: NextRequest) {
 
     const data = await response.json();
 
-    // Log Audit untuk memantau Price Impact
-    if (response.ok) {
-      console.log("--- HIGH IMPACT QUOTE SUCCESS ---");
-      console.log("Expected Buy Amount:", data.buyAmount);
-      // Cek apakah 0x memberikan peringatan soal price impact
-      if (data.issues?.priceImpact) {
-        console.warn("Price Impact Warning:", data.issues.priceImpact);
-      }
-    } else {
-      console.error("--- QUOTE FAILED ---", data.reason);
+    // Logika Logging untuk memantau pool v4 dan Hook Anda
+    if (!response.ok) {
+      console.error("--- 0x API ERROR ---");
+      console.error("Reason:", data.reason || data.message);
+      console.error("Details:", JSON.stringify(data, null, 2));
+      
+      return NextResponse.json(
+        { 
+          error: data.reason || "No Route Matched", 
+          message: "Kemungkinan likuiditas terlalu rendah atau simulasi hook gagal.",
+          details: data 
+        }, 
+        { status: response.status }
+      );
     }
 
-    return NextResponse.json(data, { status: response.status });
-  } catch (error) {
-    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
+    // Jika berhasil, log informasi rute
+    console.log("--- 0x SWAP QUOTE SUCCESS ---");
+    console.log("Source Pool:", data.route?.fills?.[0]?.source || "Unknown");
+    console.log("Buy Amount:", data.buyAmount);
+
+    return NextResponse.json(data);
+  } catch (error: any) {
+    console.error("Internal Server Error:", error);
+    return NextResponse.json(
+      { error: "Internal Server Error", details: error.message }, 
+      { status: 500 }
+    );
   }
 }
