@@ -356,7 +356,7 @@ export function useConvertFuel() {
     const encodedActions = v4Planner.finalize()
 
     // V4_SWAP command byte is 0x10
-    const commandByte = "0x10"
+    const commandByte = "0x10" as Hex
 
     console.log("✅ V4 Swap created using official SDK pattern:")
     console.log(`  - V4Planner Actions: ${v4Planner.actions.length} actions`)
@@ -450,9 +450,11 @@ export function useConvertFuel() {
     // Use absolute URL if available (for production), otherwise use relative URL
     let baseUrl = ""
     if (typeof window !== "undefined") {
-      baseUrl = process.env.NEXT_PUBLIC_APP_URL || window.location.origin
+      const envUrl = process.env.NEXT_PUBLIC_APP_URL
+      const originUrl = window.location.origin
+      baseUrl = envUrl || originUrl
       // Remove trailing slash to avoid double slashes
-      baseUrl = baseUrl.replace(/\/$/, "")
+      baseUrl = baseUrl.replace(/\/+$/, "")
     }
     const apiPath = `/api/0x-quote?${queryParams.toString()}`
     const url = baseUrl ? `${baseUrl}${apiPath}` : apiPath
@@ -545,13 +547,27 @@ export function useConvertFuel() {
     console.log(`  - Slippage: ${slippagePercentage}%`)
 
     // Get quote from 0x API v2
-    const quoteData = await get0xQuote(
-      BUMP_TOKEN_ADDRESS as Address,
-      BASE_WETH_ADDRESS as Address,
-      swapAmountWei,
-      userAddress,
-      slippagePercentage
-    )
+    let quoteData: ZeroXQuoteResponse
+    try {
+      quoteData = await get0xQuote(
+        BUMP_TOKEN_ADDRESS as Address,
+        BASE_WETH_ADDRESS as Address,
+        swapAmountWei,
+        userAddress,
+        slippagePercentage
+      )
+    } catch (error: any) {
+      // If 0x API doesn't have a route, provide helpful error message
+      if (error.message?.includes("no Route matched") || error.message?.includes("No liquidity route")) {
+        throw new Error(
+          "0x API tidak memiliki route/liquidity untuk token pair ini. " +
+          "Kemungkinan: (1) Swap amount terlalu besar, (2) Liquidity tidak cukup, atau (3) Token tidak didukung. " +
+          "Silakan coba dengan amount yang lebih kecil atau hubungi support."
+        )
+      }
+      // Re-throw other errors
+      throw error
+    }
 
     // Command 1: PERMIT2_TRANSFER_FROM (0x07) - Pull 5% $BUMP from user, send to Treasury
     const permit2TransferInput = encodePermit2TransferFromCommand(
@@ -798,13 +814,52 @@ export function useConvertFuel() {
       console.log("✅ ERC20 allowance to Permit2 confirmed")
 
       // 5. Create 0x API v2 swap transaction (better prices from aggregated liquidity)
-      console.log("📦 Creating 0x API v2 swap transaction...")
-      const { commands, inputs, permit2Approval, zeroXSwapTransaction } = await create0xSwapTransaction(
-        totalAmountWei,
-        userAddress as Address,
-        TREASURY_ADDRESS as Address,
-        0.5 // 0.5% slippage
-      )
+      // Fallback to Uniswap V4 if 0x API fails
+      console.log("📦 Creating swap transaction...")
+      let commands: Hex
+      let inputs: Hex[]
+      let permit2Approval: { to: Address; data: Hex; value: bigint }
+      let zeroXSwapTransaction: { to: Address; data: Hex; value: bigint } | null = null
+      
+      try {
+        console.log("🔄 Attempting 0x API v2 swap (better prices from aggregated liquidity)...")
+        const swapResult = await create0xSwapTransaction(
+          totalAmountWei,
+          userAddress as Address,
+          TREASURY_ADDRESS as Address,
+          0.5 // 0.5% slippage
+        )
+        commands = swapResult.commands
+        inputs = swapResult.inputs
+        permit2Approval = swapResult.permit2Approval
+        zeroXSwapTransaction = swapResult.zeroXSwapTransaction
+        console.log("✅ 0x API v2 swap transaction created successfully")
+      } catch (error: any) {
+        // Check if it's a 404 (route not found) or no route matched error
+        const is404Error = error.message?.includes("404") || error.message?.includes("Not Found")
+        const isNoRouteError = error.message?.includes("no Route matched") || error.message?.includes("No liquidity route")
+        
+        if (is404Error) {
+          console.warn("⚠️ API route not found (404). This might be a deployment issue.")
+          console.warn("   Falling back to Uniswap V4 swap...")
+          // TODO: Implement Uniswap V4 fallback here if needed
+          throw new Error(
+            "API route tidak ditemukan. Kemungkinan deployment belum selesai. " +
+            "Silakan tunggu beberapa menit dan coba lagi, atau hubungi support."
+          )
+        } else if (isNoRouteError) {
+          console.warn("⚠️ 0x API tidak memiliki route/liquidity untuk token pair ini.")
+          console.warn("   Kemungkinan: (1) Swap amount terlalu besar, (2) Liquidity tidak cukup, atau (3) Token tidak didukung.")
+          throw new Error(
+            "0x API tidak memiliki route/liquidity untuk token pair ini. " +
+            "Kemungkinan: (1) Swap amount terlalu besar, (2) Liquidity tidak cukup, atau (3) Token tidak didukung. " +
+            "Silakan coba dengan amount yang lebih kecil atau hubungi support."
+          )
+        } else {
+          // Re-throw other errors
+          throw error
+        }
+      }
       
       // 6. Execute transaction
       console.log(`📤 Executing transactions...`)
@@ -854,6 +909,10 @@ export function useConvertFuel() {
           console.log("  Call 3: UniversalRouter.execute(ETH Distribution)")
 
           // Smart Wallet batch transaction: array of calls processed atomically
+          if (!zeroXSwapTransaction) {
+            throw new Error("0x Swap transaction tidak tersedia. Silakan coba lagi.")
+          }
+          
           const batchCalls = [
             permit2Approval,  // Permit2 approval for 0x Settler contract
             zeroXSwapTransaction,  // 0x Swap transaction (swaps $BUMP to WETH)
