@@ -1023,18 +1023,19 @@ export function useConvertFuel() {
       }
 
       // Call 2: 0x Swap transaction (sent directly to Settler contract)
-      const settlerContractAddress = "0x785648669b8e90a75a6a8de682258957f9028462" as Address
-      console.log("Adding 0x swap transaction to batch (Settler contract)...")
+      // IMPORTANT: Using direct call to Settler contract (not batch) to match successful transaction pattern
+      console.log("Preparing direct call to Settler contract for swap...")
       
       // Ensure transaction is sent to Settler contract
       const swapTransaction = {
-        to: settlerContractAddress, // Always use Settler contract address
+        to: ZEROX_SETTLER_CONTRACT as Address, // Always use Settler contract address
         data: quoteData.transaction.data as Hex, // Transaction data from 0x API
         value: BigInt(quoteData.transaction.value || "0"),
       }
       
+      // Add swap to batch (but will prioritize direct call in execution)
       batchCalls.push(swapTransaction)
-      console.log(`  Swap call added to Settler contract: ${settlerContractAddress}`)
+      console.log(`  Swap call prepared for Settler contract: ${ZEROX_SETTLER_CONTRACT}`)
       console.log(`Total batch calls: ${batchCalls.length}`)
       
       // 9. Execute atomic batch transaction
@@ -1089,13 +1090,15 @@ export function useConvertFuel() {
                 })
               ]) as `0x${string}`
             }
-            // Method 3: Fallback - Use sendTransaction with single call (if batch not available)
+            // Method 3: Fallback - Direct call to Settler contract (like successful transaction)
             else {
-              console.log("⚠️ Batch methods not available, executing swap only...")
-              // Execute only the swap transaction (approval should be handled separately if needed)
-              if (batchCalls.length > 0) {
-                // Execute the last call (swap transaction)
-                const swapCall = batchCalls[batchCalls.length - 1]
+              console.log("Using direct call to Settler contract (fallback method)...")
+              // Find swap transaction in batch
+              const swapCall = batchCalls.find(call => 
+                call.to.toLowerCase() === ZEROX_SETTLER_CONTRACT.toLowerCase()
+              ) || batchCalls[batchCalls.length - 1]
+              
+              if (swapCall) {
                 txHash = await Promise.race([
                   smartWalletClient.sendTransaction({
                     to: swapCall.to,
@@ -1154,27 +1157,87 @@ export function useConvertFuel() {
         throw lastError || new Error("Failed to send transaction after retries")
       }
 
-      console.log("Atomic batch transaction sent! Hash:", txHash)
-      setHash(txHash)
-      setSwapStatus("Transaction confirmed on-chain")
+      console.log("Swap transaction sent! Hash:", txHash)
+      setSwapStatus("Swap confirmed. Distributing ETH...")
 
-      // 10. Wait for confirmation
+      // 9. Wait for swap confirmation, then distribute ETH
       if (publicClient) {
-        console.log("⏳ Waiting for on-chain confirmation...")
+        console.log("Waiting for swap confirmation...")
         try {
-          const receipt = await Promise.race([
+          await Promise.race([
             publicClient.waitForTransactionReceipt({ hash: txHash }),
             new Promise<never>((_, reject) => {
               setTimeout(() => {
-                reject(new Error("Transaction confirmation timed out"))
-              }, 120000)
+                reject(new Error("Swap confirmation timeout"))
+              }, 60000)
             })
           ])
-          console.log("🎉 Transaction Confirmed:", receipt)
+          console.log("Swap confirmed on-chain")
         } catch (confirmationError: any) {
-          console.warn("Confirmation timeout, but transaction was sent:", confirmationError)
+          console.warn("Swap confirmation timeout, but transaction was sent:", confirmationError)
         }
       }
+
+      // 10. Step 2: Distribute ETH after swap (UNWRAP_WETH + PAY_PORTION + SWEEP)
+      setSwapStatus("Distributing ETH (5% to Treasury, 90% to User Credit)...")
+      console.log("Step 2: Distributing ETH after swap...")
+      
+      // Encode Universal Router commands for ETH distribution
+      const unwrapInput = encodeUnwrapWethCommand(
+        userAddress as Address, // Recipient (will receive native ETH)
+        BigInt(0) // amountMin = 0 (minimal slippage)
+      )
+      
+      const payPortionBips = Math.floor((APP_FEE_BPS * 10000) / (10000 - TREASURY_FEE_BPS)) // ~526 bips
+      const payPortionInput = encodePayPortionCommand(
+        "0x0000000000000000000000000000000000000000" as Address, // Native ETH
+        TREASURY_ADDRESS as Address, // Treasury/App address
+        payPortionBips
+      )
+      
+      const sweepInput = encodeSweepCommand(
+        "0x0000000000000000000000000000000000000000" as Address, // Native ETH
+        userAddress as Address, // User receives 90% as credit
+        BigInt(0) // amountMin = 0 (sweep all)
+      )
+      
+      const distributionCommands = "0x0c0604" as Hex // UNWRAP_WETH + PAY_PORTION + SWEEP
+      const distributionInputs: Hex[] = [unwrapInput, payPortionInput, sweepInput]
+      
+      const distributionData = encodeFunctionData({
+        abi: [
+          {
+            name: "execute",
+            type: "function",
+            stateMutability: "payable",
+            inputs: [
+              { name: "commands", type: "bytes" },
+              { name: "inputs", type: "bytes[]" },
+            ],
+            outputs: [],
+          },
+        ],
+        functionName: "execute",
+        args: [distributionCommands, distributionInputs],
+      })
+      
+      console.log("Sending ETH distribution transaction...")
+      const distributionTxHash = await Promise.race([
+        smartWalletClient.sendTransaction({
+          to: UNISWAP_UNIVERSAL_ROUTER as Address,
+          data: distributionData,
+          value: BigInt(0),
+        }),
+        new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error("Distribution transaction timeout")), TIMEOUT_MS)
+        })
+      ]) as `0x${string}`
+      
+      console.log("ETH distribution transaction sent! Hash:", distributionTxHash)
+      
+      // Use swap transaction hash as the main hash (for credit sync)
+      setHash(txHash)
+      setSwapStatus("Transaction confirmed on-chain")
 
       // 7. Call API to sync credit
       console.log("Syncing credit to database...")
