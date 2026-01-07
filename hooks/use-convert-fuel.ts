@@ -318,7 +318,7 @@ export function useConvertFuel() {
   const createV4SwapWithSDK = (
     amountIn: bigint,
     amountOutMinimum: bigint
-  ): { commandByte: string; encodedActions: Hex } => {
+  ): { commandByte: Hex; encodedActions: Hex } => {
     // Create SwapExactInSingle config (matches SDK documentation pattern)
     const swapConfig: SwapExactInSingle = {
       poolKey: {
@@ -356,7 +356,7 @@ export function useConvertFuel() {
     const encodedActions = v4Planner.finalize()
 
     // V4_SWAP command byte is 0x10
-    const commandByte = "0x10" as Hex
+    const commandByte: Hex = "0x10"
 
     console.log("✅ V4 Swap created using official SDK pattern:")
     console.log(`  - V4Planner Actions: ${v4Planner.actions.length} actions`)
