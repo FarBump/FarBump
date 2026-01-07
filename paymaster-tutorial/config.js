@@ -24,3 +24,4 @@ export const account = await toCoinbaseSmartAccount({
   client,
   owners: [owner]
 })
+
