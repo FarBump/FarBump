@@ -59,13 +59,24 @@ async function verifyAndCalculateCredit(
   expectedEthWei?: string // Optional: Expected ETH from quote (for fallback)
 ): Promise<{ ethAmountWei: bigint; isValid: boolean }> {
   try {
+    console.log(`\n🔍 [VERIFICATION] Starting verification for ${txHash}`)
+    console.log(`   User: ${userAddress}`)
+    console.log(`   Expected ETH: ${expectedEthWei || "not provided"}`)
+    
     // 1. Get transaction receipt
+    console.log(`   Step 1: Fetching transaction receipt...`)
     const receipt = await publicClient.getTransactionReceipt({ hash: txHash })
 
     if (!receipt || receipt.status !== "success") {
-      console.warn("⚠️ Transaction not found or failed")
+      console.warn(`   ❌ Transaction not found or failed`)
+      console.warn(`      Status: ${receipt?.status || "not found"}`)
       return { ethAmountWei: BigInt(0), isValid: false }
     }
+    
+    console.log(`   ✅ Transaction receipt found (status: ${receipt.status})`)
+    console.log(`      Block number: ${receipt.blockNumber}`)
+    console.log(`      Transaction to: ${receipt.to}`)
+    console.log(`      Total logs: ${receipt.logs.length}`)
 
     const BUMP_TOKEN_ADDRESS = "0x94ce728849431818ec9a0cf29bdb24fe413bbb07"
     const BASE_WETH_ADDRESS = "0x4200000000000000000000000000000000000006"
@@ -408,7 +419,7 @@ async function verifyAndCalculateCredit(
     const creditAmountEth = Number(creditAmountWei) / 1e18
     const treasuryEthAmount = Number(ethReceivedWei - creditAmountWei) / 1e18
 
-    console.log(`✅ Transaction verified as valid convert:`)
+    console.log(`\n✅ [VERIFICATION SUCCESS] Transaction verified as valid convert:`)
     console.log(`   - Treasury $BUMP transfer (5%): ✅`)
     console.log(`   - 0x Settler swap (95% $BUMP → WETH): ✅`)
     console.log(`   - Total ETH from swap: ${ethReceivedWei.toString()} wei (${ethReceivedEth.toFixed(6)} ETH)`)
@@ -439,6 +450,33 @@ export async function POST(request: NextRequest) {
       )
     }
 
+    // Initialize Supabase service client (bypasses RLS)
+    const supabase = createSupabaseServiceClient()
+
+    // Check if transaction has already been processed (duplicate check)
+    const { data: existingLog, error: checkError } = await supabase
+      .from("conversion_logs")
+      .select("tx_hash, eth_credit_wei")
+      .eq("tx_hash", txHash)
+      .single()
+
+    if (existingLog && !checkError) {
+      console.log(`⚠️ Transaction ${txHash} has already been processed`)
+      console.log(`   Previous credit amount: ${existingLog.eth_credit_wei} wei`)
+      return NextResponse.json(
+        { 
+          error: "Transaction has already been processed",
+          ethCreditWei: existingLog.eth_credit_wei,
+          message: "This transaction was already synced to your credit balance"
+        },
+        { status: 409 } // 409 Conflict
+      )
+    }
+
+    console.log(`🔄 Starting verification for transaction: ${txHash}`)
+    console.log(`   User address: ${userAddress}`)
+    console.log(`   Expected ETH (from frontend): ${body.expectedEthWei || "not provided"}`)
+
     // Verify transaction and calculate credit
     // Pass expectedEthWei from frontend as fallback if WETH transfer detection fails
     const { ethAmountWei, isValid } = await verifyAndCalculateCredit(
@@ -448,14 +486,21 @@ export async function POST(request: NextRequest) {
     )
 
     if (!isValid || ethAmountWei === BigInt(0)) {
+      console.error(`❌ Verification failed for transaction ${txHash}`)
+      console.error(`   - isValid: ${isValid}`)
+      console.error(`   - ethAmountWei: ${ethAmountWei.toString()}`)
+      console.error(`   - expectedEthWei provided: ${!!body.expectedEthWei}`)
       return NextResponse.json(
-        { error: "Transaction verification failed or no ETH credit to add" },
+        { 
+          error: "Transaction verification failed or no ETH credit to add",
+          details: "Please check Vercel logs for detailed verification steps"
+        },
         { status: 400 }
       )
     }
 
-    // Initialize Supabase service client (bypasses RLS)
-    const supabase = createSupabaseServiceClient()
+    console.log(`✅ Verification passed for transaction ${txHash}`)
+    console.log(`   - Credit amount to add: ${ethAmountWei.toString()} wei`)
 
     // Update user_credits table with increment
     // Using raw SQL to ensure atomic increment
