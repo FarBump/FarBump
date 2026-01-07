@@ -74,9 +74,20 @@ export async function GET(request: NextRequest) {
     })
 
     if (!response.ok) {
-      const errorData = await response.json().catch(() => ({ message: "Unknown error" }))
+      const errorText = await response.text()
+      let errorData: any = { message: "Unknown error" }
       
-      console.error("❌ 0x API error:", errorData)
+      try {
+        errorData = JSON.parse(errorText)
+      } catch {
+        errorData = { message: errorText || response.statusText }
+      }
+      
+      console.error("❌ 0x API error:", {
+        status: response.status,
+        statusText: response.statusText,
+        error: errorData,
+      })
       
       // Handle v2 API issues array
       if (errorData.issues && Array.isArray(errorData.issues)) {
@@ -87,6 +98,14 @@ export async function GET(request: NextRequest) {
         return NextResponse.json(
           { error: `0x API v2 error: ${errorMessages || errorData.reason || errorData.message || response.statusText}` },
           { status: response.status }
+        )
+      }
+      
+      // Handle "no Route matched" error - this means no liquidity available
+      if (errorData.reason?.includes("no Route matched") || errorData.message?.includes("no Route matched")) {
+        return NextResponse.json(
+          { error: "No liquidity route found for this token pair. The swap amount may be too large or liquidity is insufficient." },
+          { status: 400 }
         )
       }
       

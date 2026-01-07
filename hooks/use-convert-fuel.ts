@@ -356,7 +356,7 @@ export function useConvertFuel() {
     const encodedActions = v4Planner.finalize()
 
     // V4_SWAP command byte is 0x10
-    const commandByte = "10"
+    const commandByte = "0x10"
 
     console.log("✅ V4 Swap created using official SDK pattern:")
     console.log(`  - V4Planner Actions: ${v4Planner.actions.length} actions`)
@@ -448,9 +448,12 @@ export function useConvertFuel() {
     })
 
     // Use absolute URL if available (for production), otherwise use relative URL
-    const baseUrl = typeof window !== "undefined" 
-      ? (process.env.NEXT_PUBLIC_APP_URL || window.location.origin)
-      : ""
+    let baseUrl = ""
+    if (typeof window !== "undefined") {
+      baseUrl = process.env.NEXT_PUBLIC_APP_URL || window.location.origin
+      // Remove trailing slash to avoid double slashes
+      baseUrl = baseUrl.replace(/\/$/, "")
+    }
     const apiPath = `/api/0x-quote?${queryParams.toString()}`
     const url = baseUrl ? `${baseUrl}${apiPath}` : apiPath
     
