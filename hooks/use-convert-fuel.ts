@@ -465,25 +465,19 @@ export function useConvertFuel() {
     retryWithHighSlippage: boolean = true
   ): Promise<ZeroXQuoteResponse> => {
     // Build query parameters for our API route
+    // Note: Convert slippage from percentage (e.g., 20) to decimal (e.g., 0.20) for 0x API v2
+    const slippageDecimal = (slippagePercentage / 100).toFixed(3)
     const queryParams = new URLSearchParams({
       sellToken,
       buyToken,
       sellAmount: sellAmountWei.toString(),
       takerAddress,
-      slippagePercentage: slippagePercentage.toString(),
+      slippagePercentage: slippageDecimal, // Send as decimal (e.g., 0.200)
     })
 
-    // Use absolute URL if available (for production), otherwise use relative URL
-    let baseUrl = ""
-    if (typeof window !== "undefined") {
-      const envUrl = process.env.NEXT_PUBLIC_APP_URL
-      const originUrl = window.location.origin
-      baseUrl = envUrl || originUrl
-      // Remove trailing slash to avoid double slashes
-      baseUrl = baseUrl.replace(/\/+$/, "")
-    }
+    // Always use relative path to avoid environment mismatch
     const apiPath = `/api/0x-quote?${queryParams.toString()}`
-    const url = baseUrl ? `${baseUrl}${apiPath}` : apiPath
+    const url = apiPath
     
     console.log("Fetching 0x Swap API v2 quote via proxy...")
     console.log(`  API Route: ${url}`)
