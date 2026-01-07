@@ -5,8 +5,10 @@ export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
 
 // 0x API v2 Configuration
+// IMPORTANT: API key is server-side only for security
+// Use ZEROX_API_KEY (not NEXT_PUBLIC_ZEROX_API_KEY) to prevent exposure to client
 const ZEROX_API_BASE_URL = "https://base.api.0x.org"
-const ZEROX_API_KEY = process.env.NEXT_PUBLIC_ZEROX_API_KEY || process.env.ZEROX_API_KEY || ""
+const ZEROX_API_KEY = process.env.ZEROX_API_KEY || ""
 
 /**
  * Proxy endpoint for 0x Swap API v2 quote

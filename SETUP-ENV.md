@@ -42,7 +42,9 @@ NEXT_PUBLIC_PRIVY_APP_ID=your-privy-app-id-here
 
 ### 0x Swap API (Required for token swaps)
 ```env
-NEXT_PUBLIC_ZEROX_API_KEY=bec0c136-9487-4a50-9ceb-995e8d6a1419
+# IMPORTANT: Use ZEROX_API_KEY (not NEXT_PUBLIC_ZEROX_API_KEY) for security
+# API key is server-side only and never exposed to client
+ZEROX_API_KEY=bec0c136-9487-4a50-9ceb-995e8d6a1419
 ```
 
 ## Database Setup

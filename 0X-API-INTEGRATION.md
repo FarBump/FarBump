@@ -28,7 +28,9 @@ This document explains how to use 0x Swap API **v2** for token swaps on Base net
 Add to `.env.local`:
 
 ```env
-NEXT_PUBLIC_ZEROX_API_KEY=bec0c136-9487-4a50-9ceb-995e8d6a1419
+# IMPORTANT: Use ZEROX_API_KEY (not NEXT_PUBLIC_ZEROX_API_KEY) for security
+# API key is server-side only and never exposed to client
+ZEROX_API_KEY=bec0c136-9487-4a50-9ceb-995e8d6a1419
 ```
 
 ### 3. Restart Development Server
@@ -198,7 +200,7 @@ v2 API provides enhanced error handling with `issues` array:
 - **"0x API v2 error: Slippage tolerance exceeded"**: Price moved too much, increase slippage
 - **"0x API v2 error: Insufficient allowance"**: Token allowance is insufficient (check Permit2 approval)
 - **"0x API v2 error: Insufficient balance"**: User doesn't have enough tokens
-- **"0x API key not configured"**: Add `NEXT_PUBLIC_ZEROX_API_KEY` to `.env.local`
+- **"0x API key not configured"**: Add `ZEROX_API_KEY` (server-side only, not NEXT_PUBLIC) to `.env.local` or Vercel environment variables
 
 ### Issues Array
 

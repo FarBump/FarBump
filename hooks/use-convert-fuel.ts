@@ -27,8 +27,9 @@ import {
 } from "@/lib/constants"
 
 // 0x API v2 Configuration
+// NOTE: API key is now server-side only for security
+// Frontend only calls /api/0x-quote proxy endpoint
 const ZEROX_API_BASE_URL = "https://base.api.0x.org"
-const ZEROX_API_KEY = process.env.NEXT_PUBLIC_ZEROX_API_KEY || ""
 
 /**
  * 0x Swap API v2 Response Structure
@@ -353,10 +354,10 @@ export function useConvertFuel() {
     ])
 
     // Finalize V4Planner to get encoded actions (this is what we pass to Universal Router)
-    const encodedActions = v4Planner.finalize()
+    const encodedActions = v4Planner.finalize() as Hex
 
     // V4_SWAP command byte is 0x10
-    const commandByte: Hex = "0x10"
+    const commandByte: Hex = "0x10" as Hex
 
     console.log("✅ V4 Swap created using official SDK pattern:")
     console.log(`  - V4Planner Actions: ${v4Planner.actions.length} actions`)

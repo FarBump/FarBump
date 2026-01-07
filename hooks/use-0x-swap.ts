@@ -12,9 +12,10 @@ import {
 } from "@/lib/constants"
 
 // 0x API v2 Configuration
-// Base URL for Base network using v2 API
+// NOTE: This hook is deprecated in favor of /api/0x-quote proxy endpoint
+// API key is now server-side only for security
+// Frontend should use /api/0x-quote instead of direct API calls
 const ZEROX_API_BASE_URL = "https://base.api.0x.org"
-const ZEROX_API_KEY = process.env.NEXT_PUBLIC_ZEROX_API_KEY || ""
 
 // Permit2 address (same as we're already using)
 const PERMIT2_ADDRESS = "0x000000000022D473030F116dDEE9F6B43aC78BA3" as const
@@ -116,17 +117,12 @@ export function use0xSwap() {
    * - Improved security
    */
   const getQuote = async (params: ZeroXSwapParams): Promise<ZeroXQuoteResponse> => {
-    if (!ZEROX_API_KEY) {
-      throw new Error("0x API key not configured. Please set NEXT_PUBLIC_ZEROX_API_KEY in .env.local")
-    }
-
+    // Use proxy API route for security (API key is server-side only)
     const queryParams = new URLSearchParams({
       sellToken: params.sellToken,
       buyToken: params.buyToken,
       takerAddress: params.takerAddress,
       slippagePercentage: (params.slippagePercentage || 0.5).toString(), // 0.5% default slippage
-      // v2 API parameters
-      enablePermit2: "true", // Enable Permit2 for efficient approvals
     })
 
     if (params.sellAmount) {
@@ -137,20 +133,23 @@ export function use0xSwap() {
       throw new Error("Either sellAmount or buyAmount must be provided")
     }
 
-    // Use v2 endpoint: /swap/v2/quote
-    const url = `${ZEROX_API_BASE_URL}/swap/v2/quote?${queryParams.toString()}`
+    // Use proxy API route instead of direct 0x API call (API key is server-side only)
+    const baseUrl = typeof window !== "undefined" 
+      ? (process.env.NEXT_PUBLIC_APP_URL || window.location.origin)
+      : ""
+    const apiPath = `/api/0x-quote?${queryParams.toString()}`
+    const url = baseUrl ? `${baseUrl.replace(/\/+$/, "")}${apiPath}` : apiPath
     
-    console.log("📊 Fetching 0x Swap API v2 quote...")
-    console.log(`  URL: ${url}`)
+    console.log("📊 Fetching 0x Swap API v2 quote via proxy...")
+    console.log(`  API Route: ${url}`)
     console.log(`  Sell Token: ${params.sellToken}`)
     console.log(`  Buy Token: ${params.buyToken}`)
     console.log(`  Amount: ${params.sellAmount || params.buyAmount}`)
-    console.log(`  API Version: v2`)
+    console.log(`  API Version: v2 (via proxy)`)
 
     const response = await fetch(url, {
       method: "GET",
       headers: {
-        "0x-api-key": ZEROX_API_KEY,
         "Accept": "application/json",
       },
     })
