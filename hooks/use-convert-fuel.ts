@@ -801,6 +801,15 @@ export function useConvertFuel() {
 
       const totalAmountWei = parseUnits(amount, BUMP_DECIMALS)
 
+      // 2.5. Validate swap amount - warn if exceptionally large
+      // Consider amounts > 1M $BUMP as "large" (adjust threshold as needed)
+      const LARGE_SWAP_THRESHOLD = parseUnits("1000000", BUMP_DECIMALS) // 1M $BUMP
+      if (totalAmountWei > LARGE_SWAP_THRESHOLD) {
+        console.warn("⚠️ Large swap detected. Price impact might be high.")
+        setSwapStatus("Large swap detected. Price impact might be high.")
+        // Continue with swap but user is warned
+      }
+
       // 3. Calculate amounts according to correct distribution:
       // - 5% $BUMP → Treasury (TREASURY_FEE_BPS = 500)
       // - 95% $BUMP → Swap to WETH
@@ -852,16 +861,28 @@ export function useConvertFuel() {
           dynamicSlippage * 100 // Convert to percentage
         )
       } catch (error: any) {
-        // Handle "Insufficient Liquidity" error
-        if (error.message?.includes("Insufficient Liquidity") || 
-            error.message?.includes("Insufficient liquidity") ||
-            error.message?.includes("no Route matched") ||
-            error.message?.includes("No liquidity route")) {
+        // Handle 400 error with "no Route matched" specifically
+        const errorMessage = error.message || ""
+        const is400Error = errorMessage.includes("400") || errorMessage.includes("Status 400")
+        const isNoRouteError = errorMessage.includes("no Route matched") || 
+                               errorMessage.includes("No liquidity route") ||
+                               errorMessage.includes("NO_ROUTE_MATCHED") ||
+                               errorMessage.includes("Insufficient liquidity")
+        
+        if (is400Error && isNoRouteError) {
           throw new Error(
-            "Insufficient Liquidity: Tidak ada cukup likuiditas untuk swap ini. " +
-            "Silakan coba dengan amount yang lebih kecil atau tunggu hingga likuiditas tersedia."
+            "Insufficient liquidity for this swap amount. Please try a smaller amount or wait for more liquidity."
           )
         }
+        
+        // Handle other "Insufficient Liquidity" errors
+        if (errorMessage.includes("Insufficient Liquidity") || 
+            errorMessage.includes("Insufficient liquidity")) {
+          throw new Error(
+            "Insufficient liquidity for this swap amount. Please try a smaller amount or wait for more liquidity."
+          )
+        }
+        
         // Re-throw other errors
         throw error
       }
@@ -1093,13 +1114,13 @@ export function useConvertFuel() {
       const errorDetails = err.details || err.cause?.details || ""
       const errorName = err.name || err.cause?.name || ""
       
-      // Handle "Insufficient Liquidity" error specifically
+      // Handle "Insufficient Liquidity" error specifically (400 with no Route matched)
       if (friendlyMessage.includes("Insufficient Liquidity") || 
           friendlyMessage.includes("Insufficient liquidity") ||
           friendlyMessage.includes("no Route matched") ||
-          friendlyMessage.includes("No liquidity route")) {
-        friendlyMessage = "Insufficient Liquidity: Tidak ada cukup likuiditas untuk swap ini. " +
-          "Silakan coba dengan amount yang lebih kecil atau tunggu hingga likuiditas tersedia."
+          friendlyMessage.includes("No liquidity route") ||
+          friendlyMessage.includes("NO_ROUTE_MATCHED")) {
+        friendlyMessage = "Insufficient liquidity for this swap amount. Please try a smaller amount or wait for more liquidity."
       } else if (
         friendlyMessage.includes("No billing attached") ||
         friendlyMessage.includes("billing attached to account") ||

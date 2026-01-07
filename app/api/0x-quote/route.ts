@@ -7,7 +7,11 @@ export const runtime = 'nodejs'
 // 0x API v2 Configuration
 // IMPORTANT: API key is server-side only for security
 // Use ZEROX_API_KEY (not NEXT_PUBLIC_ZEROX_API_KEY) to prevent exposure to client
-const ZEROX_API_BASE_URL = "https://base.api.0x.org"
+// Try base.api.0x.org first, fallback to api.0x.org if needed for V4 routes
+const ZEROX_API_BASE_URLS = [
+  "https://base.api.0x.org",
+  "https://api.0x.org", // Fallback for better V4 route discovery
+]
 const ZEROX_API_KEY = process.env.ZEROX_API_KEY || ""
 
 /**
@@ -62,68 +66,123 @@ export async function GET(request: NextRequest) {
     // Note: We don't add 'excludedSources' or 'includedSources' to allow all liquidity sources
     // This ensures Uniswap V4 pools are accessible
 
-    const url = `${ZEROX_API_BASE_URL}/swap/v2/quote?${queryParams.toString()}`
+    // Try multiple API endpoints for better route discovery
+    let lastError: any = null
+    let quoteData: any = null
     
-    console.log("📊 Proxying 0x Swap API v2 quote request...")
-    console.log(`  URL: ${url}`)
-    console.log(`  Sell Token: ${sellToken}`)
-    console.log(`  Buy Token: ${buyToken}`)
-    console.log(`  Sell Amount: ${sellAmount}`)
-    console.log(`  Slippage: ${slippagePercentage}%`)
-
-    // Make request to 0x API from server-side (no CORS issues)
-    const response = await fetch(url, {
-      method: "GET",
-      headers: {
-        "0x-api-key": ZEROX_API_KEY,
-        "Accept": "application/json",
-      },
-    })
-
-    if (!response.ok) {
-      const errorText = await response.text()
-      let errorData: any = { message: "Unknown error" }
+    for (const baseUrl of ZEROX_API_BASE_URLS) {
+      const url = `${baseUrl}/swap/v2/quote?${queryParams.toString()}`
       
+      console.log(`📊 Proxying 0x Swap API v2 quote request to ${baseUrl}...`)
+      console.log(`  URL: ${url}`)
+      console.log(`  Sell Token: ${sellToken}`)
+      console.log(`  Buy Token: ${buyToken}`)
+      console.log(`  Sell Amount: ${sellAmount}`)
+      console.log(`  Slippage: ${slippagePercentage}%`)
+
       try {
-        errorData = JSON.parse(errorText)
-      } catch {
-        errorData = { message: errorText || response.statusText }
+        // Make request to 0x API from server-side (no CORS issues)
+        const response = await fetch(url, {
+          method: "GET",
+          headers: {
+            "0x-api-key": ZEROX_API_KEY,
+            "Accept": "application/json",
+          },
+        })
+
+        if (!response.ok) {
+          const errorText = await response.text()
+          let errorData: any = { message: "Unknown error" }
+          
+          try {
+            errorData = JSON.parse(errorText)
+          } catch {
+            errorData = { message: errorText || response.statusText }
+          }
+          
+          console.error(`❌ 0x API error from ${baseUrl}:`, {
+            status: response.status,
+            statusText: response.statusText,
+            error: errorData,
+          })
+          
+          // Handle "no Route matched" error specifically (400 status)
+          if (response.status === 400 && (
+            errorData.reason?.includes("no Route matched") || 
+            errorData.message?.includes("no Route matched") ||
+            errorData.error?.includes("no Route matched")
+          )) {
+            // If this is the last URL, return the error
+            if (baseUrl === ZEROX_API_BASE_URLS[ZEROX_API_BASE_URLS.length - 1]) {
+              return NextResponse.json(
+                { 
+                  error: "Insufficient liquidity for this swap amount. Please try a smaller amount or wait for more liquidity.",
+                  code: "NO_ROUTE_MATCHED"
+                },
+                { status: 400 }
+              )
+            }
+            // Otherwise, try next URL
+            lastError = errorData
+            continue
+          }
+          
+          // Handle v2 API issues array
+          if (errorData.issues && Array.isArray(errorData.issues)) {
+            const errorMessages = errorData.issues
+              .filter((issue: any) => issue.severity === "error")
+              .map((issue: any) => issue.reason)
+              .join(", ")
+            
+            // If this is the last URL, return the error
+            if (baseUrl === ZEROX_API_BASE_URLS[ZEROX_API_BASE_URLS.length - 1]) {
+              return NextResponse.json(
+                { error: `0x API v2 error: ${errorMessages || errorData.reason || errorData.message || response.statusText}` },
+                { status: response.status }
+              )
+            }
+            // Otherwise, try next URL
+            lastError = errorData
+            continue
+          }
+          
+          // If this is the last URL, return the error
+          if (baseUrl === ZEROX_API_BASE_URLS[ZEROX_API_BASE_URLS.length - 1]) {
+            return NextResponse.json(
+              { error: `0x API v2 error: ${errorData.reason || errorData.message || response.statusText}` },
+              { status: response.status }
+            )
+          }
+          
+          // Otherwise, try next URL
+          lastError = errorData
+          continue
+        }
+
+        // Success - parse and return quote data
+        quoteData = await response.json()
+        console.log(`✅ 0x API v2 Quote received from ${baseUrl}`)
+        break
+      } catch (fetchError: any) {
+        console.error(`❌ Error fetching from ${baseUrl}:`, fetchError)
+        lastError = fetchError
+        
+        // If this is the last URL, throw the error
+        if (baseUrl === ZEROX_API_BASE_URLS[ZEROX_API_BASE_URLS.length - 1]) {
+          throw fetchError
+        }
+        // Otherwise, try next URL
+        continue
       }
-      
-      console.error("❌ 0x API error:", {
-        status: response.status,
-        statusText: response.statusText,
-        error: errorData,
-      })
-      
-      // Handle v2 API issues array
-      if (errorData.issues && Array.isArray(errorData.issues)) {
-        const errorMessages = errorData.issues
-          .filter((issue: any) => issue.severity === "error")
-          .map((issue: any) => issue.reason)
-          .join(", ")
-        return NextResponse.json(
-          { error: `0x API v2 error: ${errorMessages || errorData.reason || errorData.message || response.statusText}` },
-          { status: response.status }
-        )
-      }
-      
-      // Handle "no Route matched" error - this means no liquidity available
-      if (errorData.reason?.includes("no Route matched") || errorData.message?.includes("no Route matched")) {
-        return NextResponse.json(
-          { error: "No liquidity route found for this token pair. The swap amount may be too large or liquidity is insufficient." },
-          { status: 400 }
-        )
-      }
-      
+    }
+
+    if (!quoteData) {
       return NextResponse.json(
-        { error: `0x API v2 error: ${errorData.reason || errorData.message || response.statusText}` },
-        { status: response.status }
+        { error: "Failed to fetch quote from all 0x API endpoints" },
+        { status: 500 }
       )
     }
 
-    const quoteData = await response.json()
-    
     // Check for issues in v2 response
     if (quoteData.issues && quoteData.issues.length > 0) {
       const errors = quoteData.issues.filter((issue: any) => issue.severity === "error")
