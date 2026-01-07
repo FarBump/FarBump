@@ -74,10 +74,6 @@ export async function GET(request: NextRequest) {
     // Note: We don't add 'excludedSources' or 'includedSources' to allow all liquidity sources
     // This ensures Uniswap V4 pools are accessible
 
-    // Try multiple API endpoints for better route discovery
-    let lastError: any = null
-    let quoteData: any = null
-    
     // Use unified 0x Swap API v2 endpoint
     // Based on 0x documentation: https://0x.org/docs/upgrading/upgrading_to_swap_v2
     const baseUrl = ZEROX_API_BASE_URLS[0] // Use unified endpoint
@@ -99,101 +95,34 @@ export async function GET(request: NextRequest) {
       },
     })
 
-        if (!response.ok) {
-          const errorText = await response.text()
-          let errorData: any = { message: "Unknown error" }
-          
-          try {
-            errorData = JSON.parse(errorText)
-          } catch {
-            errorData = { message: errorText || response.statusText }
-          }
-          
-          console.error(`❌ 0x API error from ${baseUrl}:`, {
-            status: response.status,
-            statusText: response.statusText,
-            error: errorData,
-          })
-          
-          // Handle "no Route matched" error specifically (400 status)
-          if (response.status === 400 && (
-            errorData.reason?.includes("no Route matched") || 
-            errorData.message?.includes("no Route matched") ||
-            errorData.error?.includes("no Route matched")
-          )) {
-            // If this is the last URL, return the error
-            if (baseUrl === ZEROX_API_BASE_URLS[ZEROX_API_BASE_URLS.length - 1]) {
-              return NextResponse.json(
-                { 
-                  error: "Insufficient liquidity for this swap amount. Please try a smaller amount or wait for more liquidity.",
-                  code: "NO_ROUTE_MATCHED"
-                },
-                { status: 400 }
-              )
-            }
-            // Otherwise, try next URL
-            lastError = errorData
-            continue
-          }
-          
-          // Handle v2 API issues array
-          if (errorData.issues && Array.isArray(errorData.issues)) {
-            const errorMessages = errorData.issues
-              .filter((issue: any) => issue.severity === "error")
-              .map((issue: any) => issue.reason)
-              .join(", ")
-            
-            // If this is the last URL, return the error
-            if (baseUrl === ZEROX_API_BASE_URLS[ZEROX_API_BASE_URLS.length - 1]) {
-              return NextResponse.json(
-                { error: `0x API v2 error: ${errorMessages || errorData.reason || errorData.message || response.statusText}` },
-                { status: response.status }
-              )
-            }
-            // Otherwise, try next URL
-            lastError = errorData
-            continue
-          }
-          
-          // If this is the last URL, return the error
-          if (baseUrl === ZEROX_API_BASE_URLS[ZEROX_API_BASE_URLS.length - 1]) {
-            return NextResponse.json(
-              { error: `0x API v2 error: ${errorData.reason || errorData.message || response.statusText}` },
-              { status: response.status }
-            )
-          }
-          
-          // Otherwise, try next URL
-          lastError = errorData
-          continue
-        }
+    if (!response.ok) {
+      const errorText = await response.text()
+      let errorData: any = { message: "Unknown error" }
 
-        // Success - parse and return quote data
-        quoteData = await response.json()
-        console.log(`✅ 0x API v2 Quote received from ${baseUrl}`)
-        break
-      } catch (fetchError: any) {
-        console.error(`❌ Error fetching from ${baseUrl}:`, fetchError)
-        lastError = fetchError
-        
-        // If this is the last URL, throw the error
-        if (baseUrl === ZEROX_API_BASE_URLS[ZEROX_API_BASE_URLS.length - 1]) {
-          throw fetchError
-        }
-        // Otherwise, try next URL
-        continue
+      try {
+        errorData = JSON.parse(errorText)
+      } catch {
+        errorData = { message: errorText || response.statusText }
       }
-    }
 
-    if (!quoteData) {
+      console.error(`❌ 0x API error from ${baseUrl}:`, {
+        status: response.status,
+        statusText: response.statusText,
+        error: errorData,
+      })
+
       return NextResponse.json(
-        { error: "Failed to fetch quote from all 0x API endpoints" },
-        { status: 500 }
+        { error: `0x API v2 error: ${errorData.message || errorData.reason || response.statusText}` },
+        { status: response.status }
       )
     }
 
+    // Success - parse and return quote data
+    const quoteData = await response.json()
+    console.log(`[0x-quote] 0x API v2 quote received successfully`)
+
     // Check for issues in v2 response
-    if (quoteData.issues && quoteData.issues.length > 0) {
+    if (quoteData.issues && Array.isArray(quoteData.issues)) {
       const errors = quoteData.issues.filter((issue: any) => issue.severity === "error")
       if (errors.length > 0) {
         const errorMessages = errors.map((issue: any) => issue.reason).join(", ")
@@ -202,19 +131,21 @@ export async function GET(request: NextRequest) {
           { status: 400 }
         )
       }
-      
+
       // Log warnings if any
       const warnings = quoteData.issues.filter((issue: any) => issue.severity === "warning")
       if (warnings.length > 0) {
-        console.warn("⚠️ 0x API v2 warnings:", warnings.map((w: any) => w.reason).join(", "))
+        console.warn("⚠️ 0x API v2 warnings:", warnings.map((issue: any) => issue.reason))
       }
     }
-    
-    console.log("✅ 0x API v2 Quote received:")
+
+    console.log("✅ 0x Swap API v2 Quote received:")
+    console.log(`  - Chain ID: ${quoteData.chainId}`)
     console.log(`  - Price: ${quoteData.price}`)
     console.log(`  - Buy Amount: ${quoteData.buyAmount}`)
     console.log(`  - Sell Amount: ${quoteData.sellAmount}`)
     console.log(`  - Estimated Price Impact: ${quoteData.estimatedPriceImpact}%`)
+    console.log(`  - Fees:`, quoteData.fees)
 
     // Return quote data
     return NextResponse.json(quoteData)
