@@ -586,7 +586,7 @@ export function useConvertFuel() {
     console.log(`  - User Credit (90% ETH): ${USER_CREDIT_BPS} bps`)
     console.log(`  - Slippage: ${slippagePercentage}%`)
 
-    // Get quote from 0x API v2
+    // Get quote from 0x API v2 with automatic retry on "Insufficient Liquidity"
     let quoteData: ZeroXQuoteResponse
     try {
       quoteData = await get0xQuote(
@@ -594,13 +594,35 @@ export function useConvertFuel() {
         BASE_WETH_ADDRESS as Address,
         swapAmountWei,
         userAddress,
-        slippagePercentage
+        slippagePercentage,
+        true // Enable retry with high slippage
       )
     } catch (error: any) {
-      // Note: "Insufficient Liquidity" errors should be handled by get0xQuote with automatic retry
-      // This function is kept for backward compatibility but the new flow uses get0xQuote directly
-      // Re-throw errors to let the caller handle retry logic
-      throw error
+      // If retry with high slippage also fails, try final fallback with 20% slippage
+      const errorMessage = error.message || ""
+      if (errorMessage.includes("Insufficient liquidity") || 
+          errorMessage.includes("no Route matched") ||
+          errorMessage.includes("NO_ROUTE_MATCHED")) {
+        console.log("🔄 Final attempt with maximum slippage (20%)...")
+        try {
+          quoteData = await get0xQuote(
+            BUMP_TOKEN_ADDRESS as Address,
+            BASE_WETH_ADDRESS as Address,
+            swapAmountWei,
+            userAddress,
+            20, // Maximum slippage
+            false // Don't retry again
+          )
+          console.log("✅ Quote obtained with high slippage mode")
+        } catch (finalError: any) {
+          throw new Error(
+            "Unable to find a route for this swap. Please try a smaller amount or contact support."
+          )
+        }
+      } else {
+        // Re-throw other errors
+        throw error
+      }
     }
 
     // Command 1: PERMIT2_TRANSFER_FROM (0x07) - Pull 5% $BUMP from user, send to Treasury
