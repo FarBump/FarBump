@@ -427,8 +427,9 @@ export function useConvertFuel() {
   }
 
   /**
-   * Get quote from 0x Swap API v2
-   * Uses /swap/v2/quote endpoint for better prices from aggregated liquidity
+   * Get quote from 0x Swap API v2 via Next.js API route (proxy)
+   * Uses /api/0x-quote endpoint to avoid CORS issues
+   * The API route makes the request server-side, avoiding browser CORS restrictions
    */
   const get0xQuote = async (
     sellToken: Address,
@@ -437,23 +438,20 @@ export function useConvertFuel() {
     takerAddress: Address,
     slippagePercentage: number = 0.5
   ): Promise<ZeroXQuoteResponse> => {
-    if (!ZEROX_API_KEY) {
-      throw new Error("0x API key not configured. Please set NEXT_PUBLIC_ZEROX_API_KEY in .env.local")
-    }
-
+    // Build query parameters for our API route
     const queryParams = new URLSearchParams({
       sellToken,
       buyToken,
       sellAmount: sellAmountWei.toString(),
       takerAddress,
       slippagePercentage: slippagePercentage.toString(),
-      enablePermit2: "true",
     })
 
-    const url = `${ZEROX_API_BASE_URL}/swap/v2/quote?${queryParams.toString()}`
+    // Use Next.js API route instead of direct 0x API call (avoids CORS)
+    const url = `/api/0x-quote?${queryParams.toString()}`
     
-    console.log("📊 Fetching 0x Swap API v2 quote...")
-    console.log(`  URL: ${url}`)
+    console.log("📊 Fetching 0x Swap API v2 quote via proxy...")
+    console.log(`  API Route: ${url}`)
     console.log(`  Sell Token: ${sellToken}`)
     console.log(`  Buy Token: ${buyToken}`)
     console.log(`  Sell Amount: ${sellAmountWei.toString()}`)
@@ -462,34 +460,16 @@ export function useConvertFuel() {
     const response = await fetch(url, {
       method: "GET",
       headers: {
-        "0x-api-key": ZEROX_API_KEY,
         "Accept": "application/json",
       },
     })
 
     if (!response.ok) {
-      const errorData = await response.json().catch(() => ({ message: "Unknown error" }))
-      
-      if (errorData.issues && Array.isArray(errorData.issues)) {
-        const errorMessages = errorData.issues
-          .filter((issue: any) => issue.severity === "error")
-          .map((issue: any) => issue.reason)
-          .join(", ")
-        throw new Error(`0x API v2 error: ${errorMessages || errorData.reason || errorData.message || response.statusText}`)
-      }
-      
-      throw new Error(`0x API v2 error: ${errorData.reason || errorData.message || response.statusText}`)
+      const errorData = await response.json().catch(() => ({ error: "Unknown error" }))
+      throw new Error(errorData.error || `0x API v2 error: ${response.statusText}`)
     }
 
     const quoteData: ZeroXQuoteResponse = await response.json()
-    
-    if (quoteData.issues && quoteData.issues.length > 0) {
-      const errors = quoteData.issues.filter(issue => issue.severity === "error")
-      if (errors.length > 0) {
-        const errorMessages = errors.map(issue => issue.reason).join(", ")
-        throw new Error(`0x API v2 issues detected: ${errorMessages}`)
-      }
-    }
     
     console.log("✅ 0x API v2 Quote received:")
     console.log(`  - Price: ${quoteData.price}`)
