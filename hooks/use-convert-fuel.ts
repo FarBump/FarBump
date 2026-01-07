@@ -6,7 +6,6 @@ import { usePublicClient } from "wagmi"
 import { parseUnits, type Address, encodeFunctionData, type Hex } from "viem"
 import {
   BUMP_TOKEN_ADDRESS,
-  BASE_WETH_ADDRESS,
   BUMP_DECIMALS,
 } from "@/lib/constants"
 
@@ -36,19 +35,19 @@ export function useConvertFuel() {
   const [error, setError] = useState<Error | null>(null)
 
   const get0xQuote = async (sellAmountWei: bigint, taker: Address) => {
+    // Kita tidak perlu lagi mengirim buyToken dari sini 
+    // karena backend sudah memaksanya menjadi "ETH"
     const params = new URLSearchParams({
       sellToken: BUMP_TOKEN_ADDRESS,
-      buyToken: BASE_WETH_ADDRESS,
       sellAmount: sellAmountWei.toString(),
-      takerAddress: taker, // Akan dikirim ke API route kita
+      takerAddress: taker,
     });
 
     const res = await fetch(`/api/0x-quote?${params.toString()}`);
     const data = await res.json();
     
     if (!res.ok) {
-      // Menangkap detail error dari 0x (seperti Insufficient Liquidity)
-      throw new Error(data.reason || data.message || "Gagal mendapatkan rute swap");
+      throw new Error(data.error || data.reason || "Gagal mendapatkan rute swap");
     }
     return data;
   }
@@ -64,11 +63,12 @@ export function useConvertFuel() {
       const userAddress = smartWalletClient.account.address as Address;
       const swapAmountWei = parseUnits(amount, BUMP_DECIMALS);
 
-      // 1. Ambil Quote menggunakan jalur AllowanceHolder
+      // 1. Ambil Quote (Backend akan mengembalikan data swap untuk Native ETH)
       const quote = await get0xQuote(swapAmountWei, userAddress);
 
-      // 2. Batch Transaction: Standard Approval + Swap Execution
-      // AllowanceHolder tidak memerlukan Permit2 signature, cukup approval biasa
+      // 2. Batch Transaction melalui Coinbase Paymaster
+      // Call 1: Approve $BUMP ke 0x AllowanceHolder
+      // Call 2: Execute Swap (Native ETH akan masuk ke dompet user)
       const txHash = await smartWalletClient.sendTransaction({
         calls: [
           {
@@ -113,7 +113,6 @@ export function useConvertFuel() {
     isPending, 
     isSuccess, 
     error,
-    // Tetap kembalikan ini agar UI ConfigPanel tidak error jika memanggilnya
     approve: async () => true,
     isApproving: false,
     approvalHash: null
