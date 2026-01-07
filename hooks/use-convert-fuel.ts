@@ -584,7 +584,7 @@ export function useConvertFuel() {
         throw new Error(
           "0x API tidak memiliki route/liquidity untuk token pair ini. " +
           "Kemungkinan: (1) Swap amount terlalu besar, (2) Liquidity tidak cukup, atau (3) Token tidak didukung. " +
-          "Silakan coba dengan amount yang lebih kecil atau hubungi support."
+          "Please try a smaller amount or contact support."
         )
       }
       // Re-throw other errors
