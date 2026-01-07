@@ -452,13 +452,16 @@ export function useConvertFuel() {
    * Get quote from 0x Swap API v2 via Next.js API route (proxy)
    * Uses /api/0x-quote endpoint to avoid CORS issues
    * The API route makes the request server-side, avoiding browser CORS restrictions
+   * 
+   * @param retryWithHighSlippage - If true, will retry with 20% slippage if initial request fails with "Insufficient Liquidity"
    */
   const get0xQuote = async (
     sellToken: Address,
     buyToken: Address,
     sellAmountWei: bigint,
     takerAddress: Address,
-    slippagePercentage: number = 0.5
+    slippagePercentage: number = 0.5,
+    retryWithHighSlippage: boolean = true
   ): Promise<ZeroXQuoteResponse> => {
     // Build query parameters for our API route
     const queryParams = new URLSearchParams({
@@ -511,6 +514,21 @@ export function useConvertFuel() {
         statusText: response.statusText,
         error: errorData,
       })
+      
+      // Handle "Insufficient Liquidity" (400 error) - retry with high slippage if enabled
+      const isInsufficientLiquidity = response.status === 400 && (
+        errorData.error?.includes("Insufficient liquidity") ||
+        errorData.error?.includes("no Route matched") ||
+        errorData.error?.includes("NO_ROUTE_MATCHED") ||
+        errorData.message?.includes("Insufficient liquidity") ||
+        errorData.message?.includes("no Route matched")
+      )
+      
+      if (isInsufficientLiquidity && retryWithHighSlippage) {
+        console.log("⚠️ Insufficient Liquidity detected. Retrying with high slippage (20%)...")
+        // Retry with 20% slippage (high slippage mode)
+        return get0xQuote(sellToken, buyToken, sellAmountWei, takerAddress, 20, false)
+      }
       
       throw new Error(errorData.error || `0x API v2 error: ${response.status} ${response.statusText}`)
     }
@@ -847,42 +865,70 @@ export function useConvertFuel() {
       console.log(`📊 Using dynamic slippage: ${(dynamicSlippage * 100).toFixed(1)}% for $BUMP token`)
 
       // 6. Get 0x API quote with Smart Wallet address as taker
+      // Will automatically retry with high slippage (20%) if "Insufficient Liquidity" error occurs
       setSwapStatus("Fetching quote from 0x API...")
       console.log("📦 Fetching 0x API v2 quote...")
       let quoteData: ZeroXQuoteResponse
+      let usedHighSlippage = false
+      
       try {
         quoteData = await get0xQuote(
           BUMP_TOKEN_ADDRESS as Address,
           BASE_WETH_ADDRESS as Address,
           swapAmountWei,
           userAddress as Address, // Smart Wallet address as taker
-          dynamicSlippage * 100 // Convert to percentage
+          dynamicSlippage * 100, // Convert to percentage
+          true // Enable retry with high slippage
         )
+        
+        // Check if we used high slippage by comparing with original slippage
+        // If estimatedPriceImpact is very high, we likely used high slippage mode
+        const priceImpact = parseFloat(quoteData.estimatedPriceImpact || "0")
+        if (priceImpact > 5 || quoteData.estimatedPriceImpact === undefined) {
+          // Likely used high slippage mode
+          usedHighSlippage = true
+          console.log("⚠️ High slippage mode activated due to liquidity constraints")
+        }
       } catch (error: any) {
-        // Handle 400 error with "no Route matched" specifically
+        // If retry with high slippage also fails, try final fallback
         const errorMessage = error.message || ""
-        const is400Error = errorMessage.includes("400") || errorMessage.includes("Status 400")
-        const isNoRouteError = errorMessage.includes("no Route matched") || 
-                               errorMessage.includes("No liquidity route") ||
-                               errorMessage.includes("NO_ROUTE_MATCHED") ||
-                               errorMessage.includes("Insufficient liquidity")
-        
-        if (is400Error && isNoRouteError) {
-          throw new Error(
-            "Insufficient liquidity for this swap amount. Please try a smaller amount or wait for more liquidity."
-          )
+        if (errorMessage.includes("Insufficient liquidity") || 
+            errorMessage.includes("no Route matched") ||
+            errorMessage.includes("NO_ROUTE_MATCHED")) {
+          // Final fallback: try with maximum slippage (20%)
+          console.log("🔄 Final attempt with maximum slippage (20%)...")
+          setSwapStatus("Retrying with high slippage mode...")
+          try {
+            quoteData = await get0xQuote(
+              BUMP_TOKEN_ADDRESS as Address,
+              BASE_WETH_ADDRESS as Address,
+              swapAmountWei,
+              userAddress as Address,
+              20, // Maximum slippage
+              false // Don't retry again
+            )
+            usedHighSlippage = true
+            console.log("✅ Quote obtained with high slippage mode")
+          } catch (finalError: any) {
+            throw new Error(
+              "Unable to find a route for this swap. Please try a smaller amount or contact support."
+            )
+          }
+        } else {
+          // Re-throw other errors
+          throw error
         }
-        
-        // Handle other "Insufficient Liquidity" errors
-        if (errorMessage.includes("Insufficient Liquidity") || 
-            errorMessage.includes("Insufficient liquidity")) {
-          throw new Error(
-            "Insufficient liquidity for this swap amount. Please try a smaller amount or wait for more liquidity."
-          )
-        }
-        
-        // Re-throw other errors
-        throw error
+      }
+      
+      // 6.5. Check price impact and warn user if very high (> 10%)
+      const priceImpact = parseFloat(quoteData.estimatedPriceImpact || "0")
+      if (priceImpact > 10) {
+        const warningMessage = `Large swap detected. You will experience a significant price impact of ${priceImpact.toFixed(2)}%. Proceeding anyway...`
+        console.warn(`⚠️ ${warningMessage}`)
+        setSwapStatus(warningMessage)
+        // Continue with swap but user is warned
+      } else if (usedHighSlippage) {
+        setSwapStatus("High slippage mode activated. Proceeding with swap...")
       }
 
       // 7. Check for allowance issues in 0x response

@@ -54,6 +54,7 @@ export async function GET(request: NextRequest) {
     // Build query parameters for 0x API
     // IMPORTANT: enablePermit2 is required for efficient token approvals
     // We don't restrict liquidity sources to allow Uniswap V4 to be accessible
+    // includePriceImpact=true to get price impact estimates
     const queryParams = new URLSearchParams({
       sellToken,
       buyToken,
@@ -61,6 +62,7 @@ export async function GET(request: NextRequest) {
       takerAddress,
       slippagePercentage,
       enablePermit2: "true", // Required: Enable Permit2 for efficient approvals
+      includePriceImpact: "true", // Include price impact in response
     })
     
     // Note: We don't add 'excludedSources' or 'includedSources' to allow all liquidity sources
