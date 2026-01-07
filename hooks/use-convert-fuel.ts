@@ -582,9 +582,7 @@ export function useConvertFuel() {
       // If 0x API doesn't have a route, provide helpful error message
       if (error.message?.includes("no Route matched") || error.message?.includes("No liquidity route")) {
         throw new Error(
-          "0x API tidak memiliki route/liquidity untuk token pair ini. " +
-          "Kemungkinan: (1) Swap amount terlalu besar, (2) Liquidity tidak cukup, atau (3) Token tidak didukung. " +
-          "Please try a smaller amount or contact support."
+          "Insufficient liquidity for this swap amount. Please try a smaller amount or wait for more liquidity."
         )
       }
       // Re-throw other errors
