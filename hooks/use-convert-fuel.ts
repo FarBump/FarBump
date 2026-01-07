@@ -38,48 +38,43 @@ export function useConvertFuel() {
   const [isPending, setIsPending] = useState(false)
   const [isSuccess, setIsSuccess] = useState(false)
   const [error, setError] = useState<Error | null>(null)
-  const [swapStatus, setSwapStatus] = useState<string>("")
 
-  // --- Fungsi Internal untuk Quote ---
-  const get0xQuote = async (
-    sellToken: Address,
-    buyToken: Address,
-    sellAmountWei: bigint,
-    takerAddress: Address,
-    slippage: number = 3
-  ) => {
+  const get0xQuote = async (sellAmountWei: bigint, taker: Address) => {
     const params = new URLSearchParams({
-      sellToken,
-      buyToken,
+      sellToken: BUMP_TOKEN_ADDRESS,
+      buyToken: BASE_WETH_ADDRESS,
       sellAmount: sellAmountWei.toString(),
-      takerAddress,
-      slippagePercentage: slippage.toString(),
-    })
-    const res = await fetch(`/api/0x-quote?${params.toString()}`)
-    const data = await res.json()
-    if (!res.ok) throw new Error(data.error || "Gagal ambil quote")
-    return data
+      takerAddress: taker,
+    });
+
+    const res = await fetch(`/api/0x-quote?${params.toString()}`);
+    const data = await res.json();
+    
+    if (!res.ok) {
+      throw new Error(data.message || data.reason || "Gagal mengambil rute swap v4");
+    }
+    return data;
   }
 
-  // --- Fungsi Utama yang dipanggil ConfigPanel ---
   const convert = async (amount: string) => {
     setIsPending(true)
     setIsSuccess(false)
     setError(null)
-    setSwapStatus("Mempersiapkan transaksi...")
 
     try {
-      if (!smartWalletClient || !publicClient) throw new Error("Wallet tidak terhubung")
+      if (!smartWalletClient || !publicClient) throw new Error("Wallet tidak terhubung");
 
-      const userAddress = smartWalletClient.account.address as Address
-      const totalAmountWei = parseUnits(amount, BUMP_DECIMALS)
-      const treasuryFeeWei = (totalAmountWei * BigInt(TREASURY_FEE_BPS)) / BigInt(10000)
-      const swapAmountWei = totalAmountWei - treasuryFeeWei
+      const userAddress = smartWalletClient.account.address as Address;
+      const totalAmountWei = parseUnits(amount, BUMP_DECIMALS);
+      
+      // Hitung fee treasury
+      const treasuryFeeWei = (totalAmountWei * BigInt(TREASURY_FEE_BPS)) / BigInt(10000);
+      const swapAmountWei = totalAmountWei - treasuryFeeWei;
 
-      // Ambil rute swap dari 0x
-      const quote = await get0xQuote(BUMP_TOKEN_ADDRESS as Address, BASE_WETH_ADDRESS as Address, swapAmountWei, userAddress)
+      // 1. Ambil Quote v2 (Uniswap v4 support)
+      const quote = await get0xQuote(swapAmountWei, userAddress);
 
-      // Jalankan Permit2 + Swap dalam satu Batch
+      // 2. Kirim Batch Transaction (Permit2 + Swap)
       const txHash = await smartWalletClient.sendTransaction({
         calls: [
           {
@@ -96,44 +91,42 @@ export function useConvertFuel() {
             value: BigInt(quote.transaction.value || "0"),
           }
         ] as any
-      })
+      });
 
-      setHash(txHash)
-      setIsSuccess(true)
-      return txHash
+      setHash(txHash);
+      setIsSuccess(true);
+      return txHash;
     } catch (err: any) {
-      setError(err)
-      throw err
+      console.error("Convert Error:", err);
+      setError(err);
+      throw err;
     } finally {
-      setIsPending(false)
+      setIsPending(false);
     }
   }
 
-  // --- Mock Functions agar ConfigPanel tidak Error ---
-  // Karena kita menggunakan Batch Call, kita tidak butuh step approve terpisah.
-  // Tapi ConfigPanel memanggilnya, jadi kita buat fungsi "kosong" yang langsung sukses.
-  const approve = async (amount: string) => {
-    console.log("Batch mode: Approval will be handled inside convert().")
-    return true 
+  // Mock function untuk ConfigPanel agar flow UI tidak rusak
+  const approve = async () => {
+    console.log("Uniswap v4: Approval handled via Permit2 in Batch.");
+    return true;
   }
 
   const reset = () => {
-    setHash(null)
-    setIsPending(false)
-    setIsSuccess(false)
-    setError(null)
+    setHash(null);
+    setIsPending(false);
+    setIsSuccess(false);
+    setError(null);
   }
 
   return { 
     convert, 
-    approve, // Dibutuhkan oleh ConfigPanel
+    approve, 
     reset,
     hash, 
-    approvalHash: null, // Dibutuhkan oleh ConfigPanel (null karena batch)
+    approvalHash: null,
     isPending, 
-    isApproving: false, // Dibutuhkan oleh ConfigPanel
+    isApproving: false, 
     isSuccess, 
-    error, 
-    swapStatus 
+    error 
   }
 }
