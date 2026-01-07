@@ -4,71 +4,54 @@ import { useState } from "react"
 import { useSmartWallets } from "@privy-io/react-auth/smart-wallets"
 import { usePublicClient } from "wagmi"
 import { parseUnits, type Address, encodeFunctionData, type Hex } from "viem"
-import {
-  BUMP_TOKEN_ADDRESS,
-  BUMP_DECIMALS,
-} from "@/lib/constants"
+import { BUMP_TOKEN_ADDRESS, BUMP_DECIMALS } from "@/lib/constants"
 
-// Alamat Spender Resmi 0x v2 (AllowanceHolder) untuk jaringan Base
 const ZEROX_ALLOWANCE_HOLDER = "0x0000000000001fF3684f28c67538d4D072C22734";
+const WETH_ADDRESS = "0x0000000000000000000000000000000000000000"; // Placeholder untuk Native
+const BASE_WETH_CONTRACT = "0x4200000000000000000000000000000000000006";
 
-const ERC20_ABI = [
-  {
-    inputs: [
-      { name: "spender", type: "address" },
-      { name: "amount", type: "uint256" },
-    ],
-    name: "approve",
-    outputs: [{ name: "", type: "bool" }],
-    stateMutability: "nonpayable",
-    type: "function",
-  },
-] as const;
+const ERC20_ABI = [{
+  inputs: [{ name: "spender", type: "address" }, { name: "amount", type: "uint256" }],
+  name: "approve", outputs: [{ name: "", type: "bool" }],
+  stateMutability: "nonpayable", type: "function",
+}] as const;
+
+const WETH_ABI = [{
+  inputs: [{ name: "wad", type: "uint256" }],
+  name: "withdraw", outputs: [],
+  stateMutability: "nonpayable", type: "function",
+}] as const;
 
 export function useConvertFuel() {
   const { client: smartWalletClient } = useSmartWallets()
   const publicClient = usePublicClient()
-  
   const [hash, setHash] = useState<Hex | null>(null)
   const [isPending, setIsPending] = useState(false)
   const [isSuccess, setIsSuccess] = useState(false)
   const [error, setError] = useState<Error | null>(null)
 
   const get0xQuote = async (sellAmountWei: bigint, taker: Address) => {
-    // Kita tidak perlu lagi mengirim buyToken dari sini 
-    // karena backend sudah memaksanya menjadi "ETH"
     const params = new URLSearchParams({
       sellToken: BUMP_TOKEN_ADDRESS,
       sellAmount: sellAmountWei.toString(),
       takerAddress: taker,
     });
-
     const res = await fetch(`/api/0x-quote?${params.toString()}`);
     const data = await res.json();
-    
-    if (!res.ok) {
-      throw new Error(data.error || data.reason || "Gagal mendapatkan rute swap");
-    }
+    if (!res.ok) throw new Error(data.error || "Gagal mendapatkan quote");
     return data;
   }
 
   const convert = async (amount: string) => {
-    setIsPending(true)
-    setIsSuccess(false)
-    setError(null)
-
+    setIsPending(true); setIsSuccess(false); setError(null);
     try {
       if (!smartWalletClient || !publicClient) throw new Error("Wallet tidak terhubung");
-
       const userAddress = smartWalletClient.account.address as Address;
       const swapAmountWei = parseUnits(amount, BUMP_DECIMALS);
 
-      // 1. Ambil Quote (Backend akan mengembalikan data swap untuk Native ETH)
       const quote = await get0xQuote(swapAmountWei, userAddress);
 
-      // 2. Batch Transaction melalui Coinbase Paymaster
-      // Call 1: Approve $BUMP ke 0x AllowanceHolder
-      // Call 2: Execute Swap (Native ETH akan masuk ke dompet user)
+      // Eksekusi Batch: Approve -> Swap -> Unwrap
       const txHash = await smartWalletClient.sendTransaction({
         calls: [
           {
@@ -83,6 +66,14 @@ export function useConvertFuel() {
             to: quote.transaction.to as Address,
             data: quote.transaction.data as Hex,
             value: BigInt(quote.transaction.value || "0"),
+          },
+          {
+            to: BASE_WETH_CONTRACT as Address,
+            data: encodeFunctionData({
+              abi: WETH_ABI,
+              functionName: "withdraw",
+              args: [BigInt(quote.buyAmount)], // Ambil semua hasil swap WETH untuk dijadikan ETH
+            }),
           }
         ] as any
       });
@@ -91,7 +82,7 @@ export function useConvertFuel() {
       setIsSuccess(true);
       return txHash;
     } catch (err: any) {
-      console.error("Convert Flow Error:", err);
+      console.error(err);
       setError(err);
       throw err;
     } finally {
@@ -99,22 +90,5 @@ export function useConvertFuel() {
     }
   }
 
-  const reset = () => {
-    setHash(null);
-    setIsPending(false);
-    setIsSuccess(false);
-    setError(null);
-  }
-
-  return { 
-    convert, 
-    reset,
-    hash, 
-    isPending, 
-    isSuccess, 
-    error,
-    approve: async () => true,
-    isApproving: false,
-    approvalHash: null
-  }
+  return { convert, reset: () => { setHash(null); setIsSuccess(false); setError(null); }, hash, isPending, isSuccess, error };
 }
