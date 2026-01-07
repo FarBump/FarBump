@@ -1,5 +1,9 @@
 import { NextRequest, NextResponse } from "next/server"
 
+// Force dynamic rendering for this route
+export const dynamic = 'force-dynamic'
+export const runtime = 'nodejs'
+
 // 0x API v2 Configuration
 const ZEROX_API_BASE_URL = "https://base.api.0x.org"
 const ZEROX_API_KEY = process.env.NEXT_PUBLIC_ZEROX_API_KEY || process.env.ZEROX_API_KEY || ""

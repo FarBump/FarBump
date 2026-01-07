@@ -447,11 +447,16 @@ export function useConvertFuel() {
       slippagePercentage: slippagePercentage.toString(),
     })
 
-    // Use Next.js API route instead of direct 0x API call (avoids CORS)
-    const url = `/api/0x-quote?${queryParams.toString()}`
+    // Use absolute URL if available (for production), otherwise use relative URL
+    const baseUrl = typeof window !== "undefined" 
+      ? (process.env.NEXT_PUBLIC_APP_URL || window.location.origin)
+      : ""
+    const apiPath = `/api/0x-quote?${queryParams.toString()}`
+    const url = baseUrl ? `${baseUrl}${apiPath}` : apiPath
     
     console.log("📊 Fetching 0x Swap API v2 quote via proxy...")
     console.log(`  API Route: ${url}`)
+    console.log(`  Base URL: ${baseUrl || "relative"}`)
     console.log(`  Sell Token: ${sellToken}`)
     console.log(`  Buy Token: ${buyToken}`)
     console.log(`  Sell Amount: ${sellAmountWei.toString()}`)
@@ -465,8 +470,22 @@ export function useConvertFuel() {
     })
 
     if (!response.ok) {
-      const errorData = await response.json().catch(() => ({ error: "Unknown error" }))
-      throw new Error(errorData.error || `0x API v2 error: ${response.statusText}`)
+      const errorText = await response.text()
+      let errorData: any = { error: "Unknown error" }
+      
+      try {
+        errorData = JSON.parse(errorText)
+      } catch {
+        errorData = { error: errorText || response.statusText }
+      }
+      
+      console.error("❌ 0x API proxy error:", {
+        status: response.status,
+        statusText: response.statusText,
+        error: errorData,
+      })
+      
+      throw new Error(errorData.error || `0x API v2 error: ${response.status} ${response.statusText}`)
     }
 
     const quoteData: ZeroXQuoteResponse = await response.json()
