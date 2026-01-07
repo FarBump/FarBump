@@ -4,13 +4,12 @@ import { NextRequest, NextResponse } from "next/server"
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
 
-// 0x API v2 Configuration
+// 0x API v2 Configuration (per 0x Protocol documentation)
 // IMPORTANT: API key is server-side only for security
 // Use ZEROX_API_KEY (not NEXT_PUBLIC_ZEROX_API_KEY) to prevent exposure to client
-// Try base.api.0x.org first, fallback to api.0x.org if needed for V4 routes
+// For Swap API v2, use unified endpoint with chainId parameter
 const ZEROX_API_BASE_URLS = [
-  "https://base.api.0x.org",
-  "https://api.0x.org", // Fallback for better V4 route discovery
+  "https://api.0x.org", // Unified endpoint for all chains (Swap API v2)
 ]
 const ZEROX_API_KEY = process.env.ZEROX_API_KEY || ""
 
@@ -57,13 +56,12 @@ export async function GET(request: NextRequest) {
       )
     }
 
-    // Build query parameters for 0x API
-    // IMPORTANT: enablePermit2 is required for efficient token approvals
+    // Build query parameters for 0x Swap API v2
+    // Based on 0x Protocol documentation: https://0x.org/docs/upgrading/upgrading_to_swap_v2
+    // IMPORTANT: Swap API v2 uses unified endpoint with chainId parameter
     // We don't restrict liquidity sources to allow Uniswap V4 to be accessible
-    // includePriceImpact=true to get price impact estimates
-    // intentOnFill=true: Indicates intent to fill the quote (required for Settler contract)
-    // enableSlippageProtection=false: Disable slippage protection to allow higher slippage for large swaps
     const queryParams = new URLSearchParams({
+      chainId: "8453", // Base network chain ID
       sellToken,
       buyToken,
       sellAmount,
@@ -71,8 +69,6 @@ export async function GET(request: NextRequest) {
       slippagePercentage,
       enablePermit2: "true", // Required: Enable Permit2 for efficient approvals
       includePriceImpact: "true", // Include price impact in response
-      intentOnFill: "true", // Required: Indicates intent to fill the quote (for Settler contract)
-      enableSlippageProtection: "false", // Disable slippage protection for large swaps
     })
     
     // Note: We don't add 'excludedSources' or 'includedSources' to allow all liquidity sources
