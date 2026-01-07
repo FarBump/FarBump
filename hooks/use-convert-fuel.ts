@@ -504,13 +504,16 @@ export function useConvertFuel() {
    * Create swap transaction using 0x API v2 (better prices from aggregated liquidity)
    * 
    * Process:
-   * 1. PERMIT2_TRANSFER_FROM (0x07): Transfer 5% $BUMP to Treasury
+   * 1. PERMIT2_TRANSFER_FROM (0x07): Transfer 5% $BUMP to Treasury (TREASURY_FEE_BPS = 500)
    * 2. Execute 0x Swap: Swap 95% $BUMP to WETH using 0x API v2 (better prices)
    * 3. UNWRAP_WETH (0x0c): Unwrap WETH to Native ETH
-   * 4. PAY_PORTION (0x06): Send 5% ETH to Treasury
-   * 5. SWEEP (0x04): Send remaining 90% ETH to User
+   * 4. PAY_PORTION (0x06): Send 5% ETH to Treasury/App (APP_FEE_BPS = 500)
+   * 5. SWEEP (0x04): Send remaining 90% ETH to User Credit (USER_CREDIT_BPS = 9000)
    *
-   * Distribution maintained: 5% Treasury, 95% User (90% after 5% Treasury fee)
+   * Distribution:
+   * - 5% $BUMP → Treasury (TREASURY_FEE_BPS = 500)
+   * - 5% ETH → Treasury/App (APP_FEE_BPS = 500)
+   * - 90% ETH → User Credit (USER_CREDIT_BPS = 9000)
    */
   const create0xSwapTransaction = async (
     totalBumpWei: bigint,
@@ -523,14 +526,20 @@ export function useConvertFuel() {
     permit2Approval: { to: Address; data: Hex; value: bigint };
     zeroXSwapTransaction: { to: Address; data: Hex; value: bigint };
   }> => {
-    // Calculate amounts (maintain distribution: 5% Treasury, 95% User)
+    // Calculate amounts according to correct distribution:
+    // - 5% $BUMP → Treasury (TREASURY_FEE_BPS = 500)
+    // - 95% $BUMP → Swap to WETH
+    // - 5% ETH → Treasury/App (APP_FEE_BPS = 500)
+    // - 90% ETH → User Credit (USER_CREDIT_BPS = 9000)
     const treasuryFeeWei = (totalBumpWei * BigInt(TREASURY_FEE_BPS)) / BigInt(10000)
     const swapAmountWei = totalBumpWei - treasuryFeeWei // 95% of total
 
     console.log("🚀 Using 0x API v2 for better swap prices:")
     console.log(`  - Total Amount: ${totalBumpWei.toString()} $BUMP`)
-    console.log(`  - Treasury Fee (5%): ${treasuryFeeWei.toString()} $BUMP`)
-    console.log(`  - Swap Amount (95%): ${swapAmountWei.toString()} $BUMP`)
+    console.log(`  - Treasury Fee (5% $BUMP): ${treasuryFeeWei.toString()} $BUMP`)
+    console.log(`  - Swap Amount (95% $BUMP): ${swapAmountWei.toString()} $BUMP`)
+    console.log(`  - App Fee (5% ETH): ${APP_FEE_BPS} bps`)
+    console.log(`  - User Credit (90% ETH): ${USER_CREDIT_BPS} bps`)
     console.log(`  - Slippage: ${slippagePercentage}%`)
 
     // Get quote from 0x API v2
@@ -556,20 +565,21 @@ export function useConvertFuel() {
       BigInt(0) // amountMin = 0 (minimal slippage)
     )
 
-    // Command 3: PAY_PORTION (0x06) - Send 5% (from total initial amount) of ETH to Treasury
-    // Since we swap 95% of total, and we want 5% of total initial in ETH:
+    // Command 3: PAY_PORTION (0x06) - Send 5% ETH to Treasury/App (APP_FEE_BPS = 500)
+    // Since we swap 95% of total $BUMP, and we want 5% of total initial in ETH:
     // 5% of total = 5% / 95% = 5.263% of swap result
-    const payPortionBips = Math.floor((TREASURY_FEE_BPS * 10000) / (10000 - TREASURY_FEE_BPS)) // ~526 bips
+    // Formula: (APP_FEE_BPS * 10000) / (10000 - TREASURY_FEE_BPS) = (500 * 10000) / 9500 = ~526 bips
+    const payPortionBips = Math.floor((APP_FEE_BPS * 10000) / (10000 - TREASURY_FEE_BPS)) // ~526 bips (5% of total = 5.263% of swap result)
     const payPortionInput = encodePayPortionCommand(
       "0x0000000000000000000000000000000000000000" as Address, // Native ETH (address(0))
-      treasuryAddress,
+      treasuryAddress, // Treasury/App address
       payPortionBips
     )
 
-    // Command 4: SWEEP (0x04) - Send remaining 90% native ETH to user
+    // Command 4: SWEEP (0x04) - Send remaining 90% ETH to User Credit (USER_CREDIT_BPS = 9000)
     const sweepInput = encodeSweepCommand(
       "0x0000000000000000000000000000000000000000" as Address, // Native ETH (address(0))
-      userAddress,
+      userAddress, // User receives 90% as credit
       BigInt(0) // amountMin = 0 (minimal slippage, sweep all)
     )
 
@@ -580,10 +590,10 @@ export function useConvertFuel() {
 
     // Inputs array for Universal Router commands
     const inputs: Hex[] = [
-      permit2TransferInput,  // Command 1: PERMIT2_TRANSFER_FROM (0x07) - 5% $BUMP to Treasury
+      permit2TransferInput,  // Command 1: PERMIT2_TRANSFER_FROM (0x07) - 5% $BUMP to Treasury (TREASURY_FEE_BPS)
       unwrapInput,           // Command 2: UNWRAP_WETH (0x0c) - Unwrap WETH to Native ETH
-      payPortionInput,       // Command 3: PAY_PORTION (0x06) - 5% ETH to Treasury
-      sweepInput,            // Command 4: SWEEP (0x04) - 90% ETH to User
+      payPortionInput,       // Command 3: PAY_PORTION (0x06) - 5% ETH to Treasury/App (APP_FEE_BPS)
+      sweepInput,            // Command 4: SWEEP (0x04) - 90% ETH to User Credit (USER_CREDIT_BPS)
     ]
 
     // Permit2 approval for 0x Settler contract (from quote response)
@@ -751,16 +761,21 @@ export function useConvertFuel() {
 
       const totalAmountWei = parseUnits(amount, BUMP_DECIMALS)
 
-      // 3. Calculate amounts
-      // 5% to treasury (in $BUMP)
+      // 3. Calculate amounts according to correct distribution:
+      // - 5% $BUMP → Treasury (TREASURY_FEE_BPS = 500)
+      // - 95% $BUMP → Swap to WETH
+      // - 5% ETH → Treasury/App (APP_FEE_BPS = 500)
+      // - 90% ETH → User Credit (USER_CREDIT_BPS = 9000)
       const treasuryFeeWei = (totalAmountWei * BigInt(TREASURY_FEE_BPS)) / BigInt(10000)
-      // 95% to swap (in $BUMP)
       const swapAmountWei = totalAmountWei - treasuryFeeWei
 
       console.log("🔄 Starting Convert $BUMP to Credit...")
       console.log(`💰 Total Amount: ${amount} $BUMP`)
-      console.log(`📤 Treasury Fee (5%): ${treasuryFeeWei.toString()} wei`)
-      console.log(`💱 Swap Amount (95%): ${swapAmountWei.toString()} wei`)
+      console.log(`📤 Treasury Fee (5% $BUMP): ${treasuryFeeWei.toString()} wei`)
+      console.log(`💱 Swap Amount (95% $BUMP): ${swapAmountWei.toString()} wei`)
+      console.log(`📊 Distribution after swap:`)
+      console.log(`   - 5% ETH → Treasury/App (APP_FEE_BPS = ${APP_FEE_BPS})`)
+      console.log(`   - 90% ETH → User Credit (USER_CREDIT_BPS = ${USER_CREDIT_BPS})`)
 
       // 4. Verify ERC20 approval to Permit2 before swap
       // User must have approved $BUMP to Permit2 first
@@ -794,10 +809,10 @@ export function useConvertFuel() {
       console.log("  Step 1: Permit2.approve() - Authorize 0x Settler contract")
       console.log("  Step 2: 0x Settler.execute() - Swap 95% $BUMP to WETH (using 0x API v2)")
       console.log("  Step 3: UniversalRouter.execute() - ETH distribution")
-      console.log(`    - PERMIT2_TRANSFER_FROM (0x07): 5% $BUMP to Treasury`)
+      console.log(`    - PERMIT2_TRANSFER_FROM (0x07): 5% $BUMP to Treasury (TREASURY_FEE_BPS = ${TREASURY_FEE_BPS})`)
       console.log(`    - UNWRAP_WETH (0x0c): Unwrap WETH to Native ETH`)
-      console.log(`    - PAY_PORTION (0x06): 5% ETH to Treasury`)
-      console.log(`    - SWEEP (0x04): 90% ETH to User`)
+      console.log(`    - PAY_PORTION (0x06): 5% ETH to Treasury/App (APP_FEE_BPS = ${APP_FEE_BPS})`)
+      console.log(`    - SWEEP (0x04): 90% ETH to User Credit (USER_CREDIT_BPS = ${USER_CREDIT_BPS})`)
       console.log(`📋 Universal Router Commands: ${commands}`)
       
       // 6. Prepare Universal Router execute call
