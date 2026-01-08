@@ -29,16 +29,31 @@ interface BotLiveActivityProps {
  */
 export function BotLiveActivity({ userAddress, enabled = true }: BotLiveActivityProps) {
   // Get bot session for active status FIRST (before using it in other hooks)
+  // Always call hook to maintain hook order (React Rules of Hooks)
   const { session } = useBotSession(userAddress)
+
+  // Determine if bot is actually running
+  const isBotRunning = enabled && !!userAddress && !!session && session.status === "running"
 
   // Get bot wallets for wallet labels
   // Only fetch when bot is actually active to avoid unnecessary API calls
-  const { data: botWallets, isLoading: isLoadingWallets } = useBotWallets({
+  // Always call hook to maintain hook order (React Rules of Hooks)
+  const { 
+    data: botWallets, 
+    isLoading: isLoadingWallets,
+    error: walletsError 
+  } = useBotWallets({
     userAddress,
-    enabled: enabled && !!userAddress && !!session && session.status === "running",
+    enabled: isBotRunning,
   })
+  
+  // Log errors but don't crash the component
+  if (walletsError) {
+    console.error("⚠️ Error loading bot wallets:", walletsError)
+  }
 
   // Get bot logs with realtime subscription
+  // Always call hook to maintain hook order (React Rules of Hooks)
   const { logs, isLoading: isLoadingLogs } = useBotLogs({
     userAddress,
     enabled: enabled && !!userAddress,
@@ -46,6 +61,7 @@ export function BotLiveActivity({ userAddress, enabled = true }: BotLiveActivity
   })
 
   // Get credit balance for aggregated status
+  // Always call hook to maintain hook order (React Rules of Hooks)
   const { data: creditData } = useCreditBalance(userAddress, {
     enabled: enabled && !!userAddress,
   })
@@ -59,6 +75,11 @@ export function BotLiveActivity({ userAddress, enabled = true }: BotLiveActivity
   const activeWalletsCount = botWallets?.length || 0
   const totalWallets = 5
 
+  // Don't render if not enabled (but hooks are still called to maintain order)
+  if (!enabled || !userAddress) {
+    return null
+  }
+
   return (
     <Card className="glass-card border-border p-4">
       <div className="mb-4 flex items-center justify-between">
@@ -66,7 +87,7 @@ export function BotLiveActivity({ userAddress, enabled = true }: BotLiveActivity
           <Activity className="h-4 w-4 text-primary" />
           <h2 className="text-sm font-semibold text-foreground">Live Activity</h2>
         </div>
-        {session?.status === "running" && (
+        {isBotRunning && (
           <Badge variant="default" className="animate-pulse">
             Active
           </Badge>
@@ -104,7 +125,7 @@ export function BotLiveActivity({ userAddress, enabled = true }: BotLiveActivity
         ) : logs.length === 0 ? (
           <div className="flex h-full items-center justify-center p-8">
             <p className="text-center text-sm text-muted-foreground">
-              {enabled
+              {isBotRunning
                 ? "Waiting for bot transactions..."
                 : "No activity yet. Start bumping to see live transactions."}
             </p>

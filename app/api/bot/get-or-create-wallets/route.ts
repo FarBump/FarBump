@@ -93,7 +93,12 @@ export async function POST(request: NextRequest) {
           } as any) // Type assertion to bypass TypeScript type checking (signer is valid parameter)
         } catch (accountError: any) {
           console.error(`❌ Error creating Smart Account for wallet ${i + 1}:`, accountError)
-          throw new Error(`Failed to create Smart Account ${i + 1}: ${accountError.message || accountError}`)
+          console.error(`   Error type: ${accountError?.constructor?.name || typeof accountError}`)
+          console.error(`   Error message: ${accountError?.message || String(accountError)}`)
+          console.error(`   Error stack: ${accountError?.stack || "No stack trace"}`)
+          throw new Error(
+            `Failed to create Smart Account ${i + 1}: ${accountError?.message || String(accountError)}`
+          )
         }
 
         // Encrypt private key before storage
@@ -109,8 +114,14 @@ export async function POST(request: NextRequest) {
       }
     } catch (walletGenError: any) {
       console.error("❌ Error generating bot wallets:", walletGenError)
+      console.error("   Error type:", walletGenError?.constructor?.name || typeof walletGenError)
+      console.error("   Error message:", walletGenError?.message || String(walletGenError))
+      console.error("   Error stack:", walletGenError?.stack || "No stack trace")
       return NextResponse.json(
-        { error: `Failed to generate bot wallets: ${walletGenError.message || "Unknown error"}` },
+        { 
+          error: `Failed to generate bot wallets: ${walletGenError?.message || "Unknown error"}`,
+          details: process.env.NODE_ENV === "development" ? walletGenError?.stack : undefined
+        },
         { status: 500 }
       )
     }
@@ -144,8 +155,14 @@ export async function POST(request: NextRequest) {
     })
   } catch (error: any) {
     console.error("❌ Error in get-or-create-wallets:", error)
+    console.error("   Error type:", error?.constructor?.name || typeof error)
+    console.error("   Error message:", error?.message || String(error))
+    console.error("   Error stack:", error?.stack || "No stack trace")
     return NextResponse.json(
-      { error: error.message || "Internal server error" },
+      { 
+        error: error?.message || "Internal server error",
+        details: process.env.NODE_ENV === "development" ? error?.stack : undefined
+      },
       { status: 500 }
     )
   }

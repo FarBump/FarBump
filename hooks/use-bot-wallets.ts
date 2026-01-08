@@ -24,24 +24,34 @@ export function useBotWallets({ userAddress, enabled = true }: UseBotWalletsOpti
         throw new Error("User address is required")
       }
 
-      const response = await fetch("/api/bot/get-or-create-wallets", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ userAddress }),
-      })
+      try {
+        const response = await fetch("/api/bot/get-or-create-wallets", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ userAddress }),
+        })
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}))
-        throw new Error(errorData.error || "Failed to get bot wallets")
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}))
+          const errorMessage = errorData.error || `Failed to get bot wallets (${response.status})`
+          console.error("❌ Error fetching bot wallets:", errorMessage, errorData)
+          throw new Error(errorMessage)
+        }
+
+        const data = await response.json()
+        return data.wallets as BotWallet[]
+      } catch (error: any) {
+        console.error("❌ Error in useBotWallets queryFn:", error)
+        // Re-throw to let React Query handle it
+        throw error
       }
-
-      const data = await response.json()
-      return data.wallets as BotWallet[]
     },
     enabled: enabled && !!userAddress,
     staleTime: 5 * 60 * 1000, // Cache for 5 minutes (wallets are permanent)
+    retry: 2, // Retry up to 2 times on failure
+    retryDelay: 1000, // Wait 1 second between retries
   })
 }
 

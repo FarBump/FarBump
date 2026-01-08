@@ -748,10 +748,11 @@ export default function BumpBotDashboard() {
               buyAmountUsd={buyAmountUsd}
             />
             {/* Bot Live Activity - Realtime feed from bot_logs table */}
-            {/* Temporarily disabled to prevent infinite loop - will re-enable after fixing */}
-            {isActive && session?.status === "running" && (
-              <BotLiveActivity userAddress={privySmartWalletAddress} enabled={true} />
-            )}
+            {/* Always render to maintain hook order, but conditionally enable */}
+            <BotLiveActivity 
+              userAddress={privySmartWalletAddress} 
+              enabled={isActive && session?.status === "running"} 
+            />
           </TabsContent>
 
           <TabsContent value="history" className="mt-4">
