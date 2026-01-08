@@ -10,13 +10,11 @@ export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
 
 // Initialize public client for Base
-// Create client inside function to ensure it's properly initialized
-function getPublicClient() {
-  return createPublicClient({
-    chain: base,
-    transport: http(process.env.NEXT_PUBLIC_BASE_RPC_URL || "https://mainnet.base.org"),
-  })
-}
+// Use module-level constant like in execute-swap for consistency
+const publicClient = createPublicClient({
+  chain: base,
+  transport: http(process.env.NEXT_PUBLIC_BASE_RPC_URL || "https://mainnet.base.org"),
+})
 
 interface BotWallet {
   ownerPrivateKey: string // Encrypted
@@ -88,15 +86,12 @@ export async function POST(request: NextRequest) {
         const factoryAddress = "0x9406Cc6185a346906296840746125a0E44976454" as Address
         
         try {
-          // Get fresh public client instance
-          const client = getPublicClient()
-          
           // Validate that all required values are defined
-          if (!client) {
-            throw new Error("client is not defined")
+          if (!publicClient) {
+            throw new Error("publicClient is not defined")
           }
-          if (!client.chain) {
-            throw new Error("client.chain is not defined")
+          if (!publicClient.chain) {
+            throw new Error("publicClient.chain is not defined")
           }
           if (!ownerAccount) {
             throw new Error("ownerAccount is not defined")
@@ -108,25 +103,23 @@ export async function POST(request: NextRequest) {
             throw new Error("factoryAddress is not defined")
           }
           
-          // Create entryPoint object with proper structure
-          const entryPoint = {
-            address: entryPointAddress,
-            version: "0.6" as const,
-          }
-          
           console.log(`  Creating Smart Account ${i + 1} with:`)
-          console.log(`    - Chain: ${client.chain.name} (ID: ${client.chain.id})`)
-          console.log(`    - EntryPoint: ${entryPoint.address} (v${entryPoint.version})`)
+          console.log(`    - Chain: ${publicClient.chain.name} (ID: ${publicClient.chain.id})`)
+          console.log(`    - EntryPoint: ${entryPointAddress} (v0.6)`)
           console.log(`    - Factory: ${factoryAddress}`)
           console.log(`    - Index: ${i}`)
           
+          // Use exact same pattern as execute-swap
           account = await toSimpleSmartAccount({
-            client: client,
+            client: publicClient,
             signer: ownerAccount,
-            entryPoint: entryPoint,
+            entryPoint: {
+              address: entryPointAddress,
+              version: "0.6",
+            },
             factoryAddress: factoryAddress,
             index: BigInt(i),
-          } as any) // Type assertion needed for permissionless.js compatibility
+          } as any) // Type assertion to bypass TypeScript type checking (signer is valid parameter)
           
           if (!account || !account.address) {
             throw new Error("Account creation returned invalid result")
@@ -138,12 +131,12 @@ export async function POST(request: NextRequest) {
           console.error(`   Error stack: ${accountError?.stack || "No stack trace"}`)
           
           // Log additional debugging info
-          const client = getPublicClient()
           console.error(`   Debug info:`)
-          console.error(`     - client: ${!!client}`)
-          console.error(`     - client.chain: ${!!client?.chain}`)
-          console.error(`     - client.chain.name: ${client?.chain?.name || "undefined"}`)
+          console.error(`     - publicClient: ${!!publicClient}`)
+          console.error(`     - publicClient.chain: ${!!publicClient?.chain}`)
+          console.error(`     - publicClient.chain.name: ${publicClient?.chain?.name || "undefined"}`)
           console.error(`     - ownerAccount: ${!!ownerAccount}`)
+          console.error(`     - ownerAccount.address: ${ownerAccount?.address || "undefined"}`)
           console.error(`     - entryPointAddress: ${entryPointAddress || "undefined"}`)
           console.error(`     - factoryAddress: ${factoryAddress || "undefined"}`)
           

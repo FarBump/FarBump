@@ -36,7 +36,7 @@ export function BotLiveActivity({ userAddress, enabled = true }: BotLiveActivity
   const isBotRunning = enabled && !!userAddress && !!session && session.status === "running"
 
   // Get bot wallets for wallet labels
-  // Only fetch when bot is actually active to avoid unnecessary API calls
+  // TEMPORARILY DISABLED: API is failing, disabling to prevent blank screen
   // Always call hook to maintain hook order (React Rules of Hooks)
   const { 
     data: botWallets, 
@@ -44,7 +44,7 @@ export function BotLiveActivity({ userAddress, enabled = true }: BotLiveActivity
     error: walletsError 
   } = useBotWallets({
     userAddress,
-    enabled: isBotRunning,
+    enabled: false, // Temporarily disabled until API is fixed
   })
   
   // Log errors but don't crash the component

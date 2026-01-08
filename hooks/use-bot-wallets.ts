@@ -57,6 +57,8 @@ export function useBotWallets({ userAddress, enabled = true }: UseBotWalletsOpti
       console.error("❌ useBotWallets error:", error)
       // Don't throw - let React Query handle it gracefully
     },
+    // Return empty array as fallback to prevent undefined errors
+    placeholderData: [],
   })
 }
 
