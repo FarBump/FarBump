@@ -102,15 +102,18 @@ export function useConvertFuel() {
       const quote = await get0xQuote(swapAmountWei, userAddress)
 
       // Calculate expected ETH amount from swap
-      const expectedEthWei = BigInt(quote.buyAmount)
+      const totalEthReceivedWei = BigInt(quote.buyAmount)
       
       // Calculate 5% of ETH result for Treasury (APP_FEE_BPS = 500)
       // This represents 5% of the total initial value in ETH
-      const treasuryEthWei = (expectedEthWei * BigInt(APP_FEE_BPS)) / BigInt(10000)
-      const userCreditEthWei = expectedEthWei - treasuryEthWei // 90% remains in Smart Wallet
+      const treasuryEthWei = (totalEthReceivedWei * BigInt(APP_FEE_BPS)) / BigInt(10000)
+      const userCreditEthWei = totalEthReceivedWei - treasuryEthWei // 90% remains in Smart Wallet
+      
+      // expectedEthWei is the 90% credit that will be added to user balance
+      const expectedEthWei = userCreditEthWei
 
       console.log(`📊 Distribution after swap:`)
-      console.log(`   - Expected ETH from swap: ${expectedEthWei.toString()} wei`)
+      console.log(`   - Total ETH from swap: ${totalEthReceivedWei.toString()} wei`)
       console.log(`   - Treasury ETH (5%): ${treasuryEthWei.toString()} wei`)
       console.log(`   - User Credit ETH (90%): ${userCreditEthWei.toString()} wei`)
 
@@ -156,7 +159,7 @@ export function useConvertFuel() {
             data: encodeFunctionData({
               abi: WETH_ABI,
               functionName: "withdraw",
-              args: [expectedEthWei], // Unwrap all WETH received from swap
+              args: [totalEthReceivedWei], // Unwrap all WETH received from swap
             }),
             value: BigInt(0),
           },

@@ -19,8 +19,6 @@ interface ConfigPanelProps {
   smartWalletAddress?: string | null
   buyAmountUsd?: string
   onBuyAmountChange?: (amount: string) => void
-  numSessions?: number
-  onNumSessionsChange?: (sessions: number) => void
   intervalSeconds?: number
   onIntervalChange?: (seconds: number) => void
 }
@@ -31,8 +29,6 @@ export function ConfigPanel({
   smartWalletAddress,
   buyAmountUsd = "0.0001",
   onBuyAmountChange,
-  numSessions = 5,
-  onNumSessionsChange,
   intervalSeconds = 60,
   onIntervalChange
 }: ConfigPanelProps) {
@@ -68,24 +64,14 @@ export function ConfigPanel({
   
   // Use controlled props or fallback to internal state
   const [internalAmount, setInternalAmount] = useState("0.0001")
-  const [internalSessions, setInternalSessions] = useState(5)
   
   const amount = buyAmountUsd !== undefined ? buyAmountUsd : internalAmount
-  const sessions = numSessions !== undefined ? numSessions : internalSessions
   
   const handleAmountChange = (value: string) => {
     if (onBuyAmountChange) {
       onBuyAmountChange(value)
     } else {
       setInternalAmount(value)
-    }
-  }
-  
-  const handleSessionsChange = (value: number) => {
-    if (onNumSessionsChange) {
-      onNumSessionsChange(value)
-    } else {
-      setInternalSessions(value)
     }
   }
   
@@ -328,7 +314,7 @@ export function ConfigPanel({
                           // Step 1: Auto-approve first if needed (will check allowance internally)
                           // The approve function will check allowance and only approve if needed
                           console.log("🔐 Step 1: Checking and approving if needed...")
-                          await approve(convertAmount)
+                          await approve()
                           setNeedsApproval(false)
                           console.log("✅ Step 1: Approval completed")
                           
@@ -401,7 +387,7 @@ export function ConfigPanel({
           <WithdrawModal
             open={withdrawModalOpen}
             onOpenChange={setWithdrawModalOpen}
-            smartWalletAddress={smartWalletAddress}
+            smartWalletAddress={smartWalletAddress || null}
           />
 
           {credits === 0 && (
@@ -467,30 +453,7 @@ export function ConfigPanel({
               </span>
             </div>
             <p className="text-xs text-muted-foreground">
-              Estimated cost: ~{(Number.parseFloat(amount) * sessions).toFixed(2)} credits for {sessions} bumps
-            </p>
-          </div>
-
-          <div className="space-y-3">
-            <div className="flex items-center gap-2">
-              <ArrowRightLeft className="h-4 w-4 text-primary" />
-              <label className="text-sm font-medium text-foreground">Number of Sessions</label>
-            </div>
-            <div className="relative">
-              <Input
-                type="number"
-                value={sessions}
-                onChange={(e) => handleSessionsChange(parseInt(e.target.value) || 1)}
-                className="font-mono pr-16 bg-secondary border-border text-foreground"
-                min="1"
-                max="100"
-              />
-              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm font-medium text-muted-foreground">
-                Bumps
-              </span>
-            </div>
-            <p className="text-xs text-muted-foreground">
-              Total amount: ~{(Number.parseFloat(amount) * sessions).toFixed(4)} USD
+              Amount per swap execution (continuously until you stop the bot)
             </p>
           </div>
         </div>

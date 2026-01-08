@@ -22,8 +22,7 @@ interface StartSessionParams {
   userAddress: string
   tokenAddress: Address
   amountUsd: string // USD amount per bump (will be converted to ETH/Wei on backend using real-time price)
-  totalBumps: number
-  intervalSeconds: number // Interval in seconds (2-600)
+  intervalSeconds: number // Interval in seconds (2-600) - Bot runs continuously until stopped
 }
 
 /**

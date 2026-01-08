@@ -9,8 +9,7 @@ interface StartSessionRequest {
   userAddress: string
   tokenAddress: Address
   amountUsd: string // USD amount per bump (will be converted to ETH/Wei using real-time price)
-  totalBumps: number
-  intervalSeconds: number // Interval in seconds (2-600)
+  intervalSeconds: number // Interval in seconds (2-600) - Bot runs continuously until stopped
 }
 
 /**
@@ -22,11 +21,11 @@ interface StartSessionRequest {
 export async function POST(request: NextRequest) {
   try {
     const body: StartSessionRequest = await request.json()
-    const { userAddress, tokenAddress, amountUsd, totalBumps, intervalSeconds } = body
+    const { userAddress, tokenAddress, amountUsd, intervalSeconds } = body
 
-    if (!userAddress || !tokenAddress || !amountUsd || !totalBumps || !intervalSeconds) {
+    if (!userAddress || !tokenAddress || !amountUsd || !intervalSeconds) {
       return NextResponse.json(
-        { error: "Missing required fields: userAddress, tokenAddress, amountUsd, totalBumps, intervalSeconds" },
+        { error: "Missing required fields: userAddress, tokenAddress, amountUsd, intervalSeconds" },
         { status: 400 }
       )
     }
@@ -44,13 +43,6 @@ export async function POST(request: NextRequest) {
     if (intervalSeconds < 2 || intervalSeconds > 600) {
       return NextResponse.json(
         { error: "intervalSeconds must be between 2 and 600 seconds (2 seconds to 10 minutes)" },
-        { status: 400 }
-      )
-    }
-
-    if (totalBumps <= 0) {
-      return NextResponse.json(
-        { error: "totalBumps must be greater than 0" },
         { status: 400 }
       )
     }
@@ -113,22 +105,21 @@ export async function POST(request: NextRequest) {
     const amountEth = amountUsdValue / ethPriceUsd
     const amountWei = BigInt(Math.floor(amountEth * 1e18))
     
-    // Validate credit balance using USD
+    // Validate credit balance using USD (at least enough for one bump)
     const creditBalanceWei = creditData?.balance_wei
       ? BigInt(creditData.balance_wei.toString())
       : BigInt(0)
     const creditEth = Number(creditBalanceWei) / 1e18
     const creditUsd = creditEth * ethPriceUsd
-    const requiredUsd = amountUsdValue * totalBumps
 
-    if (creditUsd < requiredUsd) {
+    if (creditUsd < amountUsdValue) {
       return NextResponse.json(
         {
           error: "Insufficient credit balance",
           creditBalanceUsd: creditUsd.toFixed(2),
-          requiredAmountUsd: requiredUsd.toFixed(2),
+          requiredAmountUsd: amountUsdValue.toFixed(2),
           creditBalanceEth: creditEth.toFixed(6),
-          requiredAmountEth: (amountEth * totalBumps).toFixed(6),
+          requiredAmountEth: amountEth.toFixed(6),
         },
         { status: 400 }
       )
@@ -137,6 +128,7 @@ export async function POST(request: NextRequest) {
     // Create new session
     // Store amount_usd and interval_seconds in database
     // buy_amount_per_bump_wei will be calculated dynamically on each swap using real-time ETH price
+    // Bot runs continuously until user stops it manually - no total_sessions limit
     const { data: sessionData, error: insertError } = await supabase
       .from("bot_sessions")
       .insert({
@@ -145,7 +137,7 @@ export async function POST(request: NextRequest) {
         amount_usd: amountUsdValue.toString(), // Store USD amount for reference
         buy_amount_per_bump_wei: amountWei.toString(), // Store initial wei amount (will be recalculated on execution)
         interval_seconds: intervalSeconds,
-        total_sessions: totalBumps,
+        total_sessions: 0, // 0 = unlimited (runs continuously until stopped)
         current_session: 0,
         wallet_rotation_index: 0,
         status: "running",
@@ -164,7 +156,7 @@ export async function POST(request: NextRequest) {
 
     console.log(`✅ Bot session started for user: ${userAddress}`)
     console.log(`   Token: ${tokenAddress}`)
-    console.log(`   Total bumps: ${totalBumps}`)
+    console.log(`   Mode: Continuous (runs until stopped)`)
     console.log(`   Amount per bump: $${amountUsdValue} USD (${amountEth.toFixed(6)} ETH / ${amountWei.toString()} wei)`)
     console.log(`   Interval: ${intervalSeconds} seconds`)
 

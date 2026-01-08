@@ -234,7 +234,6 @@ export default function BumpBotDashboard() {
   const [isActive, setIsActive] = useState(false)
   const [fuelBalance] = useState(1250.5)
   const [buyAmountUsd, setBuyAmountUsd] = useState("0.0001")
-  const [numSessions, setNumSessions] = useState(5)
   const [intervalSeconds, setIntervalSeconds] = useState(60) // Default: 60 seconds (1 minute)
   
   // Fetch credit balance from database
@@ -527,22 +526,19 @@ export default function BumpBotDashboard() {
           return
         }
         
-        // Check if credit balance is sufficient
+        // Check if credit balance is sufficient (at least enough for one bump)
         // Note: We'll validate this on backend too, but check here for better UX
-        const requiredCreditUsd = amountUsdValue * numSessions
-        if (credits < requiredCreditUsd) {
-          toast.error(`Insufficient credit. Required: $${requiredCreditUsd.toFixed(2)}, Available: $${credits.toFixed(2)}`)
+        if (credits < amountUsdValue) {
+          toast.error(`Insufficient credit. Required: $${amountUsdValue.toFixed(2)}, Available: $${credits.toFixed(2)}`)
           return
         }
         
         // Note: buyAmountPerBumpWei will be calculated on backend from USD amount using real-time ETH price
-        // For now, we pass 0 and let backend calculate it
-        // This ensures we always use the latest ETH price at execution time
+        // Bot will run continuously until user stops it manually
         await startSession({
           userAddress: privySmartWalletAddress,
           tokenAddress: targetTokenAddress as `0x${string}`,
           amountUsd: amountUsdValue.toString(), // Send USD amount
-          totalBumps: numSessions,
           intervalSeconds: intervalSeconds, // Send interval in seconds
         })
         
@@ -726,8 +722,6 @@ export default function BumpBotDashboard() {
               smartWalletAddress={privySmartWalletAddress}
               buyAmountUsd={buyAmountUsd}
               onBuyAmountChange={setBuyAmountUsd}
-              numSessions={numSessions}
-              onNumSessionsChange={setNumSessions}
               intervalSeconds={intervalSeconds}
               onIntervalChange={setIntervalSeconds}
             />
@@ -735,6 +729,7 @@ export default function BumpBotDashboard() {
               isActive={isActive} 
               onToggle={handleToggle} 
               credits={credits}
+              balanceWei={creditData?.balanceWei}
               isVerified={isTokenVerified}
               buyAmountUsd={buyAmountUsd}
             />

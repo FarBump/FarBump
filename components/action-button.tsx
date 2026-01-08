@@ -7,6 +7,7 @@ interface ActionButtonProps {
   isActive: boolean
   onToggle: () => void
   credits?: number
+  balanceWei?: string | null // Credit balance in wei (for checking if user has any credit)
   isVerified?: boolean
   buyAmountUsd?: string
 }
@@ -14,15 +15,18 @@ interface ActionButtonProps {
 export function ActionButton({ 
   isActive, 
   onToggle, 
-  credits = 0, 
+  credits = 0,
+  balanceWei = null, 
   isVerified = false,
   buyAmountUsd = "0"
 }: ActionButtonProps) {
   // Button is locked if:
-  // - No credits
+  // - No credits (check both balanceWei and credits USD)
   // - Token not verified
   // - Buy amount not set or invalid
-  const isLocked = credits === 0 || !isVerified || !buyAmountUsd || parseFloat(buyAmountUsd) <= 0
+  // Check balanceWei first - user might have ETH credit even if USD conversion fails
+  const hasCredit = balanceWei ? BigInt(balanceWei) > 0n : credits > 0
+  const isLocked = !hasCredit || !isVerified || !buyAmountUsd || parseFloat(buyAmountUsd) <= 0
 
   return (
     <Button
