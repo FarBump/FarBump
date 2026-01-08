@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import { sdk } from "@farcaster/miniapp-sdk"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/button"
@@ -563,24 +563,23 @@ export default function BumpBotDashboard() {
   }
   
   // Sync isActive with session status
-  // Only update if session status actually changed to prevent infinite loops
+  // Use useRef to track previous status to prevent infinite loops
+  const prevSessionStatusRef = useRef<string | undefined>(undefined)
+  
   useEffect(() => {
-    if (!session) {
-      // If session is null/undefined, reset to false only if currently active
-      setIsActive((prev) => prev ? false : prev)
-      return
-    }
+    const currentStatus = session?.status
     
-    const shouldBeActive = session.status === "running"
-    // Only update if state is different to prevent unnecessary re-renders
-    setIsActive((prev) => {
-      if (prev !== shouldBeActive) {
-        return shouldBeActive
+    // Only update if status actually changed
+    if (prevSessionStatusRef.current !== currentStatus) {
+      prevSessionStatusRef.current = currentStatus
+      
+      if (!session) {
+        setIsActive(false)
+      } else {
+        setIsActive(session.status === "running")
       }
-      return prev
-    })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session?.status]) // Only depend on session.status, not the whole session object
+    }
+  }, [session?.status, session])
 
   return (
     <div className="min-h-screen bg-background p-4 pb-safe">
@@ -748,7 +747,10 @@ export default function BumpBotDashboard() {
               buyAmountUsd={buyAmountUsd}
             />
             {/* Bot Live Activity - Realtime feed from bot_logs table */}
-            <BotLiveActivity userAddress={privySmartWalletAddress} enabled={isActive} />
+            {/* Temporarily disabled to prevent infinite loop - will re-enable after fixing */}
+            {isActive && session?.status === "running" && (
+              <BotLiveActivity userAddress={privySmartWalletAddress} enabled={true} />
+            )}
           </TabsContent>
 
           <TabsContent value="history" className="mt-4">
