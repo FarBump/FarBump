@@ -28,6 +28,9 @@ interface BotLiveActivityProps {
  * - Aggregated wallet status overview
  */
 export function BotLiveActivity({ userAddress, enabled = true }: BotLiveActivityProps) {
+  // Get bot session for active status FIRST (before using it in other hooks)
+  const { session } = useBotSession(userAddress)
+
   // Get bot wallets for wallet labels
   // Only fetch when bot is actually active to avoid unnecessary API calls
   const { data: botWallets, isLoading: isLoadingWallets } = useBotWallets({
@@ -46,9 +49,6 @@ export function BotLiveActivity({ userAddress, enabled = true }: BotLiveActivity
   const { data: creditData } = useCreditBalance(userAddress, {
     enabled: enabled && !!userAddress,
   })
-
-  // Get bot session for active status
-  const { session } = useBotSession(userAddress)
 
   // Calculate aggregated credit from bot wallets
   // Note: This would require fetching balances from blockchain
