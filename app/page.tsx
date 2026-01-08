@@ -565,19 +565,20 @@ export default function BumpBotDashboard() {
   // Sync isActive with session status
   // Only update if session status actually changed to prevent infinite loops
   useEffect(() => {
-    if (session) {
-      const shouldBeActive = session.status === "running"
-      // Only update if state is different to prevent unnecessary re-renders
-      setIsActive((prev) => {
-        if (prev !== shouldBeActive) {
-          return shouldBeActive
-        }
-        return prev
-      })
-    } else {
-      // If session is null/undefined, reset to false
-      setIsActive(false)
+    if (!session) {
+      // If session is null/undefined, reset to false only if currently active
+      setIsActive((prev) => prev ? false : prev)
+      return
     }
+    
+    const shouldBeActive = session.status === "running"
+    // Only update if state is different to prevent unnecessary re-renders
+    setIsActive((prev) => {
+      if (prev !== shouldBeActive) {
+        return shouldBeActive
+      }
+      return prev
+    })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.status]) // Only depend on session.status, not the whole session object
 
