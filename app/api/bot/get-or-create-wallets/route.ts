@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { privateKeyToAccount, generatePrivateKey } from "viem/accounts"
 import { toSimpleSmartAccount } from "permissionless/accounts"
-import { createPublicClient, http, type Address } from "viem"
+import { createPublicClient, http, type Address, getContractAddress, keccak256, encodePacked } from "viem"
 import { base } from "viem/chains"
 import { createSupabaseServiceClient } from "@/lib/supabase"
 import { encryptPrivateKey } from "@/lib/bot-encryption"
@@ -79,70 +79,104 @@ export async function POST(request: NextRequest) {
         const ownerAccount = privateKeyToAccount(ownerPrivateKey)
 
         // Create SimpleAccount Smart Wallet address deterministically
-        // Using permissionless.js SimpleAccount (ERC-4337 compatible)
-        let account
+        // Try using toSimpleSmartAccount first, fallback to manual calculation if it fails
+        let account: { address: Address } | null = null
         // Define constants outside try block for error logging
         const entryPointAddress = "0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789" as Address
         const factoryAddress = "0x9406Cc6185a346906296840746125a0E44976454" as Address
         
+        // Try method 1: Use toSimpleSmartAccount (preferred)
         try {
           // Validate that all required values are defined
-          if (!publicClient) {
-            throw new Error("publicClient is not defined")
-          }
-          if (!publicClient.chain) {
-            throw new Error("publicClient.chain is not defined")
-          }
-          if (!ownerAccount) {
-            throw new Error("ownerAccount is not defined")
-          }
-          if (!entryPointAddress) {
-            throw new Error("entryPointAddress is not defined")
-          }
-          if (!factoryAddress) {
-            throw new Error("factoryAddress is not defined")
+          if (!publicClient || !publicClient.chain || !ownerAccount || !entryPointAddress || !factoryAddress) {
+            throw new Error("Missing required parameters")
           }
           
-          console.log(`  Creating Smart Account ${i + 1} with:`)
+          console.log(`  Creating Smart Account ${i + 1} with toSimpleSmartAccount:`)
           console.log(`    - Chain: ${publicClient.chain.name} (ID: ${publicClient.chain.id})`)
           console.log(`    - EntryPoint: ${entryPointAddress} (v0.6)`)
           console.log(`    - Factory: ${factoryAddress}`)
           console.log(`    - Index: ${i}`)
+          console.log(`    - Owner: ${ownerAccount.address}`)
           
-          // Use exact same pattern as execute-swap
-          account = await toSimpleSmartAccount({
+          // Ensure entryPoint object is properly structured with all required properties
+          // Create a fresh object to avoid any reference issues
+          const entryPointObj: { address: Address; version: "0.6" } = {
+            address: entryPointAddress,
+            version: "0.6",
+          }
+          
+          // Validate entryPoint object thoroughly
+          if (!entryPointObj || typeof entryPointObj !== 'object') {
+            throw new Error("entryPointObj is not an object")
+          }
+          if (!entryPointObj.address || typeof entryPointObj.address !== 'string') {
+            throw new Error("entryPointObj.address is invalid")
+          }
+          if (!entryPointObj.version || entryPointObj.version !== "0.6") {
+            throw new Error("entryPointObj.version is invalid")
+          }
+          
+          // Validate all parameters before calling toSimpleSmartAccount
+          const params = {
             client: publicClient,
             signer: ownerAccount,
-            entryPoint: {
-              address: entryPointAddress,
-              version: "0.6",
-            },
+            entryPoint: entryPointObj,
             factoryAddress: factoryAddress,
             index: BigInt(i),
-          } as any) // Type assertion to bypass TypeScript type checking (signer is valid parameter)
+          }
           
-          if (!account || !account.address) {
-            throw new Error("Account creation returned invalid result")
+          // Validate params object
+          if (!params.client) throw new Error("params.client is undefined")
+          if (!params.signer) throw new Error("params.signer is undefined")
+          if (!params.entryPoint) throw new Error("params.entryPoint is undefined")
+          if (!params.factoryAddress) throw new Error("params.factoryAddress is undefined")
+          if (params.index === undefined || params.index === null) throw new Error("params.index is invalid")
+          
+          console.log(`  Calling toSimpleSmartAccount with validated parameters`)
+          
+          const smartAccount = await toSimpleSmartAccount(params as any)
+          
+          if (smartAccount && smartAccount.address) {
+            account = { address: smartAccount.address }
+            console.log(`  ✅ Smart Account ${i + 1} created: ${account.address}`)
+          } else {
+            throw new Error("toSimpleSmartAccount returned invalid result")
           }
         } catch (accountError: any) {
-          console.error(`❌ Error creating Smart Account for wallet ${i + 1}:`, accountError)
+          console.error(`❌ Error with toSimpleSmartAccount for wallet ${i + 1}:`, accountError)
           console.error(`   Error type: ${accountError?.constructor?.name || typeof accountError}`)
           console.error(`   Error message: ${accountError?.message || String(accountError)}`)
-          console.error(`   Error stack: ${accountError?.stack || "No stack trace"}`)
           
-          // Log additional debugging info
-          console.error(`   Debug info:`)
-          console.error(`     - publicClient: ${!!publicClient}`)
-          console.error(`     - publicClient.chain: ${!!publicClient?.chain}`)
-          console.error(`     - publicClient.chain.name: ${publicClient?.chain?.name || "undefined"}`)
-          console.error(`     - ownerAccount: ${!!ownerAccount}`)
-          console.error(`     - ownerAccount.address: ${ownerAccount?.address || "undefined"}`)
-          console.error(`     - entryPointAddress: ${entryPointAddress || "undefined"}`)
-          console.error(`     - factoryAddress: ${factoryAddress || "undefined"}`)
-          
-          throw new Error(
-            `Failed to create Smart Account ${i + 1}: ${accountError?.message || String(accountError)}`
-          )
+          // Fallback: Calculate address manually using CREATE2
+          // This is a workaround for the permissionless.js error
+          try {
+            console.log(`  ⚠️ Falling back to manual address calculation for wallet ${i + 1}`)
+            
+            // SimpleAccountFactory uses CREATE2 with:
+            // - salt = keccak256(encodePacked(["address", "uint256"], [owner, salt]))
+            // For SimpleAccount, salt is typically the index
+            const salt = BigInt(i)
+            const saltHash = keccak256(
+              encodePacked(
+                ["address", "uint256"],
+                [ownerAccount.address, salt]
+              )
+            )
+            
+            // Calculate CREATE2 address
+            // Note: This is a simplified calculation - actual SimpleAccountFactory may use different logic
+            // For now, we'll use a placeholder and log a warning
+            console.warn(`  ⚠️ Manual address calculation not fully implemented - using placeholder`)
+            
+            // For now, throw error to use the existing error handling
+            throw new Error("toSimpleSmartAccount failed and manual calculation not implemented")
+          } catch (fallbackError: any) {
+            console.error(`❌ Fallback calculation also failed:`, fallbackError)
+            throw new Error(
+              `Failed to create Smart Account ${i + 1}: ${accountError?.message || String(accountError)}`
+            )
+          }
         }
 
         // Encrypt private key before storage
