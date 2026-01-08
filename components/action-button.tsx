@@ -7,10 +7,22 @@ interface ActionButtonProps {
   isActive: boolean
   onToggle: () => void
   credits?: number
+  isVerified?: boolean
+  buyAmountUsd?: string
 }
 
-export function ActionButton({ isActive, onToggle, credits = 0 }: ActionButtonProps) {
-  const isLocked = credits === 0
+export function ActionButton({ 
+  isActive, 
+  onToggle, 
+  credits = 0, 
+  isVerified = false,
+  buyAmountUsd = "0"
+}: ActionButtonProps) {
+  // Button is locked if:
+  // - No credits
+  // - Token not verified
+  // - Buy amount not set or invalid
+  const isLocked = credits === 0 || !isVerified || !buyAmountUsd || parseFloat(buyAmountUsd) <= 0
 
   return (
     <Button

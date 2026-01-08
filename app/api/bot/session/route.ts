@@ -8,9 +8,9 @@ export const runtime = "nodejs"
 interface StartSessionRequest {
   userAddress: string
   tokenAddress: Address
-  buyAmountPerBumpWei: string
+  amountUsd: string // USD amount per bump (will be converted to ETH/Wei using real-time price)
   totalBumps: number
-  intervalMinutes?: number // Optional: interval between bumps (default: 1 minute)
+  intervalSeconds: number // Interval in seconds (2-600)
 }
 
 /**
@@ -22,11 +22,28 @@ interface StartSessionRequest {
 export async function POST(request: NextRequest) {
   try {
     const body: StartSessionRequest = await request.json()
-    const { userAddress, tokenAddress, buyAmountPerBumpWei, totalBumps, intervalMinutes = 1 } = body
+    const { userAddress, tokenAddress, amountUsd, totalBumps, intervalSeconds } = body
 
-    if (!userAddress || !tokenAddress || !buyAmountPerBumpWei || !totalBumps) {
+    if (!userAddress || !tokenAddress || !amountUsd || !totalBumps || !intervalSeconds) {
       return NextResponse.json(
-        { error: "Missing required fields: userAddress, tokenAddress, buyAmountPerBumpWei, totalBumps" },
+        { error: "Missing required fields: userAddress, tokenAddress, amountUsd, totalBumps, intervalSeconds" },
+        { status: 400 }
+      )
+    }
+
+    // Validate amountUsd
+    const amountUsdValue = parseFloat(amountUsd)
+    if (isNaN(amountUsdValue) || amountUsdValue <= 0) {
+      return NextResponse.json(
+        { error: "amountUsd must be a positive number" },
+        { status: 400 }
+      )
+    }
+
+    // Validate intervalSeconds (2-600 seconds)
+    if (intervalSeconds < 2 || intervalSeconds > 600) {
+      return NextResponse.json(
+        { error: "intervalSeconds must be between 2 and 600 seconds (2 seconds to 10 minutes)" },
         { status: 400 }
       )
     }
@@ -70,33 +87,64 @@ export async function POST(request: NextRequest) {
       )
     }
 
+    // Get real-time ETH price for USD to ETH conversion
+    let ethPriceUsd: number
+    try {
+      const priceResponse = await fetch(`${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/api/eth-price`, {
+        headers: { Accept: "application/json" },
+      })
+      if (!priceResponse.ok) {
+        throw new Error("Failed to fetch ETH price")
+      }
+      const priceData = await priceResponse.json()
+      if (!priceData.success || typeof priceData.price !== "number") {
+        throw new Error("Invalid price data")
+      }
+      ethPriceUsd = priceData.price
+    } catch (priceError: any) {
+      console.error("❌ Error fetching ETH price:", priceError)
+      return NextResponse.json(
+        { error: "Failed to fetch ETH price. Please try again." },
+        { status: 500 }
+      )
+    }
+
+    // Convert USD to ETH (using current market price)
+    const amountEth = amountUsdValue / ethPriceUsd
+    const amountWei = BigInt(Math.floor(amountEth * 1e18))
+    
+    // Validate credit balance using USD
     const creditBalanceWei = creditData?.balance_wei
       ? BigInt(creditData.balance_wei.toString())
       : BigInt(0)
-    const requiredAmountWei = BigInt(buyAmountPerBumpWei) * BigInt(totalBumps)
+    const creditEth = Number(creditBalanceWei) / 1e18
+    const creditUsd = creditEth * ethPriceUsd
+    const requiredUsd = amountUsdValue * totalBumps
 
-    if (creditBalanceWei < requiredAmountWei) {
-      const creditEth = Number(creditBalanceWei) / 1e18
-      const requiredEth = Number(requiredAmountWei) / 1e18
+    if (creditUsd < requiredUsd) {
       return NextResponse.json(
         {
           error: "Insufficient credit balance",
-          creditBalance: creditBalanceWei.toString(),
-          requiredAmount: requiredAmountWei.toString(),
+          creditBalanceUsd: creditUsd.toFixed(2),
+          requiredAmountUsd: requiredUsd.toFixed(2),
           creditBalanceEth: creditEth.toFixed(6),
-          requiredAmountEth: requiredEth.toFixed(6),
+          requiredAmountEth: (amountEth * totalBumps).toFixed(6),
         },
         { status: 400 }
       )
     }
 
     // Create new session
+    // Store amount_usd and interval_seconds in database
+    // buy_amount_per_bump_wei will be calculated dynamically on each swap using real-time ETH price
     const { data: sessionData, error: insertError } = await supabase
       .from("bot_sessions")
       .insert({
         user_address: userAddress.toLowerCase(),
         token_address: tokenAddress,
-        buy_amount_per_bump_wei: buyAmountPerBumpWei,
+        amount_usd: amountUsdValue.toString(), // Store USD amount for reference
+        buy_amount_per_bump_wei: amountWei.toString(), // Store initial wei amount (will be recalculated on execution)
+        interval_seconds: intervalSeconds,
         total_sessions: totalBumps,
         current_session: 0,
         wallet_rotation_index: 0,
@@ -117,7 +165,8 @@ export async function POST(request: NextRequest) {
     console.log(`✅ Bot session started for user: ${userAddress}`)
     console.log(`   Token: ${tokenAddress}`)
     console.log(`   Total bumps: ${totalBumps}`)
-    console.log(`   Amount per bump: ${buyAmountPerBumpWei} wei`)
+    console.log(`   Amount per bump: $${amountUsdValue} USD (${amountEth.toFixed(6)} ETH / ${amountWei.toString()} wei)`)
+    console.log(`   Interval: ${intervalSeconds} seconds`)
 
     return NextResponse.json({
       success: true,

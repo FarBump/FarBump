@@ -5,43 +5,136 @@ import { Card } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { CheckCircle2, XCircle, Loader2 } from "lucide-react"
-import { isAddress } from "viem"
+import { isAddress, type Address } from "viem"
+import { usePublicClient } from "wagmi"
+import { base } from "wagmi/chains"
+
+// ERC20 ABI for name, symbol, and decimals
+const ERC20_METADATA_ABI = [
+  {
+    inputs: [],
+    name: "name",
+    outputs: [{ name: "", type: "string" }],
+    stateMutability: "view",
+    type: "function",
+  },
+  {
+    inputs: [],
+    name: "symbol",
+    outputs: [{ name: "", type: "string" }],
+    stateMutability: "view",
+    type: "function",
+  },
+  {
+    inputs: [],
+    name: "decimals",
+    outputs: [{ name: "", type: "uint8" }],
+    stateMutability: "view",
+    type: "function",
+  },
+] as const
+
+interface TokenMetadata {
+  name: string
+  symbol: string
+  decimals: number
+}
 
 interface TokenInputProps {
   onAddressChange?: (address: string | null) => void
+  onVerifiedChange?: (isVerified: boolean, metadata?: TokenMetadata) => void
 }
 
-export function TokenInput({ onAddressChange }: TokenInputProps) {
+export function TokenInput({ onAddressChange, onVerifiedChange }: TokenInputProps) {
   const [address, setAddress] = useState("")
   const [status, setStatus] = useState<"idle" | "loading" | "verified" | "error">("idle")
+  const [tokenMetadata, setTokenMetadata] = useState<TokenMetadata | null>(null)
+  const [errorMessage, setErrorMessage] = useState<string>("")
+  const publicClient = usePublicClient({ chainId: base.id })
 
   // Reset status when address is cleared
   useEffect(() => {
     if (!address && status !== "idle") {
       setStatus("idle")
+      setTokenMetadata(null)
+      setErrorMessage("")
+      onAddressChange?.(null)
+      onVerifiedChange?.(false)
     }
-  }, [address, status])
+  }, [address, status, onAddressChange, onVerifiedChange])
 
   // Notify parent when address changes and is verified
   useEffect(() => {
-    if (status === "verified" && address && isAddress(address)) {
+    if (status === "verified" && address && isAddress(address) && tokenMetadata) {
       onAddressChange?.(address)
+      onVerifiedChange?.(true, tokenMetadata)
     } else {
       onAddressChange?.(null)
+      onVerifiedChange?.(false)
     }
-  }, [address, status, onAddressChange])
+  }, [address, status, tokenMetadata, onAddressChange, onVerifiedChange])
 
-  const handleVerify = () => {
+  const handleVerify = async () => {
+    if (!publicClient) {
+      setStatus("error")
+      setErrorMessage("Wallet not connected")
+      return
+    }
+
+    // Validate address format first
+    if (!address || !isAddress(address)) {
+      setStatus("error")
+      setErrorMessage("Invalid contract address format")
+      return
+    }
+
     setStatus("loading")
-    // Validate address format
-    const isValid = address && isAddress(address)
-    setTimeout(() => {
-      if (isValid) {
-        setStatus("verified")
-      } else {
-        setStatus("error")
+    setErrorMessage("")
+    setTokenMetadata(null)
+
+    try {
+      const tokenAddress = address as Address
+
+      // Fetch token metadata from blockchain
+      const [name, symbol, decimals] = await Promise.all([
+        publicClient.readContract({
+          address: tokenAddress,
+          abi: ERC20_METADATA_ABI,
+          functionName: "name",
+          chainId: base.id,
+        }) as Promise<string>,
+        publicClient.readContract({
+          address: tokenAddress,
+          abi: ERC20_METADATA_ABI,
+          functionName: "symbol",
+          chainId: base.id,
+        }) as Promise<string>,
+        publicClient.readContract({
+          address: tokenAddress,
+          abi: ERC20_METADATA_ABI,
+          functionName: "decimals",
+          chainId: base.id,
+        }) as Promise<number>,
+      ])
+
+      const metadata: TokenMetadata = {
+        name: name || "Unknown Token",
+        symbol: symbol || "UNKNOWN",
+        decimals: decimals || 18,
       }
-    }, 500)
+
+      setTokenMetadata(metadata)
+      setStatus("verified")
+    } catch (error: any) {
+      console.error("Error verifying token:", error)
+      setStatus("error")
+      setErrorMessage(
+        error?.message?.includes("does not exist") || error?.message?.includes("execution reverted")
+          ? "Contract not found or not an ERC20 token"
+          : "Failed to verify token. Please check the address."
+      )
+      setTokenMetadata(null)
+    }
   }
 
   return (
@@ -71,16 +164,29 @@ export function TokenInput({ onAddressChange }: TokenInputProps) {
             {status === "loading" ? <Loader2 className="h-4 w-4 animate-spin" /> : "Verify"}
           </Button>
         </div>
-        {status === "verified" && (
-          <div className="flex items-center gap-2 text-xs text-primary">
-            <CheckCircle2 className="h-3 w-3" />
-            <span>Token verified on Base Network</span>
+        {status === "verified" && tokenMetadata && (
+          <div className="space-y-2">
+            <div className="flex items-center gap-2 text-xs text-primary">
+              <CheckCircle2 className="h-3 w-3" />
+              <span>Verified on Base Network</span>
+            </div>
+            <div className="pl-5 text-xs text-foreground bg-secondary/50 rounded-md p-2 border border-border">
+              <div className="font-semibold text-primary mb-1">
+                {tokenMetadata.symbol} - {tokenMetadata.name}
+              </div>
+              <div className="text-muted-foreground">
+                Decimals: {tokenMetadata.decimals}
+              </div>
+              <div className="text-muted-foreground font-mono text-[10px] mt-1 break-all">
+                {address}
+              </div>
+            </div>
           </div>
         )}
         {status === "error" && (
           <div className="flex items-center gap-2 text-xs text-destructive">
             <XCircle className="h-3 w-3" />
-            <span>Invalid contract address</span>
+            <span>{errorMessage || "Invalid contract address"}</span>
           </div>
         )}
       </div>

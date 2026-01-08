@@ -17,17 +17,95 @@ interface ConfigPanelProps {
   fuelBalance?: number
   credits?: number
   smartWalletAddress?: string | null
+  buyAmountUsd?: string
+  onBuyAmountChange?: (amount: string) => void
+  numSessions?: number
+  onNumSessionsChange?: (sessions: number) => void
+  intervalSeconds?: number
+  onIntervalChange?: (seconds: number) => void
 }
 
-export function ConfigPanel({ fuelBalance = 0, credits = 0, smartWalletAddress }: ConfigPanelProps) {
+export function ConfigPanel({ 
+  fuelBalance = 0, 
+  credits = 0, 
+  smartWalletAddress,
+  buyAmountUsd = "0.0001",
+  onBuyAmountChange,
+  numSessions = 5,
+  onNumSessionsChange,
+  intervalSeconds = 60,
+  onIntervalChange
+}: ConfigPanelProps) {
   // Fetch $BUMP token balance from Smart Wallet address (same as WalletCard)
   const { formattedBalance, isLoading: isLoadingBalance } = useBumpBalance({
     address: smartWalletAddress || null,
     enabled: !!smartWalletAddress && smartWalletAddress !== "0x000...000",
   })
   const { isInWarpcast } = useFarcasterMiniApp()
-  const [bumpSpeed, setBumpSpeed] = useState([5])
-  const [amount, setAmount] = useState("0.0001")
+  
+  // Bump Speed: Slider value in seconds (2-600 seconds = 2 seconds to 10 minutes)
+  // Use controlled prop or fallback to internal state
+  const [internalInterval, setInternalInterval] = useState(60)
+  const currentInterval = intervalSeconds !== undefined ? intervalSeconds : internalInterval
+  const [bumpSpeedSeconds, setBumpSpeedSeconds] = useState([currentInterval])
+  
+  // Sync bumpSpeedSeconds with currentInterval when prop changes
+  useEffect(() => {
+    if (intervalSeconds !== undefined && intervalSeconds !== bumpSpeedSeconds[0]) {
+      setBumpSpeedSeconds([intervalSeconds])
+    }
+  }, [intervalSeconds])
+  
+  const handleIntervalChange = (value: number[]) => {
+    const seconds = value[0]
+    setBumpSpeedSeconds(value)
+    if (onIntervalChange) {
+      onIntervalChange(seconds)
+    } else {
+      setInternalInterval(seconds)
+    }
+  }
+  
+  // Use controlled props or fallback to internal state
+  const [internalAmount, setInternalAmount] = useState("0.0001")
+  const [internalSessions, setInternalSessions] = useState(5)
+  
+  const amount = buyAmountUsd !== undefined ? buyAmountUsd : internalAmount
+  const sessions = numSessions !== undefined ? numSessions : internalSessions
+  
+  const handleAmountChange = (value: string) => {
+    if (onBuyAmountChange) {
+      onBuyAmountChange(value)
+    } else {
+      setInternalAmount(value)
+    }
+  }
+  
+  const handleSessionsChange = (value: number) => {
+    if (onNumSessionsChange) {
+      onNumSessionsChange(value)
+    } else {
+      setInternalSessions(value)
+    }
+  }
+  
+  // Format seconds to human-readable format
+  const formatInterval = (seconds: number): string => {
+    if (seconds < 60) {
+      return `${seconds}s`
+    } else if (seconds < 3600) {
+      const minutes = Math.floor(seconds / 60)
+      const remainingSeconds = seconds % 60
+      if (remainingSeconds === 0) {
+        return `${minutes}m`
+      }
+      return `${minutes}m ${remainingSeconds}s`
+    } else {
+      const hours = Math.floor(seconds / 3600)
+      const remainingMinutes = Math.floor((seconds % 3600) / 60)
+      return `${hours}h ${remainingMinutes}m`
+    }
+  }
   const [withdrawModalOpen, setWithdrawModalOpen] = useState(false)
   const [convertModalOpen, setConvertModalOpen] = useState(false)
   const [convertAmount, setConvertAmount] = useState("")
@@ -348,21 +426,26 @@ export function ConfigPanel({ fuelBalance = 0, credits = 0, smartWalletAddress }
                 <Clock className="h-4 w-4 text-primary" />
                 <label className="text-sm font-medium text-foreground">Bump Speed</label>
               </div>
-              <span className="font-mono text-sm font-semibold text-primary">{bumpSpeed[0]} min</span>
+              <span className="font-mono text-sm font-semibold text-primary">
+                {formatInterval(bumpSpeedSeconds[0])}
+              </span>
             </div>
             <Slider
-              value={bumpSpeed}
-              onValueChange={setBumpSpeed}
-              min={1}
-              max={30}
+              value={bumpSpeedSeconds}
+              onValueChange={handleIntervalChange}
+              min={2}
+              max={600}
               step={1}
               className="cursor-pointer"
             />
             <div className="flex justify-between text-xs text-muted-foreground">
-              <span>1 min</span>
-              <span>Fast</span>
-              <span>30 min</span>
+              <span>2s</span>
+              <span>Interval</span>
+              <span>10m</span>
             </div>
+            <p className="text-xs text-muted-foreground">
+              Time between each swap execution (Round Robin across 5 wallets)
+            </p>
           </div>
 
           <div className="space-y-3">
@@ -374,17 +457,40 @@ export function ConfigPanel({ fuelBalance = 0, credits = 0, smartWalletAddress }
               <Input
                 type="number"
                 value={amount}
-                onChange={(e) => setAmount(e.target.value)}
+                onChange={(e) => handleAmountChange(e.target.value)}
                 className="font-mono pr-16 bg-secondary border-border text-foreground"
                 step="0.01"
                 min="0"
               />
               <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm font-medium text-muted-foreground">
-                Credit
+                USD
               </span>
             </div>
             <p className="text-xs text-muted-foreground">
-              Estimated cost: ~{(Number.parseFloat(amount) * 24 * (60 / bumpSpeed[0])).toFixed(2)} credits/day
+              Estimated cost: ~{(Number.parseFloat(amount) * sessions).toFixed(2)} credits for {sessions} bumps
+            </p>
+          </div>
+
+          <div className="space-y-3">
+            <div className="flex items-center gap-2">
+              <ArrowRightLeft className="h-4 w-4 text-primary" />
+              <label className="text-sm font-medium text-foreground">Number of Sessions</label>
+            </div>
+            <div className="relative">
+              <Input
+                type="number"
+                value={sessions}
+                onChange={(e) => handleSessionsChange(parseInt(e.target.value) || 1)}
+                className="font-mono pr-16 bg-secondary border-border text-foreground"
+                min="1"
+                max="100"
+              />
+              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm font-medium text-muted-foreground">
+                Bumps
+              </span>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Total amount: ~{(Number.parseFloat(amount) * sessions).toFixed(4)} USD
             </p>
           </div>
         </div>

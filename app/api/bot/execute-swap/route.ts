@@ -24,8 +24,8 @@ const publicClient = createPublicClient({
 interface ExecuteSwapRequest {
   userAddress: string
   walletIndex: number // Which bot wallet to use (0-4)
-  tokenAddress: Address // Token to buy
-  sellAmountWei: string // Amount of ETH to sell
+  // tokenAddress and sellAmountWei are removed - now fetched from database for security
+  // Amount is calculated from amount_usd using real-time ETH price on each execution
 }
 
 /**
@@ -47,11 +47,11 @@ interface ExecuteSwapRequest {
 export async function POST(request: NextRequest) {
   try {
     const body: ExecuteSwapRequest = await request.json()
-    const { userAddress, walletIndex, tokenAddress, sellAmountWei } = body
+    const { userAddress, walletIndex } = body
 
-    if (!userAddress || walletIndex === undefined || !tokenAddress || !sellAmountWei) {
+    if (!userAddress || walletIndex === undefined) {
       return NextResponse.json(
-        { error: "Missing required fields" },
+        { error: "Missing required fields: userAddress, walletIndex" },
         { status: 400 }
       )
     }
@@ -64,6 +64,66 @@ export async function POST(request: NextRequest) {
     }
 
     const supabase = createSupabaseServiceClient()
+    
+    // IMPORTANT: Fetch token_address and amount_usd from active bot session in database
+    // This prevents client-side manipulation of token address or amount
+    const { data: activeSession, error: sessionError } = await supabase
+      .from("bot_sessions")
+      .select("token_address, amount_usd, interval_seconds")
+      .eq("user_address", userAddress.toLowerCase())
+      .eq("status", "running")
+      .single()
+    
+    if (sessionError || !activeSession) {
+      return NextResponse.json(
+        { error: "No active bot session found. Please start a bot session first." },
+        { status: 404 }
+      )
+    }
+    
+    // Use token_address from database (server-side verification)
+    const tokenAddress = activeSession.token_address as Address
+    const amountUsd = parseFloat(activeSession.amount_usd || "0")
+    
+    if (!amountUsd || amountUsd <= 0) {
+      return NextResponse.json(
+        { error: "Invalid amount_usd in bot session" },
+        { status: 400 }
+      )
+    }
+    
+    // Get real-time ETH price for USD to ETH conversion
+    let ethPriceUsd: number
+    try {
+      const priceResponse = await fetch(`${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/api/eth-price`, {
+        headers: { Accept: "application/json" },
+      })
+      if (!priceResponse.ok) {
+        throw new Error("Failed to fetch ETH price")
+      }
+      const priceData = await priceResponse.json()
+      if (!priceData.success || typeof priceData.price !== "number") {
+        throw new Error("Invalid price data")
+      }
+      ethPriceUsd = priceData.price
+    } catch (priceError: any) {
+      console.error("❌ Error fetching ETH price:", priceError)
+      return NextResponse.json(
+        { error: "Failed to fetch ETH price. Please try again." },
+        { status: 500 }
+      )
+    }
+    
+    // Convert USD to ETH using real-time market price
+    const amountEth = amountUsd / ethPriceUsd
+    // Convert ETH to Wei using BigInt for precision
+    const actualSellAmountWei = BigInt(Math.floor(amountEth * 1e18))
+    
+    console.log(`💱 USD to ETH conversion:`)
+    console.log(`   Amount: $${amountUsd} USD`)
+    console.log(`   ETH Price: $${ethPriceUsd.toFixed(2)} USD`)
+    console.log(`   ETH Amount: ${amountEth.toFixed(6)} ETH`)
+    console.log(`   Wei Amount: ${actualSellAmountWei.toString()} wei`)
 
     // Get bot wallets from database
     const { data: botWalletsData, error: fetchError } = await supabase
@@ -103,7 +163,7 @@ export async function POST(request: NextRequest) {
       chainId: "8453",
       sellToken: "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", // Native ETH
       buyToken: tokenAddress,
-      sellAmount: sellAmountWei,
+      sellAmount: actualSellAmountWei.toString(),
       taker: botWallet.smartWalletAddress,
       slippagePercentage: "1", // 1% slippage
       enablePermit2: "true", // Enable Permit2 for efficient approvals
@@ -130,7 +190,7 @@ export async function POST(request: NextRequest) {
         user_address: userAddress.toLowerCase(),
         wallet_address: botWallet.smartWalletAddress,
         token_address: tokenAddress,
-        amount_wei: sellAmountWei,
+        amount_wei: actualSellAmountWei.toString(),
         status: "failed",
         message: `0x API error: ${quoteResponse.status}`,
         error_details: errorData,
@@ -194,7 +254,7 @@ export async function POST(request: NextRequest) {
       user_address: userAddress.toLowerCase(),
       wallet_address: botWallet.smartWalletAddress,
       token_address: tokenAddress,
-      amount_wei: sellAmountWei,
+        amount_wei: actualSellAmountWei.toString(),
       status: "pending",
       message: "Transaction submitted",
     }).select("id").single()
@@ -280,7 +340,7 @@ export async function POST(request: NextRequest) {
           const currentBalance = currentCredit?.balance_wei
             ? BigInt(currentCredit.balance_wei.toString())
             : BigInt(0)
-          const deductionAmount = BigInt(sellAmountWei)
+          const deductionAmount = BigInt(actualSellAmountWei)
           const newBalance = currentBalance > deductionAmount
             ? currentBalance - deductionAmount
             : BigInt(0)

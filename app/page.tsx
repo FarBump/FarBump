@@ -24,6 +24,9 @@ import { useAccount, usePublicClient } from "wagmi"
 import { base } from "wagmi/chains"
 import { isAddress } from "viem"
 import { useCreditBalance } from "@/hooks/use-credit-balance"
+import { useBotSession } from "@/hooks/use-bot-session"
+import { parseUnits } from "viem"
+import { toast } from "sonner"
 
 export default function BumpBotDashboard() {
   const { isInWarpcast, isReady, context } = useFarcasterMiniApp()
@@ -70,6 +73,8 @@ export default function BumpBotDashboard() {
   
   // State for target token address (from TokenInput)
   const [targetTokenAddress, setTargetTokenAddress] = useState<string | null>(null)
+  const [isTokenVerified, setIsTokenVerified] = useState(false)
+  const [tokenMetadata, setTokenMetadata] = useState<{ name: string; symbol: string; decimals: number } | null>(null)
   
   // Farcaster Embed Wallet address (hanya untuk informasi, TIDAK digunakan untuk verifikasi atau transaksi)
   // Ini adalah wallet yang dibuat oleh Farcaster untuk user (custody address)
@@ -228,10 +233,16 @@ export default function BumpBotDashboard() {
   const [isConnecting, setIsConnecting] = useState(false)
   const [isActive, setIsActive] = useState(false)
   const [fuelBalance] = useState(1250.5)
+  const [buyAmountUsd, setBuyAmountUsd] = useState("0.0001")
+  const [numSessions, setNumSessions] = useState(5)
+  const [intervalSeconds, setIntervalSeconds] = useState(60) // Default: 60 seconds (1 minute)
   
   // Fetch credit balance from database
   const { data: creditData, isLoading: isLoadingCredit } = useCreditBalance(privySmartWalletAddress)
   const credits = creditData?.balanceUsd || 0
+  
+  // Bot session management
+  const { session, startSession, stopSession, isStarting, isStopping } = useBotSession(privySmartWalletAddress)
 
   // Extract user data from Privy user object (prioritize Privy user data)
   // Use user.farcaster.pfp and user.farcaster.username from Privy user object
@@ -484,24 +495,82 @@ export default function BumpBotDashboard() {
     }
   }, [isAuthenticated, username, userFid, privySmartWalletAddress, privyReady, isCreatingSmartWallet, embeddedWallet, smartWalletClient])
   
-  const handleToggle = () => {
-    setIsActive(!isActive)
-
+  const handleToggle = async () => {
     if (!isActive) {
-      const interval = setInterval(() => {
-        const newActivity = {
-          id: Math.random().toString(36).substr(2, 9),
-          type: Math.random() > 0.5 ? "buy" : ("sell" as "buy" | "sell"),
-          amount: (Math.random() * 0.001).toFixed(6),
-          hash: `0x${Math.random().toString(16).substr(2, 8)}...`,
-          timestamp: new Date(),
+      // Starting bot session
+      if (!isTokenVerified || !targetTokenAddress) {
+        toast.error("Please verify target token address first")
+        return
+      }
+      
+      if (!buyAmountUsd || parseFloat(buyAmountUsd) <= 0) {
+        toast.error("Please enter a valid buy amount")
+        return
+      }
+      
+      if (!privySmartWalletAddress || !isAddress(privySmartWalletAddress)) {
+        toast.error("Smart wallet not ready")
+        return
+      }
+      
+      try {
+        // Validate intervalSeconds
+        if (intervalSeconds < 2 || intervalSeconds > 600) {
+          toast.error("Interval must be between 2 seconds and 10 minutes")
+          return
         }
-        setActivities((prev) => [newActivity, ...prev].slice(0, 20))
-      }, 3000)
-
-      return () => clearInterval(interval)
+        
+        // Validate buyAmountUsd
+        const amountUsdValue = parseFloat(buyAmountUsd)
+        if (isNaN(amountUsdValue) || amountUsdValue <= 0) {
+          toast.error("Please enter a valid buy amount (USD)")
+          return
+        }
+        
+        // Check if credit balance is sufficient
+        // Note: We'll validate this on backend too, but check here for better UX
+        const requiredCreditUsd = amountUsdValue * numSessions
+        if (credits < requiredCreditUsd) {
+          toast.error(`Insufficient credit. Required: $${requiredCreditUsd.toFixed(2)}, Available: $${credits.toFixed(2)}`)
+          return
+        }
+        
+        // Note: buyAmountPerBumpWei will be calculated on backend from USD amount using real-time ETH price
+        // For now, we pass 0 and let backend calculate it
+        // This ensures we always use the latest ETH price at execution time
+        await startSession({
+          userAddress: privySmartWalletAddress,
+          tokenAddress: targetTokenAddress as `0x${string}`,
+          amountUsd: amountUsdValue.toString(), // Send USD amount
+          totalBumps: numSessions,
+          intervalSeconds: intervalSeconds, // Send interval in seconds
+        })
+        
+        setIsActive(true)
+        toast.success("Bot session started successfully")
+      } catch (error: any) {
+        console.error("Failed to start bot session:", error)
+        toast.error(error.message || "Failed to start bot session")
+      }
+    } else {
+      // Stopping bot session
+      try {
+        await stopSession()
+        setIsActive(false)
+        toast.success("Bot session stopped")
+      } catch (error: any) {
+        console.error("Failed to stop bot session:", error)
+        toast.error(error.message || "Failed to stop bot session")
+      }
     }
   }
+  
+  // Sync isActive with session status
+  useEffect(() => {
+    if (session) {
+      setIsActive(session.status === "running")
+    }
+  }, [session])
 
   return (
     <div className="min-h-screen bg-background p-4 pb-safe">
@@ -637,13 +706,38 @@ export default function BumpBotDashboard() {
               walletAddress={privySmartWalletAddress}
               isSmartAccountActive={!!privySmartWalletAddress}
             />
-            <TokenInput onAddressChange={setTargetTokenAddress} />
+            <TokenInput 
+              onAddressChange={(address) => {
+                setTargetTokenAddress(address)
+                // Reset verification if address changes
+                if (!address) {
+                  setIsTokenVerified(false)
+                  setTokenMetadata(null)
+                }
+              }}
+              onVerifiedChange={(isVerified, metadata) => {
+                setIsTokenVerified(isVerified)
+                setTokenMetadata(metadata || null)
+              }}
+            />
             <ConfigPanel 
               fuelBalance={fuelBalance} 
               credits={credits} 
               smartWalletAddress={privySmartWalletAddress}
+              buyAmountUsd={buyAmountUsd}
+              onBuyAmountChange={setBuyAmountUsd}
+              numSessions={numSessions}
+              onNumSessionsChange={setNumSessions}
+              intervalSeconds={intervalSeconds}
+              onIntervalChange={setIntervalSeconds}
             />
-            <ActionButton isActive={isActive} onToggle={handleToggle} credits={credits} />
+            <ActionButton 
+              isActive={isActive} 
+              onToggle={handleToggle} 
+              credits={credits}
+              isVerified={isTokenVerified}
+              buyAmountUsd={buyAmountUsd}
+            />
             {/* Bot Live Activity - Realtime feed from bot_logs table */}
             <BotLiveActivity userAddress={privySmartWalletAddress} enabled={isActive} />
           </TabsContent>
