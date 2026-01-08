@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { privateKeyToAccount, generatePrivateKey } from "viem/accounts"
-import { createSmartAccountClient, createPimlicoBundlerClient } from "permissionless"
-import { privateKeyToSimpleSmartAccount } from "permissionless/accounts"
+import { toSimpleSmartAccount } from "permissionless/accounts"
 import { createPublicClient, http, type Address } from "viem"
 import { base } from "viem/chains"
 import { createSupabaseServiceClient } from "@/lib/supabase"
@@ -73,14 +72,20 @@ export async function POST(request: NextRequest) {
     for (let i = 0; i < 5; i++) {
       // Generate EOA private key
       const ownerPrivateKey = generatePrivateKey()
+      
+      // Create EOA account from private key (required as owner/signer for SimpleAccount)
+      const ownerAccount = privateKeyToAccount(ownerPrivateKey)
 
       // Create SimpleAccount Smart Wallet address deterministically
       // Using permissionless.js SimpleAccount (ERC-4337 compatible)
-      const account = await privateKeyToSimpleSmartAccount({
-        publicClient,
-        privateKey: ownerPrivateKey,
-        entryPoint: "0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789", // EntryPoint v0.6
-        factoryAddress: "0x9406Cc6185a346906296840746125a0E44976454", // SimpleAccountFactory on Base
+      const account = await toSimpleSmartAccount({
+        client: publicClient,
+        signer: ownerAccount,
+        entryPoint: {
+          address: "0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789" as Address,
+          version: "0.6",
+        },
+        factoryAddress: "0x9406Cc6185a346906296840746125a0E44976454" as Address, // SimpleAccountFactory on Base
         index: BigInt(i), // Deterministic index for this wallet
       })
 

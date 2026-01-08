@@ -9,6 +9,7 @@ import { TokenInput } from "@/components/token-input"
 import { ConfigPanel } from "@/components/config-panel"
 import { ActionButton } from "@/components/action-button"
 import { ActivityFeed } from "@/components/activity-feed"
+import { BotLiveActivity } from "@/components/bot-live-activity"
 import { PriceChart } from "@/components/price-chart"
 import { AnalyticsCards } from "@/components/analytics-cards"
 import { WalletHistory } from "@/components/wallet-history"
@@ -643,7 +644,8 @@ export default function BumpBotDashboard() {
               smartWalletAddress={privySmartWalletAddress}
             />
             <ActionButton isActive={isActive} onToggle={handleToggle} credits={credits} />
-            <ActivityFeed activities={activities} isActive={isActive} />
+            {/* Bot Live Activity - Realtime feed from bot_logs table */}
+            <BotLiveActivity userAddress={privySmartWalletAddress} enabled={isActive} />
           </TabsContent>
 
           <TabsContent value="history" className="mt-4">

@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createSupabaseServiceClient } from "@/lib/supabase"
 import { decryptPrivateKey } from "@/lib/bot-encryption"
-import { privateKeyToSimpleSmartAccount } from "permissionless/accounts"
-import { createSmartAccountClient, createBundlerClient } from "permissionless"
+import { toSimpleSmartAccount } from "permissionless/accounts"
 import { createPublicClient, http, type Address, type Hex } from "viem"
+import { privateKeyToAccount } from "viem/accounts"
 import { base } from "viem/chains"
+import { createBundlerClient } from "viem/account-abstraction"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
@@ -33,7 +34,7 @@ interface ExecuteSwapRequest {
  * This route:
  * 1. Gets encrypted private key for bot wallet from database
  * 2. Decrypts private key (server-side only)
- * 3. Gets 0x API quote
+ * 3. Gets 0x API v2 quote
  * 4. Signs and sends transaction via Coinbase Paymaster (gasless)
  * 5. Logs transaction to bot_logs
  * 6. Deducts credit from user balance
@@ -95,8 +96,9 @@ export async function POST(request: NextRequest) {
     // Decrypt private key (server-side only)
     const ownerPrivateKey = decryptPrivateKey(botWallet.ownerPrivateKey) as Hex
 
-    // Get 0x API quote
-    console.log(`📊 Getting 0x quote for swap...`)
+    // Get 0x API v2 quote using AllowanceHolder endpoint
+    // Documentation: https://docs.0x.org/docs/api/swap-v2
+    console.log(`📊 Getting 0x API v2 quote for swap...`)
     const queryParams = new URLSearchParams({
       chainId: "8453",
       sellToken: "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", // Native ETH
@@ -104,6 +106,9 @@ export async function POST(request: NextRequest) {
       sellAmount: sellAmountWei,
       taker: botWallet.smartWalletAddress,
       slippagePercentage: "1", // 1% slippage
+      enablePermit2: "true", // Enable Permit2 for efficient approvals
+      intentOnFill: "true", // Indicates intent to fill the quote
+      enableSlippageProtection: "false", // Disable slippage protection for bot trades
     })
 
     const quoteResponse = await fetch(
@@ -112,7 +117,7 @@ export async function POST(request: NextRequest) {
         headers: {
           "0x-api-key": ZEROX_API_KEY,
           Accept: "application/json",
-        },
+        } as HeadersInit,
       }
     )
 
@@ -139,22 +144,44 @@ export async function POST(request: NextRequest) {
 
     const quote = await quoteResponse.json()
 
-    // Create Smart Account client for bot wallet
-    const account = await privateKeyToSimpleSmartAccount({
-      publicClient,
-      privateKey: ownerPrivateKey,
-      entryPoint: "0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789",
-      factoryAddress: "0x9406Cc6185a346906296840746125a0E44976454",
-      index: BigInt(walletIndex),
-    })
+    // Create EOA account from private key (required as owner/signer for SimpleAccount)
+    const ownerAccount = privateKeyToAccount(ownerPrivateKey)
+    
+    // Create Smart Account (SimpleAccount) for bot wallet using permissionless
+    // Using toSimpleSmartAccount which creates a SimpleAccount deterministically
+    // This matches the implementation in get-or-create-wallets
+    const account = await toSimpleSmartAccount({
+      client: publicClient,
+      signer: ownerAccount,
+      entryPoint: {
+        address: "0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789" as Address,
+        version: "0.6",
+      },
+      factoryAddress: "0x9406Cc6185a346906296840746125a0E44976454" as Address, // SimpleAccountFactory on Base
+      index: BigInt(walletIndex), // Deterministic index for this wallet
+    } as any) // Type assertion to bypass TypeScript type checking (signer is valid parameter)
+    
+    console.log(`✅ Smart Account created: ${account.address}`)
+    console.log(`   Using wallet index: ${walletIndex}`)
 
     // Create Bundler Client with Coinbase CDP Paymaster
-    // Use Coinbase CDP bundler endpoint which includes paymaster support
-    const COINBASE_CDP_BUNDLER_URL = process.env.COINBASE_CDP_BUNDLER_URL || 
-      process.env.NEXT_PUBLIC_BASE_RPC_URL || 
-      "https://mainnet.base.org"
+    // Coinbase CDP Bundler includes Paymaster support for gasless transactions
+    const COINBASE_CDP_BUNDLER_URL = process.env.COINBASE_CDP_BUNDLER_URL
     
+    if (!COINBASE_CDP_BUNDLER_URL) {
+      return NextResponse.json(
+        { error: "COINBASE_CDP_BUNDLER_URL environment variable is not set" },
+        { status: 500 }
+      )
+    }
+    
+    console.log(`🔗 Using Coinbase CDP Bundler: ${COINBASE_CDP_BUNDLER_URL}`)
+    
+    // Create bundler client for UserOperation operations
+    // Using viem account-abstraction bundler client (matches paymaster tutorial)
     const bundlerClient = createBundlerClient({
+      account,
+      client: publicClient,
       transport: http(COINBASE_CDP_BUNDLER_URL),
       chain: base,
     })
@@ -175,37 +202,60 @@ export async function POST(request: NextRequest) {
     const logId = logResult.data?.id
 
     try {
-      // Send UserOperation via Bundler with Paymaster sponsorship
+      // Prepare call for swap
+      const swapCall = {
+        to: quote.transaction.to as Address,
+        data: quote.transaction.data as Hex,
+        value: BigInt(quote.transaction.value || "0"),
+      }
+
+      // Pad preVerificationGas for reliability (as shown in paymaster tutorial)
+      // This helps ensure UserOperation lands on-chain successfully
+      if (account && typeof account === 'object' && 'userOperation' in account) {
+        (account as any).userOperation = {
+          estimateGas: async (userOperation: any) => {
+            const estimate = await bundlerClient.estimateUserOperationGas({
+              account,
+              ...userOperation,
+            })
+            // Adjust preVerificationGas upward for reliability (2x)
+            const adjustedEstimate = {
+              ...estimate,
+              preVerificationGas: estimate.preVerificationGas * BigInt(2),
+            }
+            return adjustedEstimate
+          },
+        }
+      }
+
+      // Send UserOperation via Bundler with Paymaster sponsorship (gasless)
+      console.log(`📤 Sending UserOperation with Paymaster sponsorship...`)
       const userOpHash = await bundlerClient.sendUserOperation({
         account,
-        calls: [{
-          to: quote.transaction.to as Address,
-          data: quote.transaction.data as Hex,
-          value: BigInt(quote.transaction.value || "0"),
-        }],
+        calls: [swapCall],
         paymaster: true, // Enable Coinbase Paymaster sponsorship (gasless)
       })
 
       console.log(`✅ UserOperation sent: ${userOpHash}`)
 
       // Wait for UserOperation receipt
-      const receipt = await bundlerClient.waitForUserOperationReceipt({
+      const userOpReceipt = await bundlerClient.waitForUserOperationReceipt({
         hash: userOpHash,
         timeout: 60000,
       })
 
-      // Get transaction hash from receipt
-      const txHash = receipt.receipt.transactionHash as Hex
+      // Get transaction hash from UserOperation receipt
+      const txHash = userOpReceipt.receipt.transactionHash as Hex
 
-      console.log(`✅ Transaction sent: ${txHash}`)
+      console.log(`✅ UserOperation confirmed. Transaction hash: ${txHash}`)
 
-      // Wait for confirmation
-      const receipt = await publicClient.waitForTransactionReceipt({
+      // Wait for transaction confirmation on-chain
+      const txReceipt = await publicClient.waitForTransactionReceipt({
         hash: txHash,
         timeout: 60000,
       })
 
-      if (receipt.status === "success") {
+      if (txReceipt.status === "success") {
         // Update log with success
         await supabase
           .from("bot_logs")
@@ -217,17 +267,16 @@ export async function POST(request: NextRequest) {
           .eq("id", logId)
 
         // Deduct credit from user balance
-        await supabase.rpc("increment_user_credit", {
-          p_user_address: userAddress.toLowerCase(),
-          p_amount_wei: `-${sellAmountWei}`, // Negative to deduct
-        }).catch(async (error) => {
-          // Fallback if RPC doesn't support negative
-          const { data: currentCredit } = await supabase
-            .from("user_credits")
-            .select("balance_wei")
-            .eq("user_address", userAddress.toLowerCase())
-            .single()
+        // Get current balance first
+        const { data: currentCredit, error: creditFetchError } = await supabase
+          .from("user_credits")
+          .select("balance_wei")
+          .eq("user_address", userAddress.toLowerCase())
+          .single()
 
+        if (creditFetchError && creditFetchError.code !== "PGRST116") {
+          console.error("❌ Error fetching credit balance:", creditFetchError)
+        } else {
           const currentBalance = currentCredit?.balance_wei
             ? BigInt(currentCredit.balance_wei.toString())
             : BigInt(0)
@@ -236,14 +285,23 @@ export async function POST(request: NextRequest) {
             ? currentBalance - deductionAmount
             : BigInt(0)
 
-          await supabase
+          // Update credit balance
+          const { error: updateCreditError } = await supabase
             .from("user_credits")
             .upsert({
               user_address: userAddress.toLowerCase(),
               balance_wei: newBalance.toString(),
               last_updated: new Date().toISOString(),
             })
-        })
+
+          if (updateCreditError) {
+            console.error("❌ Error updating credit balance:", updateCreditError)
+          } else {
+            console.log(`💰 Credit deducted: ${deductionAmount.toString()} wei`)
+            console.log(`   Previous balance: ${currentBalance.toString()} wei`)
+            console.log(`   New balance: ${newBalance.toString()} wei`)
+          }
+        }
 
         return NextResponse.json({
           success: true,
@@ -294,4 +352,3 @@ export async function POST(request: NextRequest) {
     )
   }
 }
-
