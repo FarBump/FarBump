@@ -48,6 +48,11 @@ export function BotLiveActivity({ userAddress, enabled = true }: BotLiveActivity
   })
   
   // Log errors but don't crash the component
+  // Use empty array as fallback to prevent undefined errors
+  // Type assertion needed because React Query types are complex
+  type BotWallet = { smartWalletAddress: string; index: number }
+  const safeBotWallets: BotWallet[] = (botWallets as BotWallet[] | undefined) || []
+  
   if (walletsError) {
     console.error("⚠️ Error loading bot wallets:", walletsError)
   }
@@ -72,7 +77,7 @@ export function BotLiveActivity({ userAddress, enabled = true }: BotLiveActivity
   const aggregatedCredit = creditData?.balanceEth || "0"
 
   // Count active wallets (all 5 wallets are ready if bot wallets exist)
-  const activeWalletsCount = botWallets?.length || 0
+  const activeWalletsCount = safeBotWallets.length
   const totalWallets = 5
 
   // Don't render if not enabled (but hooks are still called to maintain order)
@@ -133,7 +138,7 @@ export function BotLiveActivity({ userAddress, enabled = true }: BotLiveActivity
         ) : (
           <div className="space-y-1 p-2">
             {logs.map((log, index) => {
-              const walletLabel = getWalletLabel(log.wallet_address, botWallets || [])
+              const walletLabel = getWalletLabel(log.wallet_address, safeBotWallets)
               const amountEth = formatEther(BigInt(log.amount_wei))
 
               return (

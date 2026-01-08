@@ -50,8 +50,13 @@ export function useBotWallets({ userAddress, enabled = true }: UseBotWalletsOpti
     },
     enabled: enabled && !!userAddress,
     staleTime: 5 * 60 * 1000, // Cache for 5 minutes (wallets are permanent)
-    retry: 2, // Retry up to 2 times on failure
-    retryDelay: 1000, // Wait 1 second between retries
+    retry: false, // Don't retry on failure to prevent infinite loops
+    retryDelay: 1000, // Wait 1 second between retries (if retry enabled)
+    // Return empty array on error to prevent crashes
+    onError: (error) => {
+      console.error("❌ useBotWallets error:", error)
+      // Don't throw - let React Query handle it gracefully
+    },
   })
 }
 

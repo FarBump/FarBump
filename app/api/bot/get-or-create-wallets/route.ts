@@ -10,10 +10,13 @@ export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
 
 // Initialize public client for Base
-const publicClient = createPublicClient({
-  chain: base,
-  transport: http(process.env.NEXT_PUBLIC_BASE_RPC_URL || "https://mainnet.base.org"),
-})
+// Create client inside function to ensure it's properly initialized
+function getPublicClient() {
+  return createPublicClient({
+    chain: base,
+    transport: http(process.env.NEXT_PUBLIC_BASE_RPC_URL || "https://mainnet.base.org"),
+  })
+}
 
 interface BotWallet {
   ownerPrivateKey: string // Encrypted
@@ -80,22 +83,70 @@ export async function POST(request: NextRequest) {
         // Create SimpleAccount Smart Wallet address deterministically
         // Using permissionless.js SimpleAccount (ERC-4337 compatible)
         let account
+        // Define constants outside try block for error logging
+        const entryPointAddress = "0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789" as Address
+        const factoryAddress = "0x9406Cc6185a346906296840746125a0E44976454" as Address
+        
         try {
+          // Get fresh public client instance
+          const client = getPublicClient()
+          
+          // Validate that all required values are defined
+          if (!client) {
+            throw new Error("client is not defined")
+          }
+          if (!client.chain) {
+            throw new Error("client.chain is not defined")
+          }
+          if (!ownerAccount) {
+            throw new Error("ownerAccount is not defined")
+          }
+          if (!entryPointAddress) {
+            throw new Error("entryPointAddress is not defined")
+          }
+          if (!factoryAddress) {
+            throw new Error("factoryAddress is not defined")
+          }
+          
+          // Create entryPoint object with proper structure
+          const entryPoint = {
+            address: entryPointAddress,
+            version: "0.6" as const,
+          }
+          
+          console.log(`  Creating Smart Account ${i + 1} with:`)
+          console.log(`    - Chain: ${client.chain.name} (ID: ${client.chain.id})`)
+          console.log(`    - EntryPoint: ${entryPoint.address} (v${entryPoint.version})`)
+          console.log(`    - Factory: ${factoryAddress}`)
+          console.log(`    - Index: ${i}`)
+          
           account = await toSimpleSmartAccount({
-            client: publicClient,
+            client: client,
             signer: ownerAccount,
-            entryPoint: {
-              address: "0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789" as Address,
-              version: "0.6",
-            },
-            factoryAddress: "0x9406Cc6185a346906296840746125a0E44976454" as Address, // SimpleAccountFactory on Base
-            index: BigInt(i), // Deterministic index for this wallet
-          } as any) // Type assertion to bypass TypeScript type checking (signer is valid parameter)
+            entryPoint: entryPoint,
+            factoryAddress: factoryAddress,
+            index: BigInt(i),
+          } as any) // Type assertion needed for permissionless.js compatibility
+          
+          if (!account || !account.address) {
+            throw new Error("Account creation returned invalid result")
+          }
         } catch (accountError: any) {
           console.error(`❌ Error creating Smart Account for wallet ${i + 1}:`, accountError)
           console.error(`   Error type: ${accountError?.constructor?.name || typeof accountError}`)
           console.error(`   Error message: ${accountError?.message || String(accountError)}`)
           console.error(`   Error stack: ${accountError?.stack || "No stack trace"}`)
+          
+          // Log additional debugging info
+          const client = getPublicClient()
+          console.error(`   Debug info:`)
+          console.error(`     - client: ${!!client}`)
+          console.error(`     - client.chain: ${!!client?.chain}`)
+          console.error(`     - client.chain.name: ${client?.chain?.name || "undefined"}`)
+          console.error(`     - ownerAccount: ${!!ownerAccount}`)
+          console.error(`     - entryPointAddress: ${entryPointAddress || "undefined"}`)
+          console.error(`     - factoryAddress: ${factoryAddress || "undefined"}`)
+          
           throw new Error(
             `Failed to create Smart Account ${i + 1}: ${accountError?.message || String(accountError)}`
           )
