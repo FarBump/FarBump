@@ -29,9 +29,10 @@ interface BotLiveActivityProps {
  */
 export function BotLiveActivity({ userAddress, enabled = true }: BotLiveActivityProps) {
   // Get bot wallets for wallet labels
+  // Only fetch when bot is actually active to avoid unnecessary API calls
   const { data: botWallets, isLoading: isLoadingWallets } = useBotWallets({
     userAddress,
-    enabled: enabled && !!userAddress,
+    enabled: enabled && !!userAddress && !!session && session.status === "running",
   })
 
   // Get bot logs with realtime subscription

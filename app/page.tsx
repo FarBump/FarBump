@@ -542,7 +542,8 @@ export default function BumpBotDashboard() {
           intervalSeconds: intervalSeconds, // Send interval in seconds
         })
         
-        setIsActive(true)
+        // Don't set isActive here - let useEffect sync it from session status
+        // This prevents race conditions and infinite loops
         toast.success("Bot session started successfully")
       } catch (error: any) {
         console.error("Failed to start bot session:", error)
@@ -552,7 +553,7 @@ export default function BumpBotDashboard() {
       // Stopping bot session
       try {
         await stopSession()
-        setIsActive(false)
+        // Don't set isActive here - let useEffect sync it from session status
         toast.success("Bot session stopped")
       } catch (error: any) {
         console.error("Failed to stop bot session:", error)
@@ -562,11 +563,23 @@ export default function BumpBotDashboard() {
   }
   
   // Sync isActive with session status
+  // Only update if session status actually changed to prevent infinite loops
   useEffect(() => {
     if (session) {
-      setIsActive(session.status === "running")
+      const shouldBeActive = session.status === "running"
+      // Only update if state is different to prevent unnecessary re-renders
+      setIsActive((prev) => {
+        if (prev !== shouldBeActive) {
+          return shouldBeActive
+        }
+        return prev
+      })
+    } else {
+      // If session is null/undefined, reset to false
+      setIsActive(false)
     }
-  }, [session])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.status]) // Only depend on session.status, not the whole session object
 
   return (
     <div className="min-h-screen bg-background p-4 pb-safe">

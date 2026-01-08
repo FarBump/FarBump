@@ -75,8 +75,11 @@ export function useBotSession(userAddress: string | null) {
       return response.json()
     },
     onSuccess: () => {
-      // Invalidate and refetch session
-      queryClient.invalidateQueries({ queryKey: ["bot-session", userAddress] })
+      // Invalidate and refetch session after a short delay
+      // This prevents race conditions with state updates
+      setTimeout(() => {
+        queryClient.invalidateQueries({ queryKey: ["bot-session", userAddress] })
+      }, 500)
     },
   })
 
@@ -99,8 +102,11 @@ export function useBotSession(userAddress: string | null) {
       return response.json()
     },
     onSuccess: () => {
-      // Invalidate and refetch session
-      queryClient.invalidateQueries({ queryKey: ["bot-session", userAddress] })
+      // Invalidate and refetch session after a short delay
+      // This prevents race conditions with state updates
+      setTimeout(() => {
+        queryClient.invalidateQueries({ queryKey: ["bot-session", userAddress] })
+      }, 500)
     },
   })
 
