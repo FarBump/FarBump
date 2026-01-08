@@ -69,36 +69,50 @@ export async function POST(request: NextRequest) {
     console.log(`🔄 Generating 5 new bot wallets for user: ${userAddress}`)
     const botWallets: BotWallet[] = []
 
-    for (let i = 0; i < 5; i++) {
-      // Generate EOA private key
-      const ownerPrivateKey = generatePrivateKey()
-      
-      // Create EOA account from private key (required as owner/signer for SimpleAccount)
-      const ownerAccount = privateKeyToAccount(ownerPrivateKey)
+    try {
+      for (let i = 0; i < 5; i++) {
+        // Generate EOA private key
+        const ownerPrivateKey = generatePrivateKey()
+        
+        // Create EOA account from private key (required as owner/signer for SimpleAccount)
+        const ownerAccount = privateKeyToAccount(ownerPrivateKey)
 
-      // Create SimpleAccount Smart Wallet address deterministically
-      // Using permissionless.js SimpleAccount (ERC-4337 compatible)
-      const account = await toSimpleSmartAccount({
-        client: publicClient,
-        signer: ownerAccount,
-        entryPoint: {
-          address: "0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789" as Address,
-          version: "0.6",
-        },
-        factoryAddress: "0x9406Cc6185a346906296840746125a0E44976454" as Address, // SimpleAccountFactory on Base
-        index: BigInt(i), // Deterministic index for this wallet
-      } as any) // Type assertion to bypass TypeScript type checking (signer is valid parameter)
+        // Create SimpleAccount Smart Wallet address deterministically
+        // Using permissionless.js SimpleAccount (ERC-4337 compatible)
+        let account
+        try {
+          account = await toSimpleSmartAccount({
+            client: publicClient,
+            signer: ownerAccount,
+            entryPoint: {
+              address: "0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789" as Address,
+              version: "0.6",
+            },
+            factoryAddress: "0x9406Cc6185a346906296840746125a0E44976454" as Address, // SimpleAccountFactory on Base
+            index: BigInt(i), // Deterministic index for this wallet
+          } as any) // Type assertion to bypass TypeScript type checking (signer is valid parameter)
+        } catch (accountError: any) {
+          console.error(`❌ Error creating Smart Account for wallet ${i + 1}:`, accountError)
+          throw new Error(`Failed to create Smart Account ${i + 1}: ${accountError.message || accountError}`)
+        }
 
-      // Encrypt private key before storage
-      const encryptedPrivateKey = encryptPrivateKey(ownerPrivateKey)
+        // Encrypt private key before storage
+        const encryptedPrivateKey = encryptPrivateKey(ownerPrivateKey)
 
-      botWallets.push({
-        ownerPrivateKey: encryptedPrivateKey,
-        smartWalletAddress: account.address,
-        index: i,
-      })
+        botWallets.push({
+          ownerPrivateKey: encryptedPrivateKey,
+          smartWalletAddress: account.address,
+          index: i,
+        })
 
-      console.log(`  Bot Wallet ${i + 1}: ${account.address}`)
+        console.log(`  Bot Wallet ${i + 1}: ${account.address}`)
+      }
+    } catch (walletGenError: any) {
+      console.error("❌ Error generating bot wallets:", walletGenError)
+      return NextResponse.json(
+        { error: `Failed to generate bot wallets: ${walletGenError.message || "Unknown error"}` },
+        { status: 500 }
+      )
     }
 
     // Save to database
