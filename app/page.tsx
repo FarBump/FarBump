@@ -579,7 +579,8 @@ export default function BumpBotDashboard() {
         setIsActive(session.status === "running")
       }
     }
-  }, [session?.status, session])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.status]) // Only depend on session.status, not the whole session object
 
   return (
     <div className="min-h-screen bg-background p-4 pb-safe">
