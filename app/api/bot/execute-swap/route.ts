@@ -198,7 +198,7 @@ export async function POST(request: NextRequest) {
     console.log(`   Required for swap: ${formatEther(actualSellAmountWei)} ETH`)
 
     // Check if balance is sufficient for swap (minimum 0.01 USD)
-    const MIN_AMOUNT_USD = 0.01
+    // Use MIN_AMOUNT_USD already declared above
     const minAmountEth = MIN_AMOUNT_USD / ethPriceUsd
     const minAmountWei = BigInt(Math.floor(minAmountEth * 1e18))
     
