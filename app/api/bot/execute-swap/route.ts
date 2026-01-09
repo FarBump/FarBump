@@ -212,6 +212,8 @@ export async function POST(request: NextRequest) {
       const remainingBalanceUsd = remainingBalanceEth * ethPriceUsd
       
       // Log balance check to database with format: [System] Saldo Bot #1 tidak cukup ($ < 0.01). Bumping dihentikan.
+      // Sinkronisasi Live Activity Log: Tampilkan log jika saldo tidak cukup
+      // Format: [System] Saldo Bot #1 tidak cukup ($ < 0.01). Bumping dihentikan.
       await supabase.from("bot_logs").insert({
         user_address: normalizedUserAddress,
         wallet_address: botWalletAddress,
@@ -220,7 +222,7 @@ export async function POST(request: NextRequest) {
         status: "failed",
         message: remainingBalanceUsd < MIN_AMOUNT_USD
           ? `[System] Saldo Bot #${walletIndex + 1} tidak cukup ($${remainingBalanceUsd.toFixed(2)} < $${MIN_AMOUNT_USD.toFixed(2)}). Bumping dihentikan.`
-          : `[Bot #${walletIndex + 1}] Insufficient balance. Required: ${formatEther(actualSellAmountWei)} ETH ($${amountUsd.toFixed(2)}), Available: ${formatEther(botWalletBalance)} ETH ($${remainingBalanceUsd.toFixed(2)})`,
+          : `[System] Saldo Bot #${walletIndex + 1} tidak cukup untuk swap $${amountUsd.toFixed(2)}. Tersedia: $${remainingBalanceUsd.toFixed(2)}. Bumping dihentikan.`,
       })
 
       // Check if all wallets have insufficient balance (below 0.01 USD minimum)
@@ -468,14 +470,17 @@ export async function POST(request: NextRequest) {
           address: botWalletAddress,
         })
 
-        // Log remaining balance: [System] Remaining balance in Bot #1: 0.004 ETH
+        // Log remaining balance: [System] Remaining balance in Bot #1: 0.004 ETH ($X.XX)
+        // Calculate USD value for remaining balance
+        const remainingBalanceEth = Number(remainingBalance) / 1e18
+        const remainingBalanceUsd = remainingBalanceEth * ethPriceUsd
         await supabase.from("bot_logs").insert({
           user_address: normalizedUserAddress,
           wallet_address: botWalletAddress,
           token_address: tokenAddress,
           amount_wei: "0",
           status: "success",
-          message: `[System] Remaining balance in Bot #${walletIndex + 1}: ${formatEther(remainingBalance)} ETH`,
+          message: `[System] Remaining balance in Bot #${walletIndex + 1}: ${formatEther(remainingBalance)} ETH ($${remainingBalanceUsd.toFixed(2)})`,
         })
 
         console.log(`✅ [Bot #${walletIndex + 1}] Swap successful! Tx: ${txHash}`)

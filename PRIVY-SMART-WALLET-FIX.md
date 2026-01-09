@@ -191,3 +191,4 @@ Setelah implementasi fix ini, pastikan:
 **Status:** ✅ Fixed - Smart Wallet akan otomatis dibuat setelah Farcaster login
 
 
+

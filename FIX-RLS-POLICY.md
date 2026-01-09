@@ -61,3 +61,4 @@ Setelah menjalankan SQL, coba fetch data lagi dari aplikasi. Error 406 seharusny
 - [ ] Verifikasi query masih menggunakan `.eq("user_address", ...)` di application code
 
 
+
