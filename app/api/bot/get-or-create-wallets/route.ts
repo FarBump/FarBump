@@ -10,11 +10,19 @@ export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
 
 // Initialize public client for Base
+// CRITICAL: Ensure chain object is properly initialized to prevent "Cannot use 'in' operator" errors
 // Use module-level constant like in execute-swap for consistency
 const publicClient = createPublicClient({
   chain: base,
   transport: http(process.env.NEXT_PUBLIC_BASE_RPC_URL || "https://mainnet.base.org"),
 })
+
+// Validate publicClient initialization at module level
+// This ensures chain object exists before any API calls
+if (!publicClient?.chain) {
+  console.error("❌ CRITICAL: publicClient.chain is undefined after initialization")
+  console.error("   This will cause 'Cannot use in operator' errors in toSimpleSmartAccount")
+}
 
 interface BotWallet {
   ownerPrivateKey: string // Encrypted
@@ -93,9 +101,31 @@ export async function POST(request: NextRequest) {
         
         // Try method 1: Use toSimpleSmartAccount (preferred)
         try {
-          // Validate that all required values are defined
-          if (!publicClient || !publicClient.chain || !ownerAccount || !entryPointAddress || !factoryAddress) {
-            throw new Error("Missing required parameters")
+          // CRITICAL: Validate publicClient and chain object thoroughly
+          // The error "Cannot use 'in' operator to search for 'type' in undefined" 
+          // usually means chain object is undefined or missing required properties
+          if (!publicClient) {
+            throw new Error("publicClient is undefined")
+          }
+          
+          // Validate chain object exists and has required properties
+          if (!publicClient.chain) {
+            throw new Error("publicClient.chain is undefined")
+          }
+          
+          // Validate chain object has required properties (name, id, etc.)
+          if (typeof publicClient.chain !== 'object' || !('id' in publicClient.chain) || !('name' in publicClient.chain)) {
+            throw new Error("publicClient.chain is missing required properties (id, name)")
+          }
+          
+          // Validate other required parameters
+          if (!ownerAccount || !entryPointAddress || !factoryAddress) {
+            throw new Error("Missing required parameters: ownerAccount, entryPointAddress, or factoryAddress")
+          }
+          
+          // Validate ownerAccount has address property
+          if (!ownerAccount.address || typeof ownerAccount.address !== 'string') {
+            throw new Error("ownerAccount.address is invalid")
           }
           
           console.log(`  Creating Smart Account ${i + 1} with toSimpleSmartAccount:`)
@@ -124,6 +154,7 @@ export async function POST(request: NextRequest) {
           }
           
           // Validate all parameters before calling toSimpleSmartAccount
+          // CRITICAL: Ensure chain object is properly passed
           const params = {
             client: publicClient,
             signer: ownerAccount,
@@ -132,16 +163,43 @@ export async function POST(request: NextRequest) {
             index: BigInt(i),
           }
           
-          // Validate params object
+          // Validate params object thoroughly
           if (!params.client) throw new Error("params.client is undefined")
+          if (!params.client.chain) throw new Error("params.client.chain is undefined")
           if (!params.signer) throw new Error("params.signer is undefined")
           if (!params.entryPoint) throw new Error("params.entryPoint is undefined")
           if (!params.factoryAddress) throw new Error("params.factoryAddress is undefined")
           if (params.index === undefined || params.index === null) throw new Error("params.index is invalid")
           
-          console.log(`  Calling toSimpleSmartAccount with validated parameters`)
+          // Final validation: Ensure chain object has all required properties
+          if (typeof params.client.chain !== 'object') {
+            throw new Error("params.client.chain is not an object")
+          }
           
-          const smartAccount = await toSimpleSmartAccount(params as any)
+          // CRITICAL: Ensure chain object has 'type' property if library expects it
+          // Some versions of permissionless may check for 'type' property
+          const chainObj = params.client.chain as any
+          if (!('type' in chainObj)) {
+            // Add type property if missing (viem chains don't always have this)
+            chainObj.type = 'base' // This is informational, not critical
+          }
+          
+          console.log(`  Calling toSimpleSmartAccount with validated parameters`)
+          console.log(`    - Chain object type: ${typeof params.client.chain}`)
+          console.log(`    - Chain has 'id' property: ${'id' in params.client.chain}`)
+          console.log(`    - Chain has 'name' property: ${'name' in params.client.chain}`)
+          console.log(`    - Chain has 'type' property: ${'type' in params.client.chain}`)
+          console.log(`    - Chain object keys: ${Object.keys(params.client.chain).join(', ')}`)
+          
+          // Try calling toSimpleSmartAccount with explicit type casting
+          // The 'as any' helps bypass TypeScript but we've validated all parameters
+          const smartAccount = await toSimpleSmartAccount({
+            client: params.client,
+            signer: params.signer,
+            entryPoint: params.entryPoint,
+            factoryAddress: params.factoryAddress,
+            index: params.index,
+          } as any)
           
           if (smartAccount && smartAccount.address) {
             account = { address: smartAccount.address }
@@ -153,36 +211,85 @@ export async function POST(request: NextRequest) {
           console.error(`❌ Error with toSimpleSmartAccount for wallet ${i + 1}:`, accountError)
           console.error(`   Error type: ${accountError?.constructor?.name || typeof accountError}`)
           console.error(`   Error message: ${accountError?.message || String(accountError)}`)
+          console.error(`   Error stack: ${accountError?.stack || "No stack trace"}`)
           
-          // Fallback: Calculate address manually using CREATE2
-          // This is a workaround for the permissionless.js error
-          try {
-            console.log(`  ⚠️ Falling back to manual address calculation for wallet ${i + 1}`)
+          // Check if error is specifically about 'in' operator and 'type' property
+          const errorMessage = String(accountError?.message || accountError || "")
+          const isTypeError = errorMessage.includes("Cannot use 'in' operator") && errorMessage.includes("type")
+          
+          if (isTypeError) {
+            console.error(`   🔍 Detected 'in' operator error - likely chain.type property issue`)
+            console.error(`   Attempting workaround by ensuring chain object has all properties...`)
             
-            // SimpleAccountFactory uses CREATE2 with:
-            // - salt = keccak256(encodePacked(["address", "uint256"], [owner, salt]))
-            // For SimpleAccount, salt is typically the index
-            const salt = BigInt(i)
-            const saltHash = keccak256(
-              encodePacked(
-                ["address", "uint256"],
-                [ownerAccount.address, salt]
-              )
-            )
-            
-            // Calculate CREATE2 address
-            // Note: This is a simplified calculation - actual SimpleAccountFactory may use different logic
-            // For now, we'll use a placeholder and log a warning
-            console.warn(`  ⚠️ Manual address calculation not fully implemented - using placeholder`)
-            
-            // For now, throw error to use the existing error handling
-            throw new Error("toSimpleSmartAccount failed and manual calculation not implemented")
-          } catch (fallbackError: any) {
-            console.error(`❌ Fallback calculation also failed:`, fallbackError)
-            throw new Error(
-              `Failed to create Smart Account ${i + 1}: ${accountError?.message || String(accountError)}`
-            )
+            // Try to fix chain object by ensuring it has all required properties
+            try {
+              const fixedChain = {
+                ...publicClient.chain,
+                type: 'base', // Add type property if missing
+              }
+              
+              const fixedParams = {
+                ...params,
+                client: {
+                  ...publicClient,
+                  chain: fixedChain,
+                },
+              }
+              
+              console.log(`   Retrying with fixed chain object...`)
+              const retryAccount = await toSimpleSmartAccount(fixedParams as any)
+              
+              if (retryAccount && retryAccount.address) {
+                account = { address: retryAccount.address }
+                console.log(`  ✅ Smart Account ${i + 1} created with workaround: ${account.address}`)
+                // Success! Break out of error handling and continue to next wallet
+                // We'll push this account to botWallets array after this catch block
+              } else {
+                throw new Error("Retry returned invalid result")
+              }
+            } catch (retryError: any) {
+              console.error(`   ❌ Retry with fixed chain also failed:`, retryError?.message)
+              // Continue to fallback calculation
+            }
           }
+          
+          // If account is still null after retry, proceed to fallback
+          if (!account) {
+            // Fallback: Calculate address manually using CREATE2
+            // This is a workaround for the permissionless.js error
+            try {
+              console.log(`  ⚠️ Falling back to manual address calculation for wallet ${i + 1}`)
+              
+              // SimpleAccountFactory uses CREATE2 with:
+              // - salt = keccak256(encodePacked(["address", "uint256"], [owner, salt]))
+              // For SimpleAccount, salt is typically the index
+              const salt = BigInt(i)
+              const saltHash = keccak256(
+                encodePacked(
+                  ["address", "uint256"],
+                  [ownerAccount.address, salt]
+                )
+              )
+              
+              // Calculate CREATE2 address
+              // Note: This is a simplified calculation - actual SimpleAccountFactory may use different logic
+              // For now, we'll use a placeholder and log a warning
+              console.warn(`  ⚠️ Manual address calculation not fully implemented - using placeholder`)
+              
+              // For now, throw error to use the existing error handling
+              throw new Error("toSimpleSmartAccount failed and manual calculation not implemented")
+            } catch (fallbackError: any) {
+              console.error(`❌ Fallback calculation also failed:`, fallbackError)
+              throw new Error(
+                `Failed to create Smart Account ${i + 1}: ${accountError?.message || String(accountError)}`
+              )
+            }
+          }
+        }
+
+        // CRITICAL: Ensure account was created successfully before proceeding
+        if (!account || !account.address) {
+          throw new Error(`Failed to create Smart Account ${i + 1}: Account is null or missing address`)
         }
 
         // Encrypt private key before storage
