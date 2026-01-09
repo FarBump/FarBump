@@ -58,7 +58,17 @@ export function BotLiveActivity({ userAddress, enabled = true }: BotLiveActivity
     console.error("⚠️ Error loading bot wallets:", walletsError)
   }
   
+  // CRITICAL: Get bot logs FIRST before using in useEffect
+  // This prevents "Cannot access before initialization" errors
+  // Always call hook to maintain hook order (React Rules of Hooks)
+  const { logs, isLoading: isLoadingLogs } = useBotLogs({
+    userAddress,
+    enabled: enabled && !!userAddress,
+    limit: 20, // Initial load: last 20 logs
+  })
+  
   // Auto-scroll to bottom when new logs arrive
+  // CRITICAL: Declare refs AFTER logs is declared to prevent initialization errors
   const scrollAreaRef = useRef<HTMLDivElement>(null)
   const logsEndRef = useRef<HTMLDivElement>(null)
   const prevLogsLengthRef = useRef<number>(0)
@@ -83,14 +93,6 @@ export function BotLiveActivity({ userAddress, enabled = true }: BotLiveActivity
     }
     prevLogsLengthRef.current = logs.length
   }, [logs.length])
-
-  // Get bot logs with realtime subscription
-  // Always call hook to maintain hook order (React Rules of Hooks)
-  const { logs, isLoading: isLoadingLogs } = useBotLogs({
-    userAddress,
-    enabled: enabled && !!userAddress,
-    limit: 20, // Initial load: last 20 logs
-  })
 
   // Get credit balance for aggregated status
   // Always call hook to maintain hook order (React Rules of Hooks)
