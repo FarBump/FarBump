@@ -34,3 +34,5 @@ FROM pg_policies
 WHERE tablename IN ('user_credits', 'conversion_logs')
 ORDER BY tablename, policyname;
 
+
+

@@ -23,12 +23,18 @@ export async function POST(request: NextRequest) {
     const body: StartSessionRequest = await request.json()
     const { userAddress, tokenAddress, amountUsd, intervalSeconds } = body
 
+    // IMPORTANT: userAddress is the Smart Wallet address from Privy (NOT Embedded Wallet)
+    // This is used as the unique identifier (user_address) in all database tables
+    // We do NOT use Supabase Auth - only wallet address-based identification
+
     if (!userAddress || !tokenAddress || !amountUsd || !intervalSeconds) {
       return NextResponse.json(
         { error: "Missing required fields: userAddress, tokenAddress, amountUsd, intervalSeconds" },
         { status: 400 }
       )
     }
+
+    const normalizedUserAddress = userAddress.toLowerCase()
 
     // Validate amountUsd
     const amountUsdValue = parseFloat(amountUsd)
@@ -50,10 +56,11 @@ export async function POST(request: NextRequest) {
     const supabase = createSupabaseServiceClient()
 
     // Check if user already has an active session
+    // Database query uses user_address column (NOT user_id)
     const { data: activeSession, error: checkError } = await supabase
       .from("bot_sessions")
       .select("id, status")
-      .eq("user_address", userAddress.toLowerCase())
+      .eq("user_address", normalizedUserAddress)
       .eq("status", "running")
       .single()
 
@@ -65,10 +72,11 @@ export async function POST(request: NextRequest) {
     }
 
     // Validate credit balance
+    // Database query uses user_address column (NOT user_id)
     const { data: creditData, error: creditError } = await supabase
       .from("user_credits")
       .select("balance_wei")
-      .eq("user_address", userAddress.toLowerCase())
+      .eq("user_address", normalizedUserAddress)
       .single()
 
     if (creditError && creditError.code !== "PGRST116") {
@@ -126,13 +134,14 @@ export async function POST(request: NextRequest) {
     }
 
     // Create new session
+    // IMPORTANT: Using user_address column (NOT user_id) - this is the Smart Wallet address
     // Store amount_usd and interval_seconds in database
     // buy_amount_per_bump_wei will be calculated dynamically on each swap using real-time ETH price
     // Bot runs continuously until user stops it manually - no total_sessions limit
     const { data: sessionData, error: insertError } = await supabase
       .from("bot_sessions")
       .insert({
-        user_address: userAddress.toLowerCase(),
+        user_address: normalizedUserAddress,
         token_address: tokenAddress,
         amount_usd: amountUsdValue.toString(), // Store USD amount for reference
         buy_amount_per_bump_wei: amountWei.toString(), // Store initial wei amount (will be recalculated on execution)
@@ -183,6 +192,9 @@ export async function DELETE(request: NextRequest) {
     const { searchParams } = new URL(request.url)
     const userAddress = searchParams.get("userAddress")
 
+    // IMPORTANT: userAddress is the Smart Wallet address from Privy (NOT Embedded Wallet)
+    // This is used as the unique identifier (user_address) in all database tables
+
     if (!userAddress) {
       return NextResponse.json(
         { error: "Missing required parameter: userAddress" },
@@ -190,13 +202,15 @@ export async function DELETE(request: NextRequest) {
       )
     }
 
+    const normalizedUserAddress = userAddress.toLowerCase()
     const supabase = createSupabaseServiceClient()
 
     // Find active session
+    // Database query uses user_address column (NOT user_id)
     const { data: activeSession, error: findError } = await supabase
       .from("bot_sessions")
       .select("id, status")
-      .eq("user_address", userAddress.toLowerCase())
+      .eq("user_address", normalizedUserAddress)
       .eq("status", "running")
       .single()
 
@@ -249,6 +263,9 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url)
     const userAddress = searchParams.get("userAddress")
 
+    // IMPORTANT: userAddress is the Smart Wallet address from Privy (NOT Embedded Wallet)
+    // This is used as the unique identifier (user_address) in all database tables
+
     if (!userAddress) {
       return NextResponse.json(
         { error: "Missing required parameter: userAddress" },
@@ -256,13 +273,15 @@ export async function GET(request: NextRequest) {
       )
     }
 
+    const normalizedUserAddress = userAddress.toLowerCase()
     const supabase = createSupabaseServiceClient()
 
     // Get active session
+    // Database query uses user_address column (NOT user_id)
     const { data: session, error: fetchError } = await supabase
       .from("bot_sessions")
       .select("*")
-      .eq("user_address", userAddress.toLowerCase())
+      .eq("user_address", normalizedUserAddress)
       .eq("status", "running")
       .single()
 

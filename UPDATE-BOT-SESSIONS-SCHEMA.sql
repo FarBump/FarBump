@@ -30,3 +30,5 @@ CHECK (interval_seconds >= 2 AND interval_seconds <= 600);
 --   - amount_usd: NUMERIC(18, 6) - USD amount per bump (for reference)
 -- ============================================
 
+
+

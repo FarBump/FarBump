@@ -49,12 +49,18 @@ export async function POST(request: NextRequest) {
     const body: ExecuteSwapRequest = await request.json()
     const { userAddress, walletIndex } = body
 
+    // IMPORTANT: userAddress is the Smart Wallet address from Privy (NOT Embedded Wallet)
+    // This is used as the unique identifier (user_address) in all database tables
+    // We do NOT use Supabase Auth - only wallet address-based identification
+
     if (!userAddress || walletIndex === undefined) {
       return NextResponse.json(
         { error: "Missing required fields: userAddress, walletIndex" },
         { status: 400 }
       )
     }
+
+    const normalizedUserAddress = userAddress.toLowerCase()
 
     if (walletIndex < 0 || walletIndex >= 5) {
       return NextResponse.json(
@@ -67,10 +73,11 @@ export async function POST(request: NextRequest) {
     
     // IMPORTANT: Fetch token_address and amount_usd from active bot session in database
     // This prevents client-side manipulation of token address or amount
+    // Database query uses user_address column (NOT user_id)
     const { data: activeSession, error: sessionError } = await supabase
       .from("bot_sessions")
       .select("token_address, amount_usd, interval_seconds")
-      .eq("user_address", userAddress.toLowerCase())
+      .eq("user_address", normalizedUserAddress)
       .eq("status", "running")
       .single()
     
@@ -126,10 +133,11 @@ export async function POST(request: NextRequest) {
     console.log(`   Wei Amount: ${actualSellAmountWei.toString()} wei`)
 
     // Get bot wallets from database
+    // Database query uses user_address column (NOT user_id)
     const { data: botWalletsData, error: fetchError } = await supabase
       .from("user_bot_wallets")
       .select("wallets_data")
-      .eq("user_address", userAddress.toLowerCase())
+      .eq("user_address", normalizedUserAddress)
       .single()
 
     if (fetchError || !botWalletsData) {
@@ -186,8 +194,9 @@ export async function POST(request: NextRequest) {
       console.error("❌ 0x API error:", errorData)
       
       // Log error to database
+      // Database insert uses user_address column (NOT user_id)
       await supabase.from("bot_logs").insert({
-        user_address: userAddress.toLowerCase(),
+        user_address: normalizedUserAddress,
         wallet_address: botWallet.smartWalletAddress,
         token_address: tokenAddress,
         amount_wei: actualSellAmountWei.toString(),
@@ -250,8 +259,9 @@ export async function POST(request: NextRequest) {
     console.log(`🔄 Executing swap transaction...`)
     
     // Log pending transaction
+    // Database insert uses user_address column (NOT user_id)
     const logResult = await supabase.from("bot_logs").insert({
-      user_address: userAddress.toLowerCase(),
+      user_address: normalizedUserAddress,
       wallet_address: botWallet.smartWalletAddress,
       token_address: tokenAddress,
         amount_wei: actualSellAmountWei.toString(),
@@ -328,10 +338,11 @@ export async function POST(request: NextRequest) {
 
         // Deduct credit from user balance
         // Get current balance first
+        // Database query uses user_address column (NOT user_id)
         const { data: currentCredit, error: creditFetchError } = await supabase
           .from("user_credits")
           .select("balance_wei")
-          .eq("user_address", userAddress.toLowerCase())
+          .eq("user_address", normalizedUserAddress)
           .single()
 
         if (creditFetchError && creditFetchError.code !== "PGRST116") {
@@ -346,10 +357,11 @@ export async function POST(request: NextRequest) {
             : BigInt(0)
 
           // Update credit balance
+          // Database upsert uses user_address column (NOT user_id)
           const { error: updateCreditError } = await supabase
             .from("user_credits")
             .upsert({
-              user_address: userAddress.toLowerCase(),
+              user_address: normalizedUserAddress,
               balance_wei: newBalance.toString(),
               last_updated: new Date().toISOString(),
             })

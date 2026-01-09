@@ -1,5 +1,6 @@
 "use client"
 
+import { useEffect, useRef } from "react"
 import { Card } from "@/components/ui/card"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Badge } from "@/components/ui/badge"
@@ -36,7 +37,7 @@ export function BotLiveActivity({ userAddress, enabled = true }: BotLiveActivity
   const isBotRunning = enabled && !!userAddress && !!session && session.status === "running"
 
   // Get bot wallets for wallet labels
-  // TEMPORARILY DISABLED: API is failing, disabling to prevent blank screen
+  // ENABLED: Now that API is fixed, enable wallet fetching
   // Always call hook to maintain hook order (React Rules of Hooks)
   const { 
     data: botWallets, 
@@ -44,7 +45,7 @@ export function BotLiveActivity({ userAddress, enabled = true }: BotLiveActivity
     error: walletsError 
   } = useBotWallets({
     userAddress,
-    enabled: false, // Temporarily disabled until API is fixed
+    enabled: enabled && !!userAddress, // Enable when component is enabled and userAddress exists
   })
   
   // Log errors but don't crash the component
@@ -56,6 +57,32 @@ export function BotLiveActivity({ userAddress, enabled = true }: BotLiveActivity
   if (walletsError) {
     console.error("⚠️ Error loading bot wallets:", walletsError)
   }
+  
+  // Auto-scroll to bottom when new logs arrive
+  const scrollAreaRef = useRef<HTMLDivElement>(null)
+  const logsEndRef = useRef<HTMLDivElement>(null)
+  const prevLogsLengthRef = useRef<number>(0)
+  
+  useEffect(() => {
+    // Only auto-scroll if logs length increased (new log added)
+    if (logs.length > prevLogsLengthRef.current && logs.length > 0) {
+      // Small delay to ensure DOM is updated
+      setTimeout(() => {
+        // Try to scroll the viewport of ScrollArea
+        const viewport = scrollAreaRef.current?.querySelector('[data-slot="scroll-area-viewport"]') as HTMLElement
+        if (viewport) {
+          viewport.scrollTo({
+            top: viewport.scrollHeight,
+            behavior: "smooth"
+          })
+        } else {
+          // Fallback to scrollIntoView
+          logsEndRef.current?.scrollIntoView({ behavior: "smooth" })
+        }
+      }, 100)
+    }
+    prevLogsLengthRef.current = logs.length
+  }, [logs.length])
 
   // Get bot logs with realtime subscription
   // Always call hook to maintain hook order (React Rules of Hooks)
@@ -80,8 +107,9 @@ export function BotLiveActivity({ userAddress, enabled = true }: BotLiveActivity
   const activeWalletsCount = safeBotWallets.length
   const totalWallets = 5
 
-  // Don't render if not enabled (but hooks are still called to maintain order)
-  if (!enabled || !userAddress) {
+  // Always render if userAddress exists (even if not enabled, show placeholder)
+  // This ensures Live Activity is always visible in the dashboard
+  if (!userAddress) {
     return null
   }
 
@@ -121,7 +149,7 @@ export function BotLiveActivity({ userAddress, enabled = true }: BotLiveActivity
       </div>
 
       {/* Live Activity Feed */}
-      <ScrollArea className="h-64 rounded-lg border border-border bg-secondary/20">
+      <ScrollArea className="h-64 rounded-lg border border-border bg-secondary/20" ref={scrollAreaRef}>
         {isLoadingLogs || isLoadingWallets ? (
           <div className="flex h-full items-center justify-center p-8">
             <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
@@ -140,6 +168,10 @@ export function BotLiveActivity({ userAddress, enabled = true }: BotLiveActivity
             {logs.map((log, index) => {
               const walletLabel = getWalletLabel(log.wallet_address, safeBotWallets)
               const amountEth = formatEther(BigInt(log.amount_wei))
+              
+              // Format action text - show buying action with ETH amount
+              // Note: USD amount would require fetching ETH price, which we can add later if needed
+              const actionText = `Buying token for ${parseFloat(amountEth).toFixed(6)} ETH`
 
               return (
                 <div
@@ -149,61 +181,63 @@ export function BotLiveActivity({ userAddress, enabled = true }: BotLiveActivity
                     animationDelay: `${index * 50}ms`,
                   }}
                 >
-                    <div className="flex flex-1 items-center gap-3 min-w-0">
-                      {/* Status Badge */}
-                      <Badge
-                        variant={
-                          log.status === "success"
-                            ? "default" // Green (default variant)
-                            : log.status === "failed"
-                              ? "destructive" // Red
-                              : "secondary" // Yellow/Orange (pending)
-                        }
-                        className="shrink-0"
-                      >
-                        {log.status === "success"
-                          ? "Success"
+                  <div className="flex flex-1 items-center gap-3 min-w-0">
+                    {/* Status Badge */}
+                    <Badge
+                      variant={
+                        log.status === "success"
+                          ? "default" // Green (default variant)
                           : log.status === "failed"
-                            ? "Failed"
-                            : "Processing"}
-                      </Badge>
+                            ? "destructive" // Red
+                            : "secondary" // Yellow/Orange (pending)
+                      }
+                      className="shrink-0"
+                    >
+                      {log.status === "success"
+                        ? "Success"
+                        : log.status === "failed"
+                          ? "Failed"
+                          : "Processing"}
+                    </Badge>
 
-                      {/* Activity Info */}
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-2 mb-1">
-                          <p className="text-xs font-medium text-foreground truncate">
-                            {walletLabel}
-                          </p>
-                          {log.tx_hash && (
-                            <a
-                              href={`https://basescan.org/tx/${log.tx_hash}`}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="shrink-0 text-muted-foreground hover:text-primary transition-colors"
-                              title="View on BaseScan"
-                            >
-                              <ExternalLink className="h-3 w-3" />
-                            </a>
-                          )}
-                        </div>
-                        <p className="text-xs text-muted-foreground">
-                          Swapped {parseFloat(amountEth).toFixed(6)} ETH for token
+                    {/* Activity Info */}
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2 mb-1">
+                        <p className="text-xs font-medium text-foreground truncate">
+                          {walletLabel}
                         </p>
-                        {log.message && (
-                          <p className="mt-1 text-xs text-muted-foreground italic truncate">
-                            {log.message}
-                          </p>
+                        {log.tx_hash && (
+                          <a
+                            href={`https://basescan.org/tx/${log.tx_hash}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="shrink-0 text-muted-foreground hover:text-primary transition-colors"
+                            title="View on BaseScan"
+                          >
+                            <ExternalLink className="h-3 w-3" />
+                          </a>
                         )}
                       </div>
-
-                      {/* Timestamp */}
-                      <span className="shrink-0 text-xs text-muted-foreground ml-2">
-                        {formatRelativeTime(log.created_at)}
-                      </span>
+                      <p className="text-xs text-muted-foreground">
+                        {actionText}
+                      </p>
+                      {log.message && (
+                        <p className="mt-1 text-xs text-muted-foreground italic truncate">
+                          {log.message}
+                        </p>
+                      )}
                     </div>
+
+                    {/* Timestamp */}
+                    <span className="shrink-0 text-xs text-muted-foreground ml-2">
+                      {formatRelativeTime(log.created_at)}
+                    </span>
                   </div>
-                )
-              })}
+                </div>
+              )
+            })}
+            {/* Invisible element at the end for auto-scroll target */}
+            <div ref={logsEndRef} />
           </div>
         )}
       </ScrollArea>

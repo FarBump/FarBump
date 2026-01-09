@@ -59,3 +59,5 @@ Setelah menjalankan SQL, coba fetch data lagi dari aplikasi. Error 406 seharusny
 - [ ] Policy `Users can view own conversion logs` sudah diupdate
 - [ ] Test fetch data dari aplikasi - Error 406 sudah teratasi
 - [ ] Verifikasi query masih menggunakan `.eq("user_address", ...)` di application code
+
+

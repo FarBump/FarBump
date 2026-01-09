@@ -47,13 +47,19 @@ export async function POST(request: NextRequest) {
       )
     }
 
+    // IMPORTANT: userAddress is the Smart Wallet address from Privy (NOT Embedded Wallet)
+    // This is used as the unique identifier (user_address) in all database tables
+    // We do NOT use Supabase Auth (auth.uid() or getUser()) - only wallet address-based identification
+    const normalizedUserAddress = userAddress.toLowerCase()
+
     const supabase = createSupabaseServiceClient()
 
     // Check if user already has bot wallets
+    // Database query uses user_address column (NOT user_id)
     const { data: existingWallets, error: fetchError } = await supabase
       .from("user_bot_wallets")
       .select("wallets_data")
-      .eq("user_address", userAddress.toLowerCase())
+      .eq("user_address", normalizedUserAddress)
       .single()
 
     if (existingWallets && !fetchError) {
@@ -205,10 +211,11 @@ export async function POST(request: NextRequest) {
     }
 
     // Save to database
+    // IMPORTANT: Using user_address column (NOT user_id) - this is the Smart Wallet address
     const { error: insertError } = await supabase
       .from("user_bot_wallets")
       .insert({
-        user_address: userAddress.toLowerCase(),
+        user_address: normalizedUserAddress,
         wallets_data: botWallets,
       })
 

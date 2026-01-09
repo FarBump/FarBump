@@ -242,3 +242,5 @@ Setup Privy Dashboard untuk FarBump membutuhkan:
 5. ✅ **Configure Allowed Origins untuk production (optional)**
 
 Setelah semua setup selesai, aplikasi siap digunakan!
+
+

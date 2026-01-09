@@ -171,3 +171,5 @@ For a **single-hop swap** (direct $BUMP → WETH):
 - The current implementation uses `amountOutMinimum = 0` for testing purposes. In production, implement proper slippage calculation based on real-time pool price.
 - PathKey encoding follows V4 specification for single-hop swaps with custom hooks and dynamic fees.
 - All operations are atomic - either all succeed or all revert.
+
+

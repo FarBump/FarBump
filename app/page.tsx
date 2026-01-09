@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useRef } from "react"
+import { useState, useEffect, useRef, useMemo, useCallback } from "react"
 import { sdk } from "@farcaster/miniapp-sdk"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/button"
@@ -49,7 +49,8 @@ export default function BumpBotDashboard() {
   
   // Function to verify if an address is a smart wallet contract (not EOA)
   // Smart wallet contracts have code size > 0, EOA has code size = 0
-  const verifySmartWalletContract = async (address: string): Promise<boolean> => {
+  // CRITICAL: Wrap with useCallback to stabilize reference and prevent infinite loops
+  const verifySmartWalletContract = useCallback(async (address: string): Promise<boolean> => {
     if (!publicClient || !isAddress(address)) {
       return false
     }
@@ -63,7 +64,7 @@ export default function BumpBotDashboard() {
       console.error("  ❌ Error verifying smart wallet contract:", error)
       return false
     }
-  }
+  }, [publicClient])
   
   // State to store Smart Wallet address (detected via useEffect when ready)
   const [privySmartWalletAddress, setPrivySmartWalletAddress] = useState<string | null>(null)
@@ -81,15 +82,30 @@ export default function BumpBotDashboard() {
   const farcasterEmbedWallet = context?.user?.custodyAddress || null
   
   // Embedded Wallet (signer) - hanya untuk informasi, tidak digunakan untuk transaksi
-  const embeddedWallet = privyReady 
-    ? wallets.find((w) => w.walletClientType === 'privy')
-    : null
+  // CRITICAL: Use useMemo to stabilize reference and prevent infinite loops
+  const embeddedWallet = useMemo(() => {
+    return privyReady 
+      ? wallets.find((w) => w.walletClientType === 'privy')
+      : null
+  }, [privyReady, wallets])
   
   // Get smartWallets array for UI logic (used in JSX and useEffect)
-  // Filter Smart Wallets from wallets array
-  const smartWallets = privyReady 
-    ? wallets.filter((w) => (w as any).type === 'smart_wallet' || w.walletClientType === 'smart_wallet')
-    : []
+  // CRITICAL: Use useMemo to stabilize array reference and prevent infinite loops
+  const smartWallets = useMemo(() => {
+    return privyReady 
+      ? wallets.filter((w) => (w as any).type === 'smart_wallet' || w.walletClientType === 'smart_wallet')
+      : []
+  }, [privyReady, wallets])
+  
+  // Stabilize smartWalletClient reference by extracting address
+  const smartWalletClientAddress = useMemo(() => {
+    return smartWalletClient?.account?.address as string | undefined
+  }, [smartWalletClient?.account?.address])
+  
+  // Stabilize embeddedWallet address
+  const embeddedWalletAddress = useMemo(() => {
+    return embeddedWallet?.address
+  }, [embeddedWallet?.address])
   
   // Smart Wallet Detection using useSmartWallets hook
   // CRITICAL: Wrap detection in useEffect that triggers when ready is true
@@ -117,7 +133,7 @@ export default function BumpBotDashboard() {
     })))
     
     // Check smartWalletClient from useSmartWallets hook
-    const clientAddress = smartWalletClient?.account?.address as string | undefined
+    const clientAddress = smartWalletClientAddress
     console.log("  - Smart Wallet Client (from useSmartWallets hook):", clientAddress || "❌ Not available")
     
     // If smartWallets.length === 0 but authenticated is true, log user.linkedAccounts
@@ -158,7 +174,7 @@ export default function BumpBotDashboard() {
       console.log("  - Source:", clientAddress ? "useSmartWallets hook (client) - Smart Wallet contract" : "wallets array")
       console.log("  - Wallet Type:", detectedSmartWallet ? (detectedSmartWallet as any).type : "unknown")
       console.log("  - Wallet Client Type:", detectedSmartWallet?.walletClientType || "unknown")
-      console.log("  - Embedded Wallet (signer) Address:", embeddedWallet?.address || "Not found")
+      console.log("  - Embedded Wallet (signer) Address:", embeddedWalletAddress || "Not found")
       
       // Verify if it's a contract (smart wallet) or EOA
       verifySmartWalletContract(detectedAddress).then((isContract) => {
@@ -228,13 +244,17 @@ export default function BumpBotDashboard() {
     console.log("  - Wagmi Address:", wagmiAddress, "(NOT USED - may point to Farcaster Embed Wallet)")
     console.log("  - ✅ PRIMARY ADDRESS (Smart Wallet):", detectedAddress || "❌ NOT READY")
     
-  }, [privyReady, authenticated, wallets, smartWalletClient, user, embeddedWallet, wagmiAddress, smartWallets])
+  }, [privyReady, authenticated, wallets, smartWalletClientAddress, user?.id, embeddedWalletAddress, wagmiAddress, smartWallets.length, verifySmartWalletContract])
   
   const [isConnecting, setIsConnecting] = useState(false)
   const [isActive, setIsActive] = useState(false)
   const [fuelBalance] = useState(1250.5)
   const [buyAmountUsd, setBuyAmountUsd] = useState("0.0001")
   const [intervalSeconds, setIntervalSeconds] = useState(60) // Default: 60 seconds (1 minute)
+  
+  // Loading state for Start Bumping flow
+  const [bumpLoadingState, setBumpLoadingState] = useState<string | null>(null)
+  const [botWallets, setBotWallets] = useState<Array<{ smartWalletAddress: string; index: number }> | null>(null)
   
   // Fetch credit balance from database
   const { data: creditData, isLoading: isLoadingCredit } = useCreditBalance(privySmartWalletAddress)
@@ -323,7 +343,8 @@ export default function BumpBotDashboard() {
   // Handle Connect button click - Simplified approach using Privy's regular login
   // Privy's login() should work with Farcaster context that's already available
   // This avoids the blank screen issue caused by sdk.actions.signIn()
-  const handleConnect = async () => {
+  // CRITICAL: Wrap with useCallback to prevent unnecessary re-renders
+  const handleConnect = useCallback(async () => {
     // Ensure sdk.actions.ready() has been called first
     if (!sdkReady) {
       console.warn("⏳ Waiting for sdk.actions.ready() to complete before login...")
@@ -363,12 +384,13 @@ export default function BumpBotDashboard() {
       // Always reset connecting state to prevent blank screen
       setIsConnecting(false)
     }
-  }
+  }, [sdkReady, login])
 
   // Handle Smart Wallet activation - Deploy Smart Wallet contract
   // CRITICAL: Don't use createWallet() - it creates Embedded Wallet, not Smart Wallet
   // Smart Wallet contract is deployed via smartWalletClient on first transaction
-  const handleActivateSmartAccount = async () => {
+  // CRITICAL: Wrap with useCallback to prevent unnecessary re-renders
+  const handleActivateSmartAccount = useCallback(async () => {
     if (!authenticated || !privyReady) {
       console.warn("⚠️ Cannot activate Smart Account: User not authenticated or Privy not ready")
       return
@@ -416,7 +438,7 @@ export default function BumpBotDashboard() {
     } finally {
       setIsCreatingSmartWallet(false)
     }
-  }
+  }, [authenticated, privyReady, smartWalletClient, embeddedWallet])
 
   // Handle login completion - Step 3: Verifikasi user data dan Smart Wallet setelah login
   // 
@@ -445,9 +467,9 @@ export default function BumpBotDashboard() {
       // If embedded wallet exists, Smart Wallet contract should be deployable via smartWalletClient
       console.log("⏳ User authenticated via Farcaster, checking wallet status...")
       console.log("  - Embedded Wallet exists:", !!embeddedWallet)
-      console.log("  - Embedded Wallet address:", embeddedWallet?.address || "Not found")
+      console.log("  - Embedded Wallet address:", embeddedWalletAddress || "Not found")
       console.log("  - Smart Wallet Client available:", !!smartWalletClient)
-      console.log("  - Smart Wallet Client address:", smartWalletClient?.account?.address || "Not available")
+      console.log("  - Smart Wallet Client address:", smartWalletClientAddress || "Not available")
       
       // CRITICAL: Don't call createWallet() - it creates Embedded Wallet, not Smart Wallet
       // Smart Wallet contract address is available via smartWalletClient.account.address
@@ -455,15 +477,15 @@ export default function BumpBotDashboard() {
       
       if (embeddedWallet && smartWalletClient) {
         // Both embedded wallet and smart wallet client are available
-        const smartWalletAddress = smartWalletClient.account.address
-        console.log("  ✅ Embedded Wallet exists:", embeddedWallet.address)
+        const smartWalletAddress = smartWalletClientAddress
+        console.log("  ✅ Embedded Wallet exists:", embeddedWalletAddress)
         console.log("  ✅ Smart Wallet Client available, contract address:", smartWalletAddress)
         console.log("  - Smart Wallet contract will be deployed on first transaction (lazy deployment)")
         console.log("  - No need to call createWallet() - it would create duplicate embedded wallet")
         setIsConnecting(false)
       } else if (embeddedWallet && !smartWalletClient) {
         // Embedded wallet exists but smart wallet client not available
-        console.log("  ✅ Embedded Wallet exists:", embeddedWallet.address)
+        console.log("  ✅ Embedded Wallet exists:", embeddedWalletAddress)
         console.log("  ⚠️ Smart Wallet Client not available yet")
         console.log("  - This might be normal - Smart Wallet client initializes after embedded wallet")
         console.log("  - Smart Wallet contract address will be available once client is ready")
@@ -492,11 +514,12 @@ export default function BumpBotDashboard() {
         return () => clearTimeout(timeoutId)
       }
     }
-  }, [isAuthenticated, username, userFid, privySmartWalletAddress, privyReady, isCreatingSmartWallet, embeddedWallet, smartWalletClient])
+  }, [isAuthenticated, username, userFid, privySmartWalletAddress, privyReady, isCreatingSmartWallet, embeddedWalletAddress, smartWalletClientAddress])
   
-  const handleToggle = async () => {
+  // CRITICAL: Wrap with useCallback to prevent unnecessary re-renders
+  const handleToggle = useCallback(async () => {
     if (!isActive) {
-      // Starting bot session
+      // Starting bot session - NEW FLOW
       if (!isTokenVerified || !targetTokenAddress) {
         toast.error("Please verify target token address first")
         return
@@ -527,40 +550,116 @@ export default function BumpBotDashboard() {
         }
         
         // Check if credit balance is sufficient (at least enough for one bump)
-        // Note: We'll validate this on backend too, but check here for better UX
         if (credits < amountUsdValue) {
           toast.error(`Insufficient credit. Required: $${amountUsdValue.toFixed(2)}, Available: $${credits.toFixed(2)}`)
           return
         }
         
-        // Note: buyAmountPerBumpWei will be calculated on backend from USD amount using real-time ETH price
-        // Bot will run continuously until user stops it manually
+        // STEP 1: Check/Create Bot Wallets
+        // IMPORTANT: Using privySmartWalletAddress (Smart Wallet contract address, NOT Embedded Wallet)
+        // This is the unique identifier used throughout the database (user_address column)
+        setBumpLoadingState("Checking Wallets...")
+        console.log("🔄 Step 1: Checking/Creating bot wallets...")
+        console.log("   User Address (Smart Wallet):", privySmartWalletAddress)
+        
+        const walletsResponse = await fetch("/api/bot/get-or-create-wallets", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ userAddress: privySmartWalletAddress }),
+        })
+        
+        if (!walletsResponse.ok) {
+          const errorData = await walletsResponse.json().catch(() => ({}))
+          throw new Error(errorData.error || "Failed to get or create bot wallets")
+        }
+        
+        const walletsData = await walletsResponse.json()
+        const wallets = walletsData.wallets as Array<{ smartWalletAddress: string; index: number }>
+        
+        // STEP 2: Validate - Ensure we have exactly 5 wallets
+        if (!wallets || wallets.length !== 5) {
+          throw new Error(`Expected 5 bot wallets, but got ${wallets?.length || 0}`)
+        }
+        
+        console.log("✅ Step 2: Validated 5 bot wallets exist")
+        setBotWallets(wallets)
+        
+        if (walletsData.created) {
+          setBumpLoadingState("Wallets Created")
+          toast.success("5 bot wallets created successfully")
+          // Small delay to show the success message
+          await new Promise(resolve => setTimeout(resolve, 500))
+        } else {
+          setBumpLoadingState("Wallets Ready")
+          console.log("✅ Using existing bot wallets")
+        }
+        
+        // STEP 3: Start Session
+        setBumpLoadingState("Starting Session...")
+        console.log("🔄 Step 3: Starting bot session...")
+        
         await startSession({
           userAddress: privySmartWalletAddress,
           tokenAddress: targetTokenAddress as `0x${string}`,
-          amountUsd: amountUsdValue.toString(), // Send USD amount
-          intervalSeconds: intervalSeconds, // Send interval in seconds
+          amountUsd: amountUsdValue.toString(),
+          intervalSeconds: intervalSeconds,
         })
         
+        console.log("✅ Step 3: Bot session started")
+        
+        // STEP 4: Trigger First Swap
+        setBumpLoadingState("Executing First Swap...")
+        console.log("🔄 Step 4: Executing first swap...")
+        
+        // Use wallet index 0 for the first swap (round robin will continue from here)
+        const firstSwapResponse = await fetch("/api/bot/execute-swap", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            userAddress: privySmartWalletAddress,
+            walletIndex: 0, // Start with first wallet
+          }),
+        })
+        
+        if (!firstSwapResponse.ok) {
+          const errorData = await firstSwapResponse.json().catch(() => ({}))
+          console.warn("⚠️ First swap failed, but session is started:", errorData.error)
+          // Don't throw - session is started, backend will continue with scheduled swaps
+          toast.warning("Session started, but first swap failed. Bot will retry on next interval.")
+        } else {
+          console.log("✅ Step 4: First swap executed successfully")
+        }
+        
+        // Clear loading state
+        setBumpLoadingState(null)
+        
         // Don't set isActive here - let useEffect sync it from session status
-        // This prevents race conditions and infinite loops
-        toast.success("Bot session started successfully")
+        toast.success("Bot started successfully! Live activity will appear below.")
       } catch (error: any) {
-        console.error("Failed to start bot session:", error)
-        toast.error(error.message || "Failed to start bot session")
+        console.error("❌ Failed to start bot:", error)
+        setBumpLoadingState(null)
+        toast.error(error.message || "Failed to start bot")
       }
     } else {
       // Stopping bot session
       try {
+        setBumpLoadingState("Stopping...")
         await stopSession()
+        setBotWallets(null)
+        setBumpLoadingState(null)
         // Don't set isActive here - let useEffect sync it from session status
         toast.success("Bot session stopped")
       } catch (error: any) {
         console.error("Failed to stop bot session:", error)
+        setBumpLoadingState(null)
         toast.error(error.message || "Failed to stop bot session")
       }
     }
-  }
+  }, [isActive, isTokenVerified, targetTokenAddress, buyAmountUsd, privySmartWalletAddress, intervalSeconds, credits, startSession, stopSession])
   
   // Sync isActive with session status
   // Use useRef to track previous status to prevent infinite loops
@@ -746,12 +845,13 @@ export default function BumpBotDashboard() {
               balanceWei={creditData?.balanceWei}
               isVerified={isTokenVerified}
               buyAmountUsd={buyAmountUsd}
+              loadingState={bumpLoadingState}
             />
             {/* Bot Live Activity - Realtime feed from bot_logs table */}
-            {/* Always render to maintain hook order, but conditionally enable */}
+            {/* Always visible when user is connected - shows logs even when bot is not running */}
             <BotLiveActivity 
               userAddress={privySmartWalletAddress} 
-              enabled={isActive && session?.status === "running"} 
+              enabled={!!privySmartWalletAddress} 
             />
           </TabsContent>
 

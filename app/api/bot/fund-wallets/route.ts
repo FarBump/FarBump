@@ -26,12 +26,18 @@ export async function POST(request: NextRequest) {
     const body: FundWalletsRequest = await request.json()
     const { userAddress, walletAddresses, totalAmountWei } = body
 
+    // IMPORTANT: userAddress is the Smart Wallet address from Privy (NOT Embedded Wallet)
+    // This is used as the unique identifier (user_address) in all database tables
+    // We do NOT use Supabase Auth - only wallet address-based identification
+
     if (!userAddress || !walletAddresses || !totalAmountWei) {
       return NextResponse.json(
         { error: "Missing required fields: userAddress, walletAddresses, totalAmountWei" },
         { status: 400 }
       )
     }
+
+    const normalizedUserAddress = userAddress.toLowerCase()
 
     if (!Array.isArray(walletAddresses) || walletAddresses.length === 0) {
       return NextResponse.json(
@@ -43,10 +49,11 @@ export async function POST(request: NextRequest) {
     const supabase = createSupabaseServiceClient()
 
     // Get user credit balance
+    // Database query uses user_address column (NOT user_id)
     const { data: creditData, error: creditError } = await supabase
       .from("user_credits")
       .select("balance_wei")
-      .eq("user_address", userAddress.toLowerCase())
+      .eq("user_address", normalizedUserAddress)
       .single()
 
     if (creditError && creditError.code !== "PGRST116") {
@@ -109,4 +116,6 @@ export async function POST(request: NextRequest) {
     )
   }
 }
+
+
 

@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useState, useMemo, useRef } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { createSupabaseClient } from "@/lib/supabase"
 import { formatEther } from "viem"
@@ -34,9 +34,14 @@ interface UseBotLogsOptions {
  * - Automatic cleanup on unmount
  */
 export function useBotLogs({ userAddress, enabled = true, limit = 20 }: UseBotLogsOptions) {
-  const supabase = createSupabaseClient()
+  // CRITICAL: Use useMemo to create stable supabase client reference
+  // This prevents infinite loops caused by new client instance on every render
+  const supabase = useMemo(() => createSupabaseClient(), [])
   const [logs, setLogs] = useState<BotLog[]>([])
-  const [channel, setChannel] = useState<RealtimeChannel | null>(null)
+  const channelRef = useRef<RealtimeChannel | null>(null)
+  
+  // Track previous initialLogs to prevent unnecessary updates
+  const prevInitialLogsRef = useRef<BotLog[] | undefined>(undefined)
 
   // Initial fetch of recent logs
   const { data: initialLogs, isLoading, error } = useQuery<BotLog[]>({
@@ -63,22 +68,47 @@ export function useBotLogs({ userAddress, enabled = true, limit = 20 }: UseBotLo
     staleTime: 0, // Always fetch fresh data
   })
 
-  // Set initial logs
+  // Set initial logs - only update if logs actually changed
   useEffect(() => {
-    if (initialLogs) {
-      setLogs(initialLogs)
+    if (initialLogs && initialLogs !== prevInitialLogsRef.current) {
+      // Check if logs are actually different (by comparing IDs)
+      const currentIds = initialLogs.map(log => log.id).join(',')
+      const prevIds = prevInitialLogsRef.current?.map(log => log.id).join(',') || ''
+      
+      if (currentIds !== prevIds) {
+        prevInitialLogsRef.current = initialLogs
+        setLogs(initialLogs)
+      }
+    } else if (!initialLogs && prevInitialLogsRef.current) {
+      // Clear logs if initialLogs becomes null/undefined
+      prevInitialLogsRef.current = undefined
+      setLogs([])
     }
   }, [initialLogs])
 
   // Setup realtime subscription
+  // CRITICAL: Only depend on userAddress and enabled, NOT supabase (it's stable via useMemo)
   useEffect(() => {
     if (!userAddress || !enabled) {
+      // Cleanup existing subscription if disabled
+      if (channelRef.current) {
+        console.log("🧹 Cleaning up realtime subscription (disabled)")
+        channelRef.current.unsubscribe()
+        channelRef.current = null
+      }
       return
+    }
+
+    // Cleanup previous subscription if it exists
+    if (channelRef.current) {
+      console.log("🧹 Cleaning up previous realtime subscription")
+      channelRef.current.unsubscribe()
+      channelRef.current = null
     }
 
     // Create realtime channel for bot_logs
     const realtimeChannel = supabase
-      .channel("bot_logs_realtime")
+      .channel(`bot_logs_realtime_${userAddress.toLowerCase()}`)
       .on(
         "postgres_changes",
         {
@@ -113,24 +143,35 @@ export function useBotLogs({ userAddress, enabled = true, limit = 20 }: UseBotLo
           console.log("🔄 Bot log updated:", payload.new)
           const updatedLog = payload.new as BotLog
           
-          // Update existing log
-          setLogs((prevLogs) =>
-            prevLogs.map((log) => (log.id === updatedLog.id ? updatedLog : log))
-          )
+          // Update existing log - only update if log actually changed
+          setLogs((prevLogs) => {
+            const existingLog = prevLogs.find(log => log.id === updatedLog.id)
+            // Only update if log actually changed
+            if (existingLog && JSON.stringify(existingLog) !== JSON.stringify(updatedLog)) {
+              return prevLogs.map((log) => (log.id === updatedLog.id ? updatedLog : log))
+            }
+            return prevLogs
+          })
         }
       )
       .subscribe((status) => {
         console.log("📡 Realtime subscription status:", status)
       })
 
-    setChannel(realtimeChannel)
+    channelRef.current = realtimeChannel
 
-    // Cleanup on unmount
+    // Cleanup on unmount or when dependencies change
     return () => {
       console.log("🧹 Cleaning up realtime subscription")
-      realtimeChannel.unsubscribe()
+      if (channelRef.current) {
+        channelRef.current.unsubscribe()
+        channelRef.current = null
+      }
     }
-  }, [userAddress, enabled, supabase])
+    // CRITICAL: supabase is stable via useMemo, but we include it for completeness
+    // It won't cause re-renders since useMemo ensures stable reference
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userAddress, enabled])
 
   return {
     logs,
