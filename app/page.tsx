@@ -250,8 +250,12 @@ export default function BumpBotDashboard() {
   const [isConnecting, setIsConnecting] = useState(false)
   const [isActive, setIsActive] = useState(false)
   const [fuelBalance] = useState(1250.5)
-  const [buyAmountUsd, setBuyAmountUsd] = useState("0.0001")
+  const [buyAmountUsd, setBuyAmountUsd] = useState("0.01") // Default: 0.01 USD (micro transaction support)
   const [intervalSeconds, setIntervalSeconds] = useState(60) // Default: 60 seconds (1 minute)
+  
+  // State for active tab to enable auto-scroll to Live Activity
+  // Integrasi Real-Time: Auto-scroll ke Live Activity tab setelah Start Bumping diklik
+  const [activeTab, setActiveTab] = useState("control")
   
   // Loading state for Start Bumping flow
   const [bumpLoadingState, setBumpLoadingState] = useState<string | null>(null)
@@ -639,8 +643,17 @@ export default function BumpBotDashboard() {
         return
       }
       
-      if (!buyAmountUsd || parseFloat(buyAmountUsd) <= 0) {
+      // Validate minimum amount: 0.01 USD for micro transactions
+      const MIN_AMOUNT_USD = 0.01
+      const amountUsdValue = parseFloat(buyAmountUsd)
+      
+      if (!buyAmountUsd || isNaN(amountUsdValue) || amountUsdValue <= 0) {
         toast.error("Please enter a valid buy amount")
+        return
+      }
+      
+      if (amountUsdValue < MIN_AMOUNT_USD) {
+        toast.error(`Minimum amount per bump is $${MIN_AMOUNT_USD.toFixed(2)} USD. Current: $${amountUsdValue.toFixed(2)} USD`)
         return
       }
       
@@ -656,14 +669,8 @@ export default function BumpBotDashboard() {
           return
         }
         
-        // Validate buyAmountUsd
-        const amountUsdValue = parseFloat(buyAmountUsd)
-        if (isNaN(amountUsdValue) || amountUsdValue <= 0) {
-          toast.error("Please enter a valid buy amount (USD)")
-          return
-        }
-        
-        // Check if credit balance is sufficient (at least enough for one bump)
+        // Validate buyAmountUsd (already validated above, but double-check)
+        // Check if credit balance is sufficient (at least enough for one bump of 0.01 USD minimum)
         if (credits < amountUsdValue) {
           toast.error(`Insufficient credit. Required: $${amountUsdValue.toFixed(2)}, Available: $${credits.toFixed(2)}`)
           return
@@ -723,19 +730,68 @@ export default function BumpBotDashboard() {
           })
           console.log("✅ Funding confirmed on-chain")
           
-          // Update bot_logs dengan tx_hash untuk system message
-          if (receipt.status === "success" && fundData.systemLogId) {
-            await fetch("/api/bot/logs/update", {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({
-                logId: fundData.systemLogId,
-                txHash: fundingTxHash,
-                status: "success",
-              }),
-            }).catch(err => console.warn("Failed to update system log:", err))
+          // Update bot_logs dengan tx_hash untuk system message dan individual wallet logs
+          // Sinkronisasi Live Activity Log: Update semua log dengan tx_hash setelah funding selesai
+          if (receipt.status === "success") {
+            // Get ETH price for USD conversion in log messages
+            let ethPriceForLog = 0
+            try {
+              const priceResp = await fetch("/api/eth-price", {
+                headers: { Accept: "application/json" },
+              })
+              if (priceResp.ok) {
+                const priceData = await priceResp.json()
+                if (priceData.success && typeof priceData.price === "number") {
+                  ethPriceForLog = priceData.price
+                }
+              }
+            } catch (e) {
+              console.warn("Failed to fetch ETH price for log:", e)
+            }
+            
+            // Update main system log
+            if (fundData.systemLogId) {
+              await fetch("/api/bot/logs/update", {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                  logId: fundData.systemLogId,
+                  txHash: fundingTxHash,
+                  status: "success",
+                }),
+              }).catch(err => console.warn("Failed to update system log:", err))
+            }
+            
+            // Update individual wallet logs with tx_hash and success status
+            // Format: [System] Mengirim 0.000003 ETH ($0.01) ke Bot #1... Berhasil
+            if (fundData.walletLogIds && Array.isArray(fundData.walletLogIds) && fundData.transfers) {
+              await Promise.all(
+                fundData.walletLogIds.map(async (logId: number, index: number) => {
+                  if (!logId) return null
+                  const transfer = fundData.transfers[index]
+                  if (!transfer || !transfer.value) return null
+                  
+                  const walletEth = Number(transfer.value) / 1e18
+                  const walletUsd = walletEth * (ethPriceForLog || 0)
+                  
+                  return fetch("/api/bot/logs/update", {
+                    method: "POST",
+                    headers: {
+                      "Content-Type": "application/json",
+                    },
+                    body: JSON.stringify({
+                      logId: logId,
+                      txHash: fundingTxHash,
+                      status: "success",
+                      message: `[System] Mengirim ${walletEth.toFixed(6)} ETH ($${walletUsd.toFixed(2)}) ke Bot #${index + 1}... Berhasil`,
+                    }),
+                  }).catch(err => console.warn(`Failed to update wallet log ${logId}:`, err))
+                })
+              )
+            }
+            
             console.log("✅ Funding transaction confirmed and logged successfully")
           }
         }
@@ -780,6 +836,10 @@ export default function BumpBotDashboard() {
         
         // Clear loading state
         setBumpLoadingState(null)
+        
+        // Integrasi Real-Time: Auto-scroll ke Live Activity tab setelah Start Bumping diklik
+        // Pastikan setelah tombol 'Start Bumping' diklik, UI langsung beralih ke tab/bagian Live Activity
+        setActiveTab("activity")
         
         // Don't set isActive here - let useEffect sync it from session status
         toast.success("Bot started successfully! All-In funding completed. Live activity will appear below.")
@@ -929,13 +989,19 @@ export default function BumpBotDashboard() {
           </div>
         </header>
 
-        <Tabs defaultValue="control" className="w-full">
-          <TabsList className="w-full grid grid-cols-3 p-1 bg-card border border-border">
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
+          <TabsList className="w-full grid grid-cols-4 p-1 bg-card border border-border">
             <TabsTrigger
               value="control"
               className="text-xs font-medium data-[state=active]:bg-primary data-[state=active]:text-primary-foreground"
             >
               Control Panel
+            </TabsTrigger>
+            <TabsTrigger
+              value="activity"
+              className="text-xs font-medium data-[state=active]:bg-primary data-[state=active]:text-primary-foreground"
+            >
+              Live Activity
             </TabsTrigger>
             <TabsTrigger
               value="history"
@@ -996,12 +1062,14 @@ export default function BumpBotDashboard() {
               isLoadingWallets={isLoadingBotWallets}
               hasBotWallets={hasBotWallets}
             />
-            {/* Bot Live Activity - Realtime feed from bot_logs table */}
-            {/* Always visible when user is connected - shows logs even when bot is not running */}
+          </TabsContent>
+
+          {/* Live Activity Tab - Dedicated tab for real-time bot activity */}
+          <TabsContent value="activity" className="mt-4">
             <BotLiveActivity 
               userAddress={privySmartWalletAddress} 
               enabled={!!privySmartWalletAddress}
-              existingBotWallets={existingBotWallets} // Pass wallet data to show correct Active Bots count
+              existingBotWallets={existingBotWallets} // Pass wallet data to show correct Active Bots count (5/5 instead of 0/5)
             />
           </TabsContent>
 

@@ -465,7 +465,7 @@ export function ConfigPanel({
               </span>
             </div>
             <p className="text-xs text-muted-foreground">
-              Amount per swap execution (continuously until you stop the bot)
+              Amount per swap execution (minimum $0.01 USD, continuously until you stop the bot)
             </p>
           </div>
         </div>

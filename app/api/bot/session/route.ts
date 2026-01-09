@@ -36,11 +36,20 @@ export async function POST(request: NextRequest) {
 
     const normalizedUserAddress = userAddress.toLowerCase()
 
-    // Validate amountUsd
+    // Validate amountUsd with minimum 0.01 USD for micro transactions
     const amountUsdValue = parseFloat(amountUsd)
+    const MIN_AMOUNT_USD = 0.01
+    
     if (isNaN(amountUsdValue) || amountUsdValue <= 0) {
       return NextResponse.json(
         { error: "amountUsd must be a positive number" },
+        { status: 400 }
+      )
+    }
+    
+    if (amountUsdValue < MIN_AMOUNT_USD) {
+      return NextResponse.json(
+        { error: `Minimum amount per bump is $${MIN_AMOUNT_USD.toFixed(2)} USD. Current: $${amountUsdValue.toFixed(2)} USD` },
         { status: 400 }
       )
     }
@@ -110,7 +119,10 @@ export async function POST(request: NextRequest) {
     }
 
     // Convert USD to ETH (using current market price)
+    // PENTING: Gunakan pembulatan angka yang aman (6-18 desimal di belakang koma untuk ETH)
+    // Presisi tinggi untuk transaksi mikro 0.01 USD
     const amountEth = amountUsdValue / ethPriceUsd
+    // Use Math.floor for safe rounding to avoid precision errors (18 decimals)
     const amountWei = BigInt(Math.floor(amountEth * 1e18))
     
     // Validate credit balance using USD (at least enough for one bump)

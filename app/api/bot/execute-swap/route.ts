@@ -134,14 +134,26 @@ export async function POST(request: NextRequest) {
     }
     
     // Convert USD to ETH using real-time market price
+    // PENTING: Gunakan pembulatan angka yang aman (6-18 desimal di belakang koma untuk ETH)
+    // Presisi tinggi untuk transaksi mikro 0.01 USD
     const amountEth = amountUsd / ethPriceUsd
-    // Convert ETH to Wei using BigInt for precision
+    // Convert ETH to Wei using BigInt for precision (18 decimals)
+    // Use Math.floor for safe rounding to avoid precision errors
     const actualSellAmountWei = BigInt(Math.floor(amountEth * 1e18))
     
-    console.log(`💱 USD to ETH conversion:`)
-    console.log(`   Amount: $${amountUsd} USD`)
+    // Validate minimum amount: 0.01 USD
+    const MIN_AMOUNT_USD = 0.01
+    if (amountUsd < MIN_AMOUNT_USD) {
+      return NextResponse.json(
+        { error: `Minimum amount per bump is $${MIN_AMOUNT_USD.toFixed(2)} USD. Current: $${amountUsd.toFixed(2)} USD` },
+        { status: 400 }
+      )
+    }
+    
+    console.log(`💱 USD to ETH conversion (micro transaction support):`)
+    console.log(`   Amount: $${amountUsd.toFixed(2)} USD`)
     console.log(`   ETH Price: $${ethPriceUsd.toFixed(2)} USD`)
-    console.log(`   ETH Amount: ${amountEth.toFixed(6)} ETH`)
+    console.log(`   ETH Amount: ${amountEth.toFixed(18)} ETH (high precision)`)
     console.log(`   Wei Amount: ${actualSellAmountWei.toString()} wei`)
 
     // Get bot wallets from database
@@ -185,23 +197,33 @@ export async function POST(request: NextRequest) {
     console.log(`💰 Bot Wallet #${walletIndex + 1} balance: ${formatEther(botWalletBalance)} ETH`)
     console.log(`   Required for swap: ${formatEther(actualSellAmountWei)} ETH`)
 
-    // Check if balance is sufficient for swap
+    // Check if balance is sufficient for swap (minimum 0.01 USD)
+    const MIN_AMOUNT_USD = 0.01
+    const minAmountEth = MIN_AMOUNT_USD / ethPriceUsd
+    const minAmountWei = BigInt(Math.floor(minAmountEth * 1e18))
+    
     if (botWalletBalance < actualSellAmountWei) {
       console.warn(`⚠️ Bot Wallet #${walletIndex + 1} has insufficient balance`)
       console.warn(`   Balance: ${formatEther(botWalletBalance)} ETH`)
       console.warn(`   Required: ${formatEther(actualSellAmountWei)} ETH`)
       
-      // Log balance check to database
+      // Calculate USD value of remaining balance
+      const remainingBalanceEth = Number(botWalletBalance) / 1e18
+      const remainingBalanceUsd = remainingBalanceEth * ethPriceUsd
+      
+      // Log balance check to database with format: [System] Saldo Bot #1 tidak cukup ($ < 0.01). Bumping dihentikan.
       await supabase.from("bot_logs").insert({
         user_address: normalizedUserAddress,
         wallet_address: botWalletAddress,
         token_address: tokenAddress,
         amount_wei: "0",
         status: "failed",
-        message: `[Bot #${walletIndex + 1}] Insufficient balance. Required: ${formatEther(actualSellAmountWei)} ETH, Available: ${formatEther(botWalletBalance)} ETH`,
+        message: remainingBalanceUsd < MIN_AMOUNT_USD
+          ? `[System] Saldo Bot #${walletIndex + 1} tidak cukup ($${remainingBalanceUsd.toFixed(2)} < $${MIN_AMOUNT_USD.toFixed(2)}). Bumping dihentikan.`
+          : `[Bot #${walletIndex + 1}] Insufficient balance. Required: ${formatEther(actualSellAmountWei)} ETH ($${amountUsd.toFixed(2)}), Available: ${formatEther(botWalletBalance)} ETH ($${remainingBalanceUsd.toFixed(2)})`,
       })
 
-      // Check if all wallets have insufficient balance
+      // Check if all wallets have insufficient balance (below 0.01 USD minimum)
       let allWalletsEmpty = true
       for (let i = 0; i < wallets.length; i++) {
         const wallet = wallets[i]
@@ -209,7 +231,8 @@ export async function POST(request: NextRequest) {
           const balance = await publicClient.getBalance({
             address: wallet.smart_account_address,
           })
-          if (balance >= actualSellAmountWei) {
+          // Check if wallet has at least minimum amount (0.01 USD)
+          if (balance >= minAmountWei) {
             allWalletsEmpty = false
             break
           }
@@ -227,14 +250,14 @@ export async function POST(request: NextRequest) {
           .eq("user_address", normalizedUserAddress)
           .eq("status", "running")
 
-        // Log system message
+        // Log system message with format: [System] Saldo Bot #X tidak cukup ($ < 0.01). Bumping dihentikan.
         await supabase.from("bot_logs").insert({
           user_address: normalizedUserAddress,
           wallet_address: null,
           token_address: null,
           amount_wei: "0",
           status: "stopped",
-          message: "[System] Saldo habis di semua bot wallet. Bumping selesai.",
+          message: `[System] Saldo habis di semua bot wallet (semua di bawah $${MIN_AMOUNT_USD.toFixed(2)}). Bumping dihentikan.`,
         })
 
         return NextResponse.json(
@@ -257,15 +280,9 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // Log remaining balance before swap
-    await supabase.from("bot_logs").insert({
-      user_address: normalizedUserAddress,
-      wallet_address: botWalletAddress,
-      token_address: tokenAddress,
-      amount_wei: "0",
-      status: "success",
-      message: `[System] Remaining balance in Bot #${walletIndex + 1}: ${formatEther(botWalletBalance)} ETH`,
-    })
+    // Log remaining balance before swap (optional - only log if balance is significant)
+    // Format: [System] Remaining balance in Bot #1: 0.004 ETH
+    // Note: We'll log this after swap instead to show updated balance
 
     // Decrypt private key (server-side only) - PENTING: Pastikan proses dekripsi dilakukan dengan aman
     const ownerPrivateKey = decryptPrivateKey(botWallet.owner_private_key) as Hex
@@ -364,7 +381,7 @@ export async function POST(request: NextRequest) {
     // Execute swap transaction
     console.log(`🔄 Executing swap transaction...`)
     
-    // Log pending transaction with format: [Bot #1] Executing swap for token...
+    // Log pending transaction with format: [Bot #1] Melakukan swap senilai $0.01 ke Target Token... [Lihat Transaksi]
     // Update Live Activity Secara Real-Time: Tampilkan setiap aktivitas di log
     // Database insert uses user_address column (NOT user_id)
     const logResult = await supabase.from("bot_logs").insert({
@@ -373,7 +390,7 @@ export async function POST(request: NextRequest) {
       token_address: tokenAddress,
       amount_wei: actualSellAmountWei.toString(),
       status: "pending",
-      message: `[Bot #${walletIndex + 1}] Executing swap for token (${amountUsd.toFixed(2)} USD)...`,
+      message: `[Bot #${walletIndex + 1}] Melakukan swap senilai $${amountUsd.toFixed(2)} ke Target Token...`,
     }).select("id").single()
     
     const logId = logResult.data?.id
@@ -436,13 +453,13 @@ export async function POST(request: NextRequest) {
       })
 
       if (txReceipt.status === "success") {
-        // Update log with success: [Bot #1] Executing swap for $BUMP... Success (Tx: 0x...)
+        // Update log with success: [Bot #1] Melakukan swap senilai $0.01 ke Target Token... [Lihat Transaksi]
         await supabase
           .from("bot_logs")
           .update({
             tx_hash: txHash,
             status: "success",
-            message: `[Bot #${walletIndex + 1}] Executing swap for token (${amountUsd.toFixed(2)} USD)... Success (Tx: ${txHash.slice(0, 10)}...)`,
+            message: `[Bot #${walletIndex + 1}] Melakukan swap senilai $${amountUsd.toFixed(2)} ke Target Token... [Lihat Transaksi]`,
           })
           .eq("id", logId)
 
@@ -494,7 +511,7 @@ export async function POST(request: NextRequest) {
           .update({
             tx_hash: txHash,
             status: "failed",
-            message: `[Bot #${walletIndex + 1}] Executing swap for token (${amountUsd.toFixed(2)} USD)... Failed - Transaction reverted (Tx: ${txHash.slice(0, 10)}...)`,
+            message: `[Bot #${walletIndex + 1}] Melakukan swap senilai $${amountUsd.toFixed(2)} ke Target Token... Gagal - Transaction reverted [Lihat Transaksi]`,
           })
           .eq("id", logId)
 

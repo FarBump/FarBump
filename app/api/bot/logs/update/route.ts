@@ -8,6 +8,7 @@ interface UpdateLogRequest {
   logId: number
   txHash: string
   status: "success" | "failed" | "pending"
+  message?: string // Optional: Update message if provided
 }
 
 /**
@@ -29,12 +30,23 @@ export async function POST(request: NextRequest) {
 
     const supabase = createSupabaseServiceClient()
 
+    const updateData: {
+      tx_hash: string
+      status: "success" | "failed" | "pending"
+      message?: string
+    } = {
+      tx_hash: txHash,
+      status: status || "success",
+    }
+    
+    // Update message if provided (for wallet-specific funding logs)
+    if (body.message) {
+      updateData.message = body.message
+    }
+
     const { error: updateError } = await supabase
       .from("bot_logs")
-      .update({
-        tx_hash: txHash,
-        status: status || "success",
-      })
+      .update(updateData)
       .eq("id", logId)
 
     if (updateError) {

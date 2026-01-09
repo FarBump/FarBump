@@ -179,11 +179,16 @@ export function BotLiveActivity({ userAddress, enabled = true, existingBotWallet
           <div className="space-y-1 p-2">
             {logs.map((log, index) => {
               const walletLabel = getWalletLabel(log.wallet_address, safeBotWallets)
-              const amountEth = formatEther(BigInt(log.amount_wei))
+              // Handle empty or zero amount_wei
+              const amountEth = log.amount_wei && BigInt(log.amount_wei) > BigInt(0)
+                ? formatEther(BigInt(log.amount_wei))
+                : "0"
               
-              // Format action text - show buying action with ETH amount
-              // Note: USD amount would require fetching ETH price, which we can add later if needed
-              const actionText = `Buying token for ${parseFloat(amountEth).toFixed(6)} ETH`
+              // Format action text - use message from log (already formatted by backend)
+              // Backend formats: [Bot #1] Melakukan swap senilai $0.01 ke Target Token... [Lihat Transaksi]
+              // Or: [System] Mengirim 0.000003 ETH ($0.01) ke Bot #1... Berhasil
+              // Or: [System] Saldo Bot #1 tidak cukup ($ < 0.01). Bumping dihentikan.
+              const actionText = log.message || (amountEth !== "0" ? `Buying token for ${parseFloat(amountEth).toFixed(6)} ETH` : "System message")
 
               return (
                 <div
