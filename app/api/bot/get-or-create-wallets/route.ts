@@ -104,56 +104,45 @@ export async function POST(request: NextRequest) {
     console.log(`🔄 Generating 5 new bot wallets for user: ${userAddress}`)
     console.log(`   Normalized user address: ${normalizedUserAddress}`)
     
-    // CRITICAL: Fix Type 'base'
-    // Import base from viem/chains (already imported at top)
-    // Create baseChain with explicit type property
+    // CRITICAL: Definisikan 'baseChain' secara eksplisit dengan properti 'type: "base" as const'
     const baseChain = {
       ...base,
-      type: 'base' as const,
+      type: "base" as const,
     }
     
-    // CRITICAL: Initialize publicClient using baseChain
+    // CRITICAL: Gunakan process.env.COINBASE_CDP_BUNDLER_URL sebagai transport utama
+    // Fallback ke NEXT_PUBLIC_BASE_RPC_URL jika COINBASE_CDP_BUNDLER_URL tidak tersedia
+    const rpcUrl = process.env.COINBASE_CDP_BUNDLER_URL || process.env.NEXT_PUBLIC_BASE_RPC_URL || "https://mainnet.base.org"
+    console.log(`   Using RPC URL: ${rpcUrl.replace(/\/\/.*@/, '//***@')}`) // Mask credentials in logs
+    
+    // CRITICAL: Sederhanakan inisialisasi publicClient
+    // Pastikan publicClient.chain sudah benar di awal sebelum loop dimulai
     const publicClient = createPublicClient({
       chain: baseChain,
-      transport: http(process.env.NEXT_PUBLIC_BASE_RPC_URL || "https://mainnet.base.org"),
+      transport: http(rpcUrl),
     })
     
-    // CRITICAL: Logging - Ensure publicClient.chain is not undefined before loop
-    if (!publicClient) {
-      console.error("❌ CRITICAL: publicClient is undefined")
-      return NextResponse.json(
-        { error: "Failed to initialize public client" },
-        { status: 500 }
-      )
+    // CRITICAL: Validasi ketat sebelum loop
+    // Jika 'toSimpleSmartAccount' tetap error, tambahkan validasi ketat
+    if (!publicClient || !publicClient.chain) {
+      console.error("❌ CRITICAL: Client not initialized")
+      throw new Error("Client not initialized")
     }
     
-    if (!publicClient.chain) {
-      console.error("❌ CRITICAL: publicClient.chain is undefined")
-      return NextResponse.json(
-        { error: "Failed to initialize public client chain object" },
-        { status: 500 }
-      )
-    }
-    
-    // PENTING: Before calling toSimpleSmartAccount, ensure 'type' property exists
-    // Use Object.defineProperty to make it enumerable (required for 'in' operator)
-    if (!('type' in publicClient.chain)) {
-      Object.defineProperty(publicClient.chain, 'type', {
-        value: 'base',
-        enumerable: true,
-        writable: false,
-        configurable: true,
-      })
+    // CRITICAL: Pastikan chain object memiliki type property
+    // Tidak perlu Object.defineProperty karena baseChain sudah memiliki type
+    // Validasi untuk memastikan chain object valid
+    if (typeof publicClient.chain !== 'object' || publicClient.chain === null) {
+      console.error("❌ CRITICAL: Chain object is invalid")
+      throw new Error("Chain object is invalid")
     }
     
     // Logging: Verify chain object before loop
     console.log(`✅ Public client initialized:`)
     console.log(`   - Chain name: ${publicClient.chain.name}`)
     console.log(`   - Chain ID: ${publicClient.chain.id}`)
-    console.log(`   - Chain type: ${typeof publicClient.chain}`)
+    console.log(`   - Chain type property: ${(publicClient.chain as any).type || 'undefined'}`)
     console.log(`   - Chain has 'type' property: ${'type' in publicClient.chain}`)
-    console.log(`   - Chain 'type' value: ${(publicClient.chain as any).type || 'undefined'}`)
-    console.log(`   - Chain object keys: ${Object.keys(publicClient.chain).join(', ')}`)
     
     const wallets_data: BotWalletData[] = []
     
@@ -243,7 +232,7 @@ export async function POST(request: NextRequest) {
             index: BigInt(i), // Deterministic index for this wallet
           } as any)
           
-          // Step 8: Validate smartAccount result
+          // Step 7: Validate smartAccount result
           if (!smartAccount) {
             throw new Error(`toSimpleSmartAccount returned null for wallet ${i + 1}`)
           }
@@ -278,15 +267,18 @@ export async function POST(request: NextRequest) {
                 throw new Error(`Owner account is invalid for wallet ${i + 1} retry`)
               }
               
-              // Create baseChain with explicit type property
+              // Create baseChain with explicit type property untuk retry
               const retryBaseChain = {
                 ...base,
-                type: 'base' as const,
+                type: "base" as const,
               }
+              
+              // Gunakan COINBASE_CDP_BUNDLER_URL untuk retry juga
+              const retryRpcUrl = process.env.COINBASE_CDP_BUNDLER_URL || process.env.NEXT_PUBLIC_BASE_RPC_URL || "https://mainnet.base.org"
               
               const fixedPublicClient = createPublicClient({
                 chain: retryBaseChain,
-                transport: http(process.env.NEXT_PUBLIC_BASE_RPC_URL || "https://mainnet.base.org"),
+                transport: http(retryRpcUrl),
               })
               
               // Validate fixed client - Periksa fungsi pembuat smart account: Pastikan semua variabel dicek

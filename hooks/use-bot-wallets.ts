@@ -24,13 +24,16 @@ export function useBotWallets({ userAddress, enabled = true }: UseBotWalletsOpti
         throw new Error("User address is required")
       }
 
+      // Pastikan userAddress sudah di-lowercase
+      const normalizedUserAddress = userAddress.toLowerCase()
+
       try {
         const response = await fetch("/api/bot/get-or-create-wallets", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
           },
-          body: JSON.stringify({ userAddress }),
+          body: JSON.stringify({ userAddress: normalizedUserAddress }),
         })
 
         if (!response.ok) {
@@ -48,10 +51,11 @@ export function useBotWallets({ userAddress, enabled = true }: UseBotWalletsOpti
         throw error
       }
     },
-    enabled: enabled && !!userAddress,
+    // Set properti berikut di dalam useQuery untuk mencegah auto-fetch
+    enabled: false, // IMPORTANT: Set enabled: false agar API tidak dipanggil otomatis
+    refetchOnWindowFocus: false, // IMPORTANT: Tidak refetch saat window focus (menghilangkan error di konsol saat tab berpindah)
+    retry: false, // IMPORTANT: Tidak retry otomatis
     staleTime: 5 * 60 * 1000, // Cache for 5 minutes (wallets are permanent)
-    retry: false, // Don't retry on failure to prevent infinite loops
-    retryDelay: 1000, // Wait 1 second between retries (if retry enabled)
     // Return empty array on error to prevent crashes
     onError: (error) => {
       console.error("❌ useBotWallets error:", error)

@@ -566,12 +566,15 @@ export default function BumpBotDashboard() {
       setBumpLoadingState("Generating Bot Wallets...")
       console.log("🔄 Generating bot wallets for user:", privySmartWalletAddress)
       
+      // Pastikan variabel 'userAddress' yang dikirim ke API sudah di-lowercase
+      const normalizedUserAddress = privySmartWalletAddress.toLowerCase()
+      
       const walletsResponse = await fetch("/api/bot/get-or-create-wallets", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ userAddress: privySmartWalletAddress }),
+        body: JSON.stringify({ userAddress: normalizedUserAddress }),
       })
       
       if (!walletsResponse.ok) {
