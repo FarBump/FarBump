@@ -4,62 +4,46 @@ const webpack = require('webpack')
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  // PENTING: Memaksa Next.js untuk memproses library blockchain dengan benar
+  transpilePackages: ['viem', 'permissionless', 'ox', '@uniswap/v4-sdk', '@abstract-foundation/agw-client'],
+  
   typescript: {
     ignoreBuildErrors: true,
   },
   images: {
     unoptimized: true,
   },
-  // Add empty turbopack config to silence the error
-  // We're using webpack config instead
-  turbopack: {},
-  // Redirect manifest to Farcaster Hosted Manifest
   async redirects() {
     return [
       {
         source: '/.well-known/farcaster.json',
         destination: 'https://api.farcaster.xyz/miniapps/hosted-manifest/019b6904-aa9c-a5cf-d965-ccddf734f08e',
-        permanent: false, // 307 temporary redirect
+        permanent: false,
       },
     ]
   },
   webpack: (config, { isServer }) => {
-    // Exclude problematic modules from client bundle
+    // Sediakan fallback untuk modul Node.js yang hilang di browser
     if (!isServer) {
       config.resolve.fallback = {
         ...config.resolve.fallback,
         fs: false,
         net: false,
         tls: false,
-        crypto: false,
+        crypto: require.resolve('crypto-browserify'), // Lebih aman daripada 'false'
+        stream: require.resolve('stream-browserify'),
       }
-      
-      // Exclude specific problematic packages from bundling
-      config.externals = config.externals || []
-      config.externals.push({
-        'thread-stream': 'commonjs thread-stream',
-        'pino-elasticsearch': 'commonjs pino-elasticsearch',
-        'why-is-node-running': 'commonjs why-is-node-running',
-        'tap': 'commonjs tap',
-        'tape': 'commonjs tape',
-        'fastbench': 'commonjs fastbench',
-        'desm': 'commonjs desm',
-      })
-      
-      // Use webpack's IgnorePlugin to ignore test files
-      config.plugins.push(
-        new webpack.IgnorePlugin({
-          resourceRegExp: /\.(test|spec)\.(js|ts|mjs|cjs)$/,
-        })
-      )
-      
-      config.plugins.push(
-        new webpack.IgnorePlugin({
-          resourceRegExp: /\.(md|txt|log|map|snap)$/,
-        })
-      )
     }
+
+    // Fix untuk "in operator" error dan ESM compatibility
+    config.externals = [...(config.externals || [])]
     
+    // Matikan warning terkait library yang memiliki dependency opsional
+    config.ignoreWarnings = [
+      { module: /node_modules\/pino/ },
+      { message: /critical dependency/i },
+    ]
+
     return config
   },
 }
