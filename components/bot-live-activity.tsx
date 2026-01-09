@@ -14,6 +14,7 @@ import { useBotSession } from "@/hooks/use-bot-session"
 interface BotLiveActivityProps {
   userAddress: string | null
   enabled?: boolean
+  existingBotWallets?: Array<{ smartWalletAddress: string; index: number }> | null // Pass wallet data from parent to show correct count
 }
 
 /**
@@ -28,7 +29,7 @@ interface BotLiveActivityProps {
  * - Smooth animations for new logs
  * - Aggregated wallet status overview
  */
-export function BotLiveActivity({ userAddress, enabled = true }: BotLiveActivityProps) {
+export function BotLiveActivity({ userAddress, enabled = true, existingBotWallets = null }: BotLiveActivityProps) {
   // Get bot session for active status FIRST (before using it in other hooks)
   // Always call hook to maintain hook order (React Rules of Hooks)
   const { session } = useBotSession(userAddress)
@@ -55,7 +56,12 @@ export function BotLiveActivity({ userAddress, enabled = true }: BotLiveActivity
   // Use empty array as fallback to prevent undefined errors
   // Type assertion needed because React Query types are complex
   type BotWallet = { smartWalletAddress: string; index: number }
-  const safeBotWallets: BotWallet[] = (botWallets as BotWallet[] | undefined) || []
+  
+  // PENTING: Gunakan existingBotWallets dari parent jika tersedia (untuk tampilan Active Bots yang akurat)
+  // Fallback ke botWallets dari hook jika existingBotWallets tidak tersedia
+  const safeBotWallets: BotWallet[] = existingBotWallets && Array.isArray(existingBotWallets) && existingBotWallets.length > 0
+    ? existingBotWallets
+    : (botWallets as BotWallet[] | undefined) || []
   
   if (walletsError) {
     console.error("⚠️ Error loading bot wallets:", walletsError)
@@ -109,7 +115,8 @@ export function BotLiveActivity({ userAddress, enabled = true }: BotLiveActivity
   const aggregatedCredit = creditData?.balanceEth || "0"
 
   // Count active wallets (all 5 wallets are ready if bot wallets exist)
-  const activeWalletsCount = safeBotWallets.length
+  // Pastikan perbarui tampilan Active Bots bukan lagi 0/5 Wallets Ready ketika user telah memiliki 5 smart wallet bot di database
+  const activeWalletsCount = safeBotWallets.length >= 5 ? 5 : safeBotWallets.length
   const totalWallets = 5
 
   // Always render if userAddress exists (even if not enabled, show placeholder)

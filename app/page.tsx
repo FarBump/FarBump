@@ -294,7 +294,8 @@ export default function BumpBotDashboard() {
     && existingBotWallets.every(w => w?.smartWalletAddress && typeof w.smartWalletAddress === 'string')
   
   // Bot session management
-  const { session, startSession, stopSession, isStarting, isStopping } = useBotSession(privySmartWalletAddress)
+  // Expose refetch function to manually refresh session data after wallet creation
+  const { session, startSession, stopSession, isStarting, isStopping, refetch: refetchSession } = useBotSession(privySmartWalletAddress)
 
   // Extract user data from Privy user object (prioritize Privy user data)
   // Use user.farcaster.pfp and user.farcaster.username from Privy user object
@@ -605,6 +606,14 @@ export default function BumpBotDashboard() {
         setBotWallets(validWallets)
       }
       
+      // Setelah wallet berhasil dibuat di database, pastikan frontend melakukan refetch data session
+      // This updates UI to show correct wallet count
+      if (refetchSession) {
+        setTimeout(() => {
+          refetchSession()
+        }, 1000) // Small delay to ensure backend has processed
+      }
+      
       setBumpLoadingState(null)
       setIsLoadingBotWallets(false)
       
@@ -619,7 +628,7 @@ export default function BumpBotDashboard() {
       setIsLoadingBotWallets(false)
       toast.error(error.message || "Failed to generate bot wallets")
     }
-  }, [privySmartWalletAddress, hasCredit, isMounted])
+  }, [privySmartWalletAddress, hasCredit, isMounted, refetchSession])
   
   // CRITICAL: Wrap with useCallback to prevent unnecessary re-renders
   const handleToggle = useCallback(async () => {
@@ -920,7 +929,8 @@ export default function BumpBotDashboard() {
             {/* Always visible when user is connected - shows logs even when bot is not running */}
             <BotLiveActivity 
               userAddress={privySmartWalletAddress} 
-              enabled={!!privySmartWalletAddress} 
+              enabled={!!privySmartWalletAddress}
+              existingBotWallets={existingBotWallets} // Pass wallet data to show correct Active Bots count
             />
           </TabsContent>
 

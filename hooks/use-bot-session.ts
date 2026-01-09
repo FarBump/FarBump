@@ -110,6 +110,11 @@ export function useBotSession(userAddress: string | null) {
     },
   })
 
+  // Expose refetch function to manually refresh session data
+  const refetch = () => {
+    queryClient.invalidateQueries({ queryKey: ["bot-session", userAddress] })
+  }
+
   return {
     session,
     isLoading,
@@ -118,6 +123,7 @@ export function useBotSession(userAddress: string | null) {
     stopSession: stopSession.mutateAsync,
     isStarting: startSession.isPending,
     isStopping: stopSession.isPending,
+    refetch, // Expose refetch function
   }
 }
 
