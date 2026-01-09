@@ -71,23 +71,59 @@ export async function POST(request: NextRequest) {
 
     // Generate 5 new bot wallets
     console.log(`🔄 Generating 5 new bot wallets for user: ${userAddress}`)
+    console.log(`   Normalized user address: ${normalizedUserAddress}`)
     
-    // CRITICAL: Initialize publicClient inside POST function to ensure chain object is properly defined
+    // CRITICAL: Manual Chain Patching
+    // Don't use raw base object - create baseChain with explicit type property
+    // This prevents "Cannot use 'in' operator" errors in permissionless library
+    const baseChain = {
+      ...base,
+      type: 'base' as const,
+    }
+    
+    // CRITICAL: Initialize publicClient inside POST function with patched chain
     // This prevents "Cannot use 'in' operator" errors in production
     const publicClient = createPublicClient({
-      chain: base,
+      chain: baseChain,
       transport: http(process.env.NEXT_PUBLIC_BASE_RPC_URL || "https://mainnet.base.org"),
     })
     
-    // Validate publicClient and chain object
-    if (!publicClient || !publicClient.chain) {
+    // CRITICAL: Logging - Ensure publicClient.chain is not undefined before loop
+    if (!publicClient) {
+      console.error("❌ CRITICAL: publicClient is undefined")
       return NextResponse.json(
-        { error: "Failed to initialize public client or chain object is undefined" },
+        { error: "Failed to initialize public client" },
         { status: 500 }
       )
     }
     
-    console.log(`✅ Public client initialized: ${publicClient.chain.name} (ID: ${publicClient.chain.id})`)
+    if (!publicClient.chain) {
+      console.error("❌ CRITICAL: publicClient.chain is undefined")
+      return NextResponse.json(
+        { error: "Failed to initialize public client chain object" },
+        { status: 500 }
+      )
+    }
+    
+    // CRITICAL: Use Object.defineProperty to ensure 'type' is enumerable
+    // Permissionless library uses 'in' operator which requires enumerable property
+    if (!('type' in publicClient.chain)) {
+      Object.defineProperty(publicClient.chain, 'type', {
+        value: 'base',
+        enumerable: true,
+        writable: false,
+        configurable: true,
+      })
+    }
+    
+    // Logging: Verify chain object before loop
+    console.log(`✅ Public client initialized:`)
+    console.log(`   - Chain name: ${publicClient.chain.name}`)
+    console.log(`   - Chain ID: ${publicClient.chain.id}`)
+    console.log(`   - Chain type: ${typeof publicClient.chain}`)
+    console.log(`   - Chain has 'type' property: ${'type' in publicClient.chain}`)
+    console.log(`   - Chain 'type' value: ${(publicClient.chain as any).type || 'undefined'}`)
+    console.log(`   - Chain object keys: ${Object.keys(publicClient.chain).join(', ')}`)
     
     const botWallets: BotWallet[] = []
     
@@ -104,7 +140,7 @@ export async function POST(request: NextRequest) {
         const ownerAccount = privateKeyToAccount(ownerPrivateKey)
 
         // Create SimpleAccount Smart Wallet address deterministically
-        // Use toSimpleSmartAccount from permissionless (same approach as execute-swap)
+        // Use toSimpleSmartAccount from permissionless
         let account: { address: Address } | null = null
         
         try {
@@ -115,39 +151,54 @@ export async function POST(request: NextRequest) {
           console.log(`    - Index: ${i}`)
           console.log(`    - Owner (EOA Signer): ${ownerAccount.address}`)
           
-          // CRITICAL: Ensure chain object is properly defined before calling toSimpleSmartAccount
-          // Permissionless library checks for 'type' property using 'in' operator
-          // We need to ensure chain object exists and has all required properties
-          const chain = publicClient.chain
-          if (!chain || typeof chain !== 'object') {
-            throw new Error("Chain object is undefined or invalid")
+          // CRITICAL: Verify chain object before each call
+          if (!publicClient.chain) {
+            throw new Error("Chain object is undefined before toSimpleSmartAccount call")
           }
           
-          // Create a safe chain object with all required properties
-          // This prevents "Cannot use 'in' operator" errors
-          const safeChain = {
-            ...chain,
-            // Ensure type property exists (permissionless may check for this)
-            type: (chain as any).type || 'base',
+          if (!('type' in publicClient.chain)) {
+            console.warn(`   ⚠️ Chain missing 'type' property, adding it...`)
+            Object.defineProperty(publicClient.chain, 'type', {
+              value: 'base',
+              enumerable: true,
+              writable: false,
+              configurable: true,
+            })
           }
           
-          // Create a safe client with the chain object
-          const safeClient = {
-            ...publicClient,
-            chain: safeChain,
+          // Library Compatibility: Try with signer first (most common)
+          // If it fails, we'll try with owner as fallback
+          let smartAccount
+          try {
+            smartAccount = await toSimpleSmartAccount({
+              client: publicClient as any, // Use 'as any' for library compatibility
+              signer: ownerAccount,
+              entryPoint: {
+                address: entryPointAddress,
+                version: "0.6",
+              },
+              factoryAddress: factoryAddress,
+              index: BigInt(i), // Deterministic index for this wallet
+            } as any) // Type assertion to bypass TypeScript type checking
+          } catch (signerError: any) {
+            // If signer fails, try with owner (some versions of permissionless use 'owner' instead of 'signer')
+            const errorMsg = String(signerError?.message || signerError || "")
+            if (errorMsg.includes('signer') || errorMsg.includes('owner')) {
+              console.log(`   Trying with 'owner' parameter instead of 'signer'...`)
+              smartAccount = await toSimpleSmartAccount({
+                client: publicClient as any,
+                owner: ownerAccount, // Try 'owner' instead of 'signer'
+                entryPoint: {
+                  address: entryPointAddress,
+                  version: "0.6",
+                },
+                factoryAddress: factoryAddress,
+                index: BigInt(i),
+              } as any)
+            } else {
+              throw signerError
+            }
           }
-          
-          // Use same approach as execute-swap route (simpler and proven to work)
-          const smartAccount = await toSimpleSmartAccount({
-            client: safeClient as any,
-            signer: ownerAccount,
-            entryPoint: {
-              address: entryPointAddress,
-              version: "0.6",
-            },
-            factoryAddress: factoryAddress,
-            index: BigInt(i), // Deterministic index for this wallet
-          } as any) // Type assertion to bypass TypeScript type checking
           
           if (smartAccount && smartAccount.address) {
             account = { address: smartAccount.address }
@@ -157,22 +208,23 @@ export async function POST(request: NextRequest) {
           }
         } catch (accountError: any) {
           console.error(`❌ Error creating Smart Account ${i + 1}:`, accountError)
+          console.error(`   Error type: ${accountError?.constructor?.name || typeof accountError}`)
           console.error(`   Error message: ${accountError?.message || String(accountError)}`)
+          console.error(`   Error stack: ${accountError?.stack || "No stack trace"}`)
           
           // Check if error is about 'in' operator and 'type' property
           const errorMessage = String(accountError?.message || accountError || "")
           const isTypeError = errorMessage.includes("Cannot use 'in' operator") && errorMessage.includes("type")
           
           if (isTypeError) {
-            console.error(`   🔍 Detected 'in' operator error - attempting fix...`)
+            console.error(`   🔍 Detected 'in' operator error - attempting manual chain patching...`)
             
-            // Try creating a new publicClient with explicit chain object that includes 'type' property
-            // Permissionless library may check for 'type' property using 'in' operator
+            // Try creating a new publicClient with explicit chain patching
             try {
               // Create a complete chain object with all properties including 'type'
               const completeChain = {
                 ...base,
-                type: 'base' as const, // Explicitly add type property
+                type: 'base' as const,
               }
               
               const fixedPublicClient = createPublicClient({
@@ -185,12 +237,21 @@ export async function POST(request: NextRequest) {
                 throw new Error("Failed to create fixed publicClient")
               }
               
-              console.log(`   Retrying with fresh publicClient (with explicit type property)...`)
+              // CRITICAL: Use Object.defineProperty to ensure 'type' is enumerable
+              Object.defineProperty(fixedPublicClient.chain, 'type', {
+                value: 'base',
+                enumerable: true,
+                writable: false,
+                configurable: true,
+              })
+              
+              console.log(`   Retrying with manually patched chain object...`)
               console.log(`   Chain type: ${typeof fixedPublicClient.chain}`)
               console.log(`   Chain has 'type': ${'type' in fixedPublicClient.chain}`)
+              console.log(`   Chain 'type' value: ${(fixedPublicClient.chain as any).type}`)
               
               const retryAccount = await toSimpleSmartAccount({
-                client: fixedPublicClient,
+                client: fixedPublicClient as any,
                 signer: ownerAccount,
                 entryPoint: {
                   address: entryPointAddress,
