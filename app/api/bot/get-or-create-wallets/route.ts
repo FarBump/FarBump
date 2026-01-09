@@ -1,17 +1,16 @@
 import { NextRequest, NextResponse } from "next/server"
 import { privateKeyToAccount, generatePrivateKey } from "viem/accounts"
 import { toSimpleSmartAccount } from "permissionless/accounts"
-import { createPublicClient, http, type Address, getContractAddress, keccak256, encodePacked, isAddress } from "viem"
-import { base } from "viem/chains"
+import { createPublicClient, http, type Address, isAddress } from "viem"
 import { createSupabaseServiceClient } from "@/lib/supabase"
 import { encryptPrivateKey } from "@/lib/bot-encryption"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
 
-// CRITICAL: Don't initialize publicClient at module level
-// Initialize it inside the POST function to ensure chain object is properly defined
-// This prevents "Cannot use 'in' operator" errors in production
+// CRITICAL: Manual Chain Object for Viem v2.x and Permissionless latest compatibility
+// Buat variabel constant di luar fungsi POST
+const BASE_CHAIN_ID = 8453
 
 // Updated interface to match new wallets_data structure
 interface BotWalletData {
@@ -104,45 +103,19 @@ export async function POST(request: NextRequest) {
     console.log(`🔄 Generating 5 new bot wallets for user: ${userAddress}`)
     console.log(`   Normalized user address: ${normalizedUserAddress}`)
     
-    // CRITICAL: Definisikan 'baseChain' secara eksplisit dengan properti 'type: "base" as const'
-    const baseChain = {
-      ...base,
-      type: "base" as const,
-    }
-    
-    // CRITICAL: Gunakan process.env.COINBASE_CDP_BUNDLER_URL sebagai transport utama
-    // Fallback ke NEXT_PUBLIC_BASE_RPC_URL jika COINBASE_CDP_BUNDLER_URL tidak tersedia
+    // CRITICAL: Manual Chain Object - Viem v2.x and Permissionless latest compatibility
+    // Di dalam POST, jangan mengandalkan 'publicClient.chain'. Buat objek client dengan cara ini:
     const rpcUrl = process.env.COINBASE_CDP_BUNDLER_URL || process.env.NEXT_PUBLIC_BASE_RPC_URL || "https://mainnet.base.org"
     console.log(`   Using RPC URL: ${rpcUrl.replace(/\/\/.*@/, '//***@')}`) // Mask credentials in logs
     
-    // CRITICAL: Sederhanakan inisialisasi publicClient
-    // Pastikan publicClient.chain sudah benar di awal sebelum loop dimulai
+    // Create publicClient without chain (only transport) - for compatibility with Viem v2.x
     const publicClient = createPublicClient({
-      chain: baseChain,
       transport: http(rpcUrl),
     })
     
-    // CRITICAL: Validasi ketat sebelum loop
-    // Jika 'toSimpleSmartAccount' tetap error, tambahkan validasi ketat
-    if (!publicClient || !publicClient.chain) {
-      console.error("❌ CRITICAL: Client not initialized")
-      throw new Error("Client not initialized")
-    }
-    
-    // CRITICAL: Pastikan chain object memiliki type property
-    // Tidak perlu Object.defineProperty karena baseChain sudah memiliki type
-    // Validasi untuk memastikan chain object valid
-    if (typeof publicClient.chain !== 'object' || publicClient.chain === null) {
-      console.error("❌ CRITICAL: Chain object is invalid")
-      throw new Error("Chain object is invalid")
-    }
-    
-    // Logging: Verify chain object before loop
-    console.log(`✅ Public client initialized:`)
-    console.log(`   - Chain name: ${publicClient.chain.name}`)
-    console.log(`   - Chain ID: ${publicClient.chain.id}`)
-    console.log(`   - Chain type property: ${(publicClient.chain as any).type || 'undefined'}`)
-    console.log(`   - Chain has 'type' property: ${'type' in publicClient.chain}`)
+    console.log(`✅ Public client initialized (Manual Chain Object mode):`)
+    console.log(`   - Base Chain ID: ${BASE_CHAIN_ID}`)
+    console.log(`   - RPC URL: ${rpcUrl.replace(/\/\/.*@/, '//***@')}`)
     
     const wallets_data: BotWalletData[] = []
     
@@ -177,52 +150,34 @@ export async function POST(request: NextRequest) {
             }
           }
           
-          // Step 3: Validate publicClient and chain before proceeding
-          if (!publicClient) {
-            throw new Error(`PublicClient is undefined for wallet ${i + 1}`)
-          }
-          
-          if (!publicClient.chain) {
-            throw new Error(`PublicClient.chain is undefined for wallet ${i + 1}`)
-          }
-          
-          // Step 4: Validate chain object properties before using 'in' operator
-          // CRITICAL: Check if chain object exists and is an object before using 'in' operator
-          if (typeof publicClient.chain !== 'object' || publicClient.chain === null) {
-            throw new Error(`Chain object is not a valid object for wallet ${i + 1}`)
-          }
-          
-          // Step 5: Ensure 'type' property exists before using 'in' operator
-          // PENTING: Before calling toSimpleSmartAccount, ensure 'type' property exists
-          // Check if 'type' property exists safely
-          const chainType = (publicClient.chain as any)?.type
-          if (!chainType && !('type' in publicClient.chain)) {
-            console.warn(`   ⚠️ Chain missing 'type' property for wallet ${i + 1}, adding it...`)
-            Object.defineProperty(publicClient.chain, 'type', {
-              value: 'base',
-              enumerable: true,
-              writable: false,
-              configurable: true,
-            })
-          }
-          
-          // Step 6: Validate provider/client before calling toSimpleSmartAccount
+          // Step 3: Validate ownerAccount before calling toSimpleSmartAccount
           if (!ownerAccount) {
             throw new Error(`Owner account is null for wallet ${i + 1}`)
           }
           
           console.log(`  Creating Smart Account ${i + 1}:`)
-          console.log(`    - Chain: ${publicClient.chain?.name || 'unknown'} (ID: ${publicClient.chain?.id || 'unknown'})`)
+          console.log(`    - Chain ID: ${BASE_CHAIN_ID} (Base)`)
           console.log(`    - EntryPoint: ${entryPointAddress} (v0.6)`)
           console.log(`    - Factory: ${factoryAddress}`)
           console.log(`    - Index: ${i}`)
           console.log(`    - Owner (EOA Signer): ${ownerAccount.address}`)
-          console.log(`    - Chain has 'type' property: ${'type' in publicClient.chain}`)
+          console.log(`    - Using Manual Chain Object (fake client)`)
           
-          // Step 7: Create SimpleAccount Smart Wallet address deterministically
-          // Casting: Use client: publicClient as any for library compatibility
+          // Step 4: Create SimpleAccount Smart Wallet address deterministically
+          // CRITICAL: Saat memanggil 'toSimpleSmartAccount', jangan masukkan 'client: publicClient'
+          // Sebagai gantinya, gunakan trik 'fake client' untuk membypass pengecekan internal library
           const smartAccount = await toSimpleSmartAccount({
-            client: publicClient as any,
+            client: {
+              chain: { 
+                id: BASE_CHAIN_ID, 
+                nativeCurrency: { 
+                  name: 'Ether', 
+                  symbol: 'ETH', 
+                  decimals: 18 
+                } 
+              },
+              transport: http(rpcUrl),
+            } as any,
             signer: ownerAccount,
             entryPoint: {
               address: entryPointAddress,
@@ -232,7 +187,7 @@ export async function POST(request: NextRequest) {
             index: BigInt(i), // Deterministic index for this wallet
           } as any)
           
-          // Step 7: Validate smartAccount result
+          // Step 5: Validate smartAccount result
           if (!smartAccount) {
             throw new Error(`toSimpleSmartAccount returned null for wallet ${i + 1}`)
           }
@@ -252,107 +207,9 @@ export async function POST(request: NextRequest) {
           console.error(`   Error type: ${accountError?.constructor?.name || typeof accountError}`)
           console.error(`   Error message: ${accountError?.message || String(accountError)}`)
           console.error(`   Error stack: ${accountError?.stack || "No stack trace"}`)
-          
-          // Check if error is about 'in' operator and 'type' property
-          const errorMessage = String(accountError?.message || accountError || "")
-          const isTypeError = errorMessage.includes("Cannot use 'in' operator") && errorMessage.includes("type")
-          
-          if (isTypeError) {
-            console.error(`   🔍 Detected 'in' operator error for wallet ${i + 1} - attempting manual chain patching...`)
-            
-            // Try creating a new publicClient with explicit chain patching
-            try {
-              // Validate ownerAccount before retry
-              if (!ownerAccount || !ownerAccount.address) {
-                throw new Error(`Owner account is invalid for wallet ${i + 1} retry`)
-              }
-              
-              // Create baseChain with explicit type property untuk retry
-              const retryBaseChain = {
-                ...base,
-                type: "base" as const,
-              }
-              
-              // Gunakan COINBASE_CDP_BUNDLER_URL untuk retry juga
-              const retryRpcUrl = process.env.COINBASE_CDP_BUNDLER_URL || process.env.NEXT_PUBLIC_BASE_RPC_URL || "https://mainnet.base.org"
-              
-              const fixedPublicClient = createPublicClient({
-                chain: retryBaseChain,
-                transport: http(retryRpcUrl),
-              })
-              
-              // Validate fixed client - Periksa fungsi pembuat smart account: Pastikan semua variabel dicek
-              if (!fixedPublicClient) {
-                throw new Error(`Failed to create fixed publicClient for wallet ${i + 1}`)
-              }
-              
-              if (!fixedPublicClient.chain) {
-                throw new Error(`Fixed publicClient.chain is undefined for wallet ${i + 1}`)
-              }
-              
-              // CRITICAL: Check if chain object exists and is an object before using 'in' operator
-              if (typeof fixedPublicClient.chain !== 'object' || fixedPublicClient.chain === null) {
-                throw new Error(`Fixed chain object is not a valid object for wallet ${i + 1}`)
-              }
-              
-              // PENTING: Before calling toSimpleSmartAccount, ensure 'type' property exists
-              // Check if 'type' property exists safely before using 'in' operator
-              const retryChainType = (fixedPublicClient.chain as any)?.type
-              if (!retryChainType && !('type' in fixedPublicClient.chain)) {
-                Object.defineProperty(fixedPublicClient.chain, 'type', {
-                  value: 'base',
-                  enumerable: true,
-                  writable: false,
-                  configurable: true,
-                })
-              }
-              
-              console.log(`   Retrying with manually patched chain object for wallet ${i + 1}...`)
-              console.log(`   Chain type: ${typeof fixedPublicClient.chain}`)
-              console.log(`   Chain has 'type': ${'type' in fixedPublicClient.chain}`)
-              console.log(`   Chain 'type' value: ${(fixedPublicClient.chain as any).type}`)
-              
-              // Casting: Use client: fixedPublicClient as any
-              const retryAccount = await toSimpleSmartAccount({
-                client: fixedPublicClient as any,
-                signer: ownerAccount,
-                entryPoint: {
-                  address: entryPointAddress,
-                  version: "0.6",
-                },
-                factoryAddress: factoryAddress,
-                index: BigInt(i),
-              } as any)
-              
-              // Validate retry result
-              if (!retryAccount) {
-                throw new Error(`Retry returned null for wallet ${i + 1}`)
-              }
-              
-              if (!retryAccount.address) {
-                throw new Error(`Retry returned account without address for wallet ${i + 1}`)
-              }
-              
-              if (!isAddress(retryAccount.address)) {
-                throw new Error(`Retry returned invalid address for wallet ${i + 1}: ${retryAccount.address}`)
-              }
-              
-              account = { address: retryAccount.address }
-              console.log(`  ✅ Smart Account ${i + 1} created with retry: ${account.address}`)
-            } catch (retryError: any) {
-              console.error(`   ❌ Retry also failed for wallet ${i + 1}:`, retryError?.message)
-              console.error(`   Retry error type: ${retryError?.constructor?.name || typeof retryError}`)
-              console.error(`   Retry error stack: ${retryError?.stack || "No stack trace"}`)
-              throw new Error(
-                `Failed to create Smart Account ${i + 1}: ${accountError?.message || String(accountError)}. Retry failed: ${retryError?.message || String(retryError)}`
-              )
-            }
-          } else {
-            // For other errors, throw immediately
-            throw new Error(
-              `Failed to create Smart Account ${i + 1}: ${accountError?.message || String(accountError)}`
-            )
-          }
+          throw new Error(
+            `Failed to create Smart Account ${i + 1}: ${accountError?.message || String(accountError)}`
+          )
         }
 
         // CRITICAL: Ensure account was created successfully before proceeding
