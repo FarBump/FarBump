@@ -669,7 +669,78 @@ export default function BumpBotDashboard() {
           return
         }
         
-        // STEP 1: Start Session (wallets already exist)
+        // STEP 1: All-In Funding - Mass Funding ke 5 Bot Wallets
+        setBumpLoadingState("Preparing Mass Funding...")
+        console.log("🔄 Starting All-In Funding to 5 bot wallets...")
+        
+        // Get funding instructions from API
+        const fundResponse = await fetch("/api/bot/mass-fund", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            userAddress: privySmartWalletAddress,
+          }),
+        })
+        
+        if (!fundResponse.ok) {
+          const errorData = await fundResponse.json().catch(() => ({}))
+          throw new Error(errorData.error || "Failed to prepare mass funding")
+        }
+        
+        const fundData = await fundResponse.json()
+        console.log("✅ Funding instructions prepared:", fundData)
+        
+        // Execute batch transfer using Privy Smart Wallet
+        setBumpLoadingState("Executing Batch Transfer...")
+        console.log(`📤 Sending ${fundData.transfers.length} transfers in batch...`)
+        
+        if (!smartWalletClient) {
+          throw new Error("Smart Wallet client not available. Please connect your wallet.")
+        }
+        
+        // Prepare batch calls for Smart Wallet multicall
+        const batchCalls = fundData.transfers.map((transfer: { to: string; value: string }) => ({
+          to: transfer.to as `0x${string}`,
+          data: "0x" as `0x${string}`, // Empty data for native ETH transfer
+          value: BigInt(transfer.value),
+        }))
+        
+        // Execute batch transaction
+        const fundingTxHash = await smartWalletClient.sendTransaction({
+          calls: batchCalls as any,
+        }) as `0x${string}`
+        
+        console.log("✅ Batch transfer sent! Hash:", fundingTxHash)
+        
+        // Wait for transaction confirmation
+        setBumpLoadingState("Waiting for Funding Confirmation...")
+        if (publicClient) {
+          const receipt = await publicClient.waitForTransactionReceipt({
+            hash: fundingTxHash,
+            timeout: 60000,
+          })
+          console.log("✅ Funding confirmed on-chain")
+          
+          // Update bot_logs dengan tx_hash untuk system message
+          if (receipt.status === "success" && fundData.systemLogId) {
+            await fetch("/api/bot/logs/update", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                logId: fundData.systemLogId,
+                txHash: fundingTxHash,
+                status: "success",
+              }),
+            }).catch(err => console.warn("Failed to update system log:", err))
+            console.log("✅ Funding transaction confirmed and logged successfully")
+          }
+        }
+        
+        // STEP 2: Start Session (after funding completes)
         setBumpLoadingState("Starting Session...")
         console.log("🔄 Starting bot session...")
         
@@ -682,9 +753,9 @@ export default function BumpBotDashboard() {
         
         console.log("✅ Bot session started")
         
-        // STEP 2: Trigger First Swap
+        // STEP 3: Trigger First Swap (with round-robin)
         setBumpLoadingState("Executing First Swap...")
-        console.log("🔄 Executing first swap...")
+        console.log("🔄 Executing first swap (Bot Wallet #1)...")
         
         // Use wallet index 0 for the first swap (round robin will continue from here)
         const firstSwapResponse = await fetch("/api/bot/execute-swap", {
@@ -694,7 +765,7 @@ export default function BumpBotDashboard() {
           },
           body: JSON.stringify({
             userAddress: privySmartWalletAddress,
-            walletIndex: 0, // Start with first wallet
+            walletIndex: 0, // Start with first wallet (round-robin)
           }),
         })
         
@@ -711,7 +782,7 @@ export default function BumpBotDashboard() {
         setBumpLoadingState(null)
         
         // Don't set isActive here - let useEffect sync it from session status
-        toast.success("Bot started successfully! Live activity will appear below.")
+        toast.success("Bot started successfully! All-In funding completed. Live activity will appear below.")
       } catch (error: any) {
         console.error("❌ Failed to start bot:", error)
         setBumpLoadingState(null)

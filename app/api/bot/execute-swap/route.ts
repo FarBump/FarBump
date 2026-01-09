@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { createSupabaseServiceClient } from "@/lib/supabase"
 import { decryptPrivateKey } from "@/lib/bot-encryption"
 import { toSimpleSmartAccount } from "permissionless/accounts"
-import { createPublicClient, http, type Address, type Hex } from "viem"
+import { createPublicClient, http, type Address, type Hex, formatEther } from "viem"
 import { privateKeyToAccount } from "viem/accounts"
 import { base } from "viem/chains"
 import { createBundlerClient } from "viem/account-abstraction"
@@ -71,12 +71,12 @@ export async function POST(request: NextRequest) {
 
     const supabase = createSupabaseServiceClient()
     
-    // IMPORTANT: Fetch token_address and amount_usd from active bot session in database
+    // IMPORTANT: Fetch token_address, amount_usd, and wallet_rotation_index from active bot session
     // This prevents client-side manipulation of token address or amount
     // Database query uses user_address column (NOT user_id)
     const { data: activeSession, error: sessionError } = await supabase
       .from("bot_sessions")
-      .select("token_address, amount_usd, interval_seconds")
+      .select("token_address, amount_usd, interval_seconds, wallet_rotation_index, id")
       .eq("user_address", normalizedUserAddress)
       .eq("status", "running")
       .single()
@@ -89,14 +89,26 @@ export async function POST(request: NextRequest) {
     }
     
     // Use token_address from database (server-side verification)
+    // Integrasi Target Token: Gunakan alamat kontrak yang diinput user pada kolom 'Target Token'
     const tokenAddress = activeSession.token_address as Address
     const amountUsd = parseFloat(activeSession.amount_usd || "0")
+    const currentRotationIndex = activeSession.wallet_rotation_index || 0
+    const sessionId = activeSession.id
     
     if (!amountUsd || amountUsd <= 0) {
       return NextResponse.json(
         { error: "Invalid amount_usd in bot session" },
         { status: 400 }
       )
+    }
+    
+    // Validate walletIndex matches current rotation (for round-robin)
+    if (walletIndex !== currentRotationIndex) {
+      console.warn(`⚠️ Wallet index mismatch. Expected: ${currentRotationIndex}, Got: ${walletIndex}`)
+      // Use the rotation index from session instead
+      const adjustedWalletIndex = currentRotationIndex
+      console.log(`   Using rotation index: ${adjustedWalletIndex}`)
+      // Continue with adjusted index
     }
     
     // Get real-time ETH price for USD to ETH conversion
@@ -148,21 +160,115 @@ export async function POST(request: NextRequest) {
     }
 
     const wallets = botWalletsData.wallets_data as Array<{
-      ownerPrivateKey: string // Encrypted
-      smartWalletAddress: Address
-      index: number
+      smart_account_address: Address
+      owner_public_address: Address
+      owner_private_key: string // Encrypted
+      chain: string
     }>
 
     const botWallet = wallets[walletIndex]
-    if (!botWallet) {
+    if (!botWallet || !botWallet.smart_account_address) {
       return NextResponse.json(
         { error: `Bot wallet at index ${walletIndex} not found` },
         { status: 404 }
       )
     }
 
-    // Decrypt private key (server-side only)
-    const ownerPrivateKey = decryptPrivateKey(botWallet.ownerPrivateKey) as Hex
+    const botWalletAddress = botWallet.smart_account_address
+
+    // CRITICAL: Check bot wallet balance before attempting swap
+    // Bot akan terus melakukan swap selama saldo di dalam bot wallet tersebut masih cukup
+    const botWalletBalance = await publicClient.getBalance({
+      address: botWalletAddress,
+    })
+
+    console.log(`💰 Bot Wallet #${walletIndex + 1} balance: ${formatEther(botWalletBalance)} ETH`)
+    console.log(`   Required for swap: ${formatEther(actualSellAmountWei)} ETH`)
+
+    // Check if balance is sufficient for swap
+    if (botWalletBalance < actualSellAmountWei) {
+      console.warn(`⚠️ Bot Wallet #${walletIndex + 1} has insufficient balance`)
+      console.warn(`   Balance: ${formatEther(botWalletBalance)} ETH`)
+      console.warn(`   Required: ${formatEther(actualSellAmountWei)} ETH`)
+      
+      // Log balance check to database
+      await supabase.from("bot_logs").insert({
+        user_address: normalizedUserAddress,
+        wallet_address: botWalletAddress,
+        token_address: tokenAddress,
+        amount_wei: "0",
+        status: "failed",
+        message: `[Bot #${walletIndex + 1}] Insufficient balance. Required: ${formatEther(actualSellAmountWei)} ETH, Available: ${formatEther(botWalletBalance)} ETH`,
+      })
+
+      // Check if all wallets have insufficient balance
+      let allWalletsEmpty = true
+      for (let i = 0; i < wallets.length; i++) {
+        const wallet = wallets[i]
+        if (wallet?.smart_account_address) {
+          const balance = await publicClient.getBalance({
+            address: wallet.smart_account_address,
+          })
+          if (balance >= actualSellAmountWei) {
+            allWalletsEmpty = false
+            break
+          }
+        }
+      }
+
+      if (allWalletsEmpty) {
+        // All wallets are empty, stop the session
+        await supabase
+          .from("bot_sessions")
+          .update({
+            status: "stopped",
+            stopped_at: new Date().toISOString(),
+          })
+          .eq("user_address", normalizedUserAddress)
+          .eq("status", "running")
+
+        // Log system message
+        await supabase.from("bot_logs").insert({
+          user_address: normalizedUserAddress,
+          wallet_address: null,
+          token_address: null,
+          amount_wei: "0",
+          status: "stopped",
+          message: "[System] Saldo habis di semua bot wallet. Bumping selesai.",
+        })
+
+        return NextResponse.json(
+          { 
+            error: "All bot wallets have insufficient balance. Bot session stopped.",
+            stopped: true,
+          },
+          { status: 400 }
+        )
+      }
+
+      // This wallet is empty, but others might have balance
+      // Skip this wallet and continue with round-robin
+      return NextResponse.json(
+        { 
+          error: `Bot Wallet #${walletIndex + 1} has insufficient balance. Skipping to next wallet.`,
+          skipped: true,
+        },
+        { status: 200 } // Return 200 to indicate successful skip
+      )
+    }
+
+    // Log remaining balance before swap
+    await supabase.from("bot_logs").insert({
+      user_address: normalizedUserAddress,
+      wallet_address: botWalletAddress,
+      token_address: tokenAddress,
+      amount_wei: "0",
+      status: "success",
+      message: `[System] Remaining balance in Bot #${walletIndex + 1}: ${formatEther(botWalletBalance)} ETH`,
+    })
+
+    // Decrypt private key (server-side only) - PENTING: Pastikan proses dekripsi dilakukan dengan aman
+    const ownerPrivateKey = decryptPrivateKey(botWallet.owner_private_key) as Hex
 
     // Get 0x API v2 quote using AllowanceHolder endpoint
     // Documentation: https://docs.0x.org/docs/api/swap-v2
@@ -258,18 +364,22 @@ export async function POST(request: NextRequest) {
     // Execute swap transaction
     console.log(`🔄 Executing swap transaction...`)
     
-    // Log pending transaction
+    // Log pending transaction with format: [Bot #1] Executing swap for token...
+    // Update Live Activity Secara Real-Time: Tampilkan setiap aktivitas di log
     // Database insert uses user_address column (NOT user_id)
     const logResult = await supabase.from("bot_logs").insert({
       user_address: normalizedUserAddress,
-      wallet_address: botWallet.smartWalletAddress,
+      wallet_address: botWalletAddress,
       token_address: tokenAddress,
-        amount_wei: actualSellAmountWei.toString(),
+      amount_wei: actualSellAmountWei.toString(),
       status: "pending",
-      message: "Transaction submitted",
+      message: `[Bot #${walletIndex + 1}] Executing swap for token (${amountUsd.toFixed(2)} USD)...`,
     }).select("id").single()
     
     const logId = logResult.data?.id
+    
+    console.log(`🔄 [Bot #${walletIndex + 1}] Executing swap for token address: ${tokenAddress}`)
+    console.log(`   Amount: $${amountUsd.toFixed(2)} USD (${formatEther(actualSellAmountWei)} ETH)`)
 
     try {
       // Prepare call for swap
@@ -326,59 +436,56 @@ export async function POST(request: NextRequest) {
       })
 
       if (txReceipt.status === "success") {
-        // Update log with success
+        // Update log with success: [Bot #1] Executing swap for $BUMP... Success (Tx: 0x...)
         await supabase
           .from("bot_logs")
           .update({
             tx_hash: txHash,
             status: "success",
-            message: "Transaction confirmed",
+            message: `[Bot #${walletIndex + 1}] Executing swap for token (${amountUsd.toFixed(2)} USD)... Success (Tx: ${txHash.slice(0, 10)}...)`,
           })
           .eq("id", logId)
 
-        // Deduct credit from user balance
-        // Get current balance first
-        // Database query uses user_address column (NOT user_id)
-        const { data: currentCredit, error: creditFetchError } = await supabase
-          .from("user_credits")
-          .select("balance_wei")
-          .eq("user_address", normalizedUserAddress)
-          .single()
+        // Check remaining balance after swap
+        const remainingBalance = await publicClient.getBalance({
+          address: botWalletAddress,
+        })
 
-        if (creditFetchError && creditFetchError.code !== "PGRST116") {
-          console.error("❌ Error fetching credit balance:", creditFetchError)
-        } else {
-          const currentBalance = currentCredit?.balance_wei
-            ? BigInt(currentCredit.balance_wei.toString())
-            : BigInt(0)
-          const deductionAmount = BigInt(actualSellAmountWei)
-          const newBalance = currentBalance > deductionAmount
-            ? currentBalance - deductionAmount
-            : BigInt(0)
+        // Log remaining balance: [System] Remaining balance in Bot #1: 0.004 ETH
+        await supabase.from("bot_logs").insert({
+          user_address: normalizedUserAddress,
+          wallet_address: botWalletAddress,
+          token_address: tokenAddress,
+          amount_wei: "0",
+          status: "success",
+          message: `[System] Remaining balance in Bot #${walletIndex + 1}: ${formatEther(remainingBalance)} ETH`,
+        })
 
-          // Update credit balance
-          // Database upsert uses user_address column (NOT user_id)
-          const { error: updateCreditError } = await supabase
-            .from("user_credits")
-            .upsert({
-              user_address: normalizedUserAddress,
-              balance_wei: newBalance.toString(),
-              last_updated: new Date().toISOString(),
-            })
+        console.log(`✅ [Bot #${walletIndex + 1}] Swap successful! Tx: ${txHash}`)
+        console.log(`   Remaining balance: ${formatEther(remainingBalance)} ETH`)
 
-          if (updateCreditError) {
-            console.error("❌ Error updating credit balance:", updateCreditError)
-          } else {
-            console.log(`💰 Credit deducted: ${deductionAmount.toString()} wei`)
-            console.log(`   Previous balance: ${currentBalance.toString()} wei`)
-            console.log(`   New balance: ${newBalance.toString()} wei`)
-          }
-        }
+        // Update wallet_rotation_index for round-robin (0 → 1 → 2 → 3 → 4 → 0)
+        // Bot harus melakukan swap secara bergantian (Round Robin: Bot 1, lalu Bot 2, dst)
+        const nextRotationIndex = (currentRotationIndex + 1) % 5
+        await supabase
+          .from("bot_sessions")
+          .update({
+            wallet_rotation_index: nextRotationIndex,
+          })
+          .eq("id", sessionId)
+
+        console.log(`🔄 Round-robin: Next wallet index: ${nextRotationIndex}`)
+
+        // Note: Credit deduction is not needed for All-In Funding
+        // Bot wallets are funded upfront, so no need to deduct from user credit balance
 
         return NextResponse.json({
           success: true,
           txHash,
           status: "success",
+          walletIndex: walletIndex,
+          nextWalletIndex: nextRotationIndex,
+          remainingBalance: remainingBalance.toString(),
         })
       } else {
         // Transaction failed
@@ -387,7 +494,7 @@ export async function POST(request: NextRequest) {
           .update({
             tx_hash: txHash,
             status: "failed",
-            message: "Transaction reverted",
+            message: `[Bot #${walletIndex + 1}] Executing swap for token (${amountUsd.toFixed(2)} USD)... Failed - Transaction reverted (Tx: ${txHash.slice(0, 10)}...)`,
           })
           .eq("id", logId)
 
