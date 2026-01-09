@@ -272,12 +272,21 @@ export default function BumpBotDashboard() {
   // CRITICAL: Don't auto-fetch bot wallets
   // Only fetch when user clicks "Generate Bot Wallet" button
   // This prevents unnecessary API calls and errors when user doesn't have credit
+  
+  // Frontend: Add isMounted state to prevent hydration errors
+  const [isMounted, setIsMounted] = useState(false)
+  
+  useEffect(() => {
+    setIsMounted(true)
+  }, [])
+  
   const [existingBotWallets, setExistingBotWallets] = useState<Array<{ smartWalletAddress: string; index: number }> | null>(null)
   const [isLoadingBotWallets, setIsLoadingBotWallets] = useState(false)
   
   // Check if bot wallets exist (should have 5 wallets)
   // CRITICAL: Use Array.isArray to ensure type safety
-  const hasBotWallets = Array.isArray(existingBotWallets) && existingBotWallets.length === 5
+  // Don't check if not mounted or data is undefined (prevents hydration errors)
+  const hasBotWallets = isMounted && Array.isArray(existingBotWallets) && existingBotWallets.length === 5
   
   // Bot session management
   const { session, startSession, stopSession, isStarting, isStopping } = useBotSession(privySmartWalletAddress)
@@ -578,8 +587,13 @@ export default function BumpBotDashboard() {
           }
           
           console.log("✅ Generated 5 bot wallets successfully")
-          setExistingBotWallets(wallets)
-          setBotWallets(wallets)
+          
+          // Only update state if component is mounted (prevents hydration errors)
+          if (isMounted) {
+            setExistingBotWallets(wallets)
+            setBotWallets(wallets)
+          }
+          
           setBumpLoadingState(null)
           setIsLoadingBotWallets(false)
           

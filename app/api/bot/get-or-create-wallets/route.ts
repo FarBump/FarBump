@@ -13,10 +13,12 @@ export const runtime = "nodejs"
 // Initialize it inside the POST function to ensure chain object is properly defined
 // This prevents "Cannot use 'in' operator" errors in production
 
-interface BotWallet {
-  ownerPrivateKey: string // Encrypted
-  smartWalletAddress: Address
-  index: number
+// Updated interface to match new wallets_data structure
+interface BotWalletData {
+  smart_account_address: Address
+  owner_public_address: Address
+  owner_private_key: string // Encrypted
+  chain: string
 }
 
 /**
@@ -62,9 +64,22 @@ export async function POST(request: NextRequest) {
     if (existingWallets && !fetchError) {
       // User already has wallets, return them
       console.log(`✅ Found existing bot wallets for user: ${userAddress}`)
+      const walletsData = existingWallets.wallets_data as BotWalletData[] | BotWalletData
+      
+      // Handle both array and object formats
+      const walletsArray = Array.isArray(walletsData) 
+        ? walletsData 
+        : walletsData ? [walletsData] : []
+      
+      // Convert to expected format for frontend
+      const wallets = walletsArray.map((w, idx) => ({
+        smartWalletAddress: w.smart_account_address,
+        index: idx,
+      }))
+      
       return NextResponse.json({
         success: true,
-        wallets: existingWallets.wallets_data as BotWallet[],
+        wallets: wallets,
         created: false,
       })
     }
@@ -73,16 +88,15 @@ export async function POST(request: NextRequest) {
     console.log(`🔄 Generating 5 new bot wallets for user: ${userAddress}`)
     console.log(`   Normalized user address: ${normalizedUserAddress}`)
     
-    // CRITICAL: Manual Chain Patching
-    // Don't use raw base object - create baseChain with explicit type property
-    // This prevents "Cannot use 'in' operator" errors in permissionless library
+    // CRITICAL: Fix Type 'base'
+    // Import base from viem/chains (already imported at top)
+    // Create baseChain with explicit type property
     const baseChain = {
       ...base,
       type: 'base' as const,
     }
     
-    // CRITICAL: Initialize publicClient inside POST function with patched chain
-    // This prevents "Cannot use 'in' operator" errors in production
+    // CRITICAL: Initialize publicClient using baseChain
     const publicClient = createPublicClient({
       chain: baseChain,
       transport: http(process.env.NEXT_PUBLIC_BASE_RPC_URL || "https://mainnet.base.org"),
@@ -105,8 +119,8 @@ export async function POST(request: NextRequest) {
       )
     }
     
-    // CRITICAL: Use Object.defineProperty to ensure 'type' is enumerable
-    // Permissionless library uses 'in' operator which requires enumerable property
+    // PENTING: Before calling toSimpleSmartAccount, ensure 'type' property exists
+    // Use Object.defineProperty to make it enumerable (required for 'in' operator)
     if (!('type' in publicClient.chain)) {
       Object.defineProperty(publicClient.chain, 'type', {
         value: 'base',
@@ -125,7 +139,7 @@ export async function POST(request: NextRequest) {
     console.log(`   - Chain 'type' value: ${(publicClient.chain as any).type || 'undefined'}`)
     console.log(`   - Chain object keys: ${Object.keys(publicClient.chain).join(', ')}`)
     
-    const botWallets: BotWallet[] = []
+    const wallets_data: BotWalletData[] = []
     
     // Constants for SimpleAccount
     const entryPointAddress = "0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789" as Address
@@ -156,6 +170,7 @@ export async function POST(request: NextRequest) {
             throw new Error("Chain object is undefined before toSimpleSmartAccount call")
           }
           
+          // PENTING: Before calling toSimpleSmartAccount, ensure 'type' property exists
           if (!('type' in publicClient.chain)) {
             console.warn(`   ⚠️ Chain missing 'type' property, adding it...`)
             Object.defineProperty(publicClient.chain, 'type', {
@@ -166,39 +181,17 @@ export async function POST(request: NextRequest) {
             })
           }
           
-          // Library Compatibility: Try with signer first (most common)
-          // If it fails, we'll try with owner as fallback
-          let smartAccount
-          try {
-            smartAccount = await toSimpleSmartAccount({
-              client: publicClient as any, // Use 'as any' for library compatibility
-              signer: ownerAccount,
-              entryPoint: {
-                address: entryPointAddress,
-                version: "0.6",
-              },
-              factoryAddress: factoryAddress,
-              index: BigInt(i), // Deterministic index for this wallet
-            } as any) // Type assertion to bypass TypeScript type checking
-          } catch (signerError: any) {
-            // If signer fails, try with owner (some versions of permissionless use 'owner' instead of 'signer')
-            const errorMsg = String(signerError?.message || signerError || "")
-            if (errorMsg.includes('signer') || errorMsg.includes('owner')) {
-              console.log(`   Trying with 'owner' parameter instead of 'signer'...`)
-              smartAccount = await toSimpleSmartAccount({
-                client: publicClient as any,
-                owner: ownerAccount, // Try 'owner' instead of 'signer'
-                entryPoint: {
-                  address: entryPointAddress,
-                  version: "0.6",
-                },
-                factoryAddress: factoryAddress,
-                index: BigInt(i),
-              } as any)
-            } else {
-              throw signerError
-            }
-          }
+          // Casting: Use client: publicClient as any for library compatibility
+          const smartAccount = await toSimpleSmartAccount({
+            client: publicClient as any,
+            signer: ownerAccount,
+            entryPoint: {
+              address: entryPointAddress,
+              version: "0.6",
+            },
+            factoryAddress: factoryAddress,
+            index: BigInt(i), // Deterministic index for this wallet
+          } as any)
           
           if (smartAccount && smartAccount.address) {
             account = { address: smartAccount.address }
@@ -221,14 +214,14 @@ export async function POST(request: NextRequest) {
             
             // Try creating a new publicClient with explicit chain patching
             try {
-              // Create a complete chain object with all properties including 'type'
-              const completeChain = {
+              // Create baseChain with explicit type property
+              const retryBaseChain = {
                 ...base,
                 type: 'base' as const,
               }
               
               const fixedPublicClient = createPublicClient({
-                chain: completeChain,
+                chain: retryBaseChain,
                 transport: http(process.env.NEXT_PUBLIC_BASE_RPC_URL || "https://mainnet.base.org"),
               })
               
@@ -237,19 +230,22 @@ export async function POST(request: NextRequest) {
                 throw new Error("Failed to create fixed publicClient")
               }
               
-              // CRITICAL: Use Object.defineProperty to ensure 'type' is enumerable
-              Object.defineProperty(fixedPublicClient.chain, 'type', {
-                value: 'base',
-                enumerable: true,
-                writable: false,
-                configurable: true,
-              })
+              // PENTING: Before calling toSimpleSmartAccount, ensure 'type' property exists
+              if (!('type' in fixedPublicClient.chain)) {
+                Object.defineProperty(fixedPublicClient.chain, 'type', {
+                  value: 'base',
+                  enumerable: true,
+                  writable: false,
+                  configurable: true,
+                })
+              }
               
               console.log(`   Retrying with manually patched chain object...`)
               console.log(`   Chain type: ${typeof fixedPublicClient.chain}`)
               console.log(`   Chain has 'type': ${'type' in fixedPublicClient.chain}`)
               console.log(`   Chain 'type' value: ${(fixedPublicClient.chain as any).type}`)
               
+              // Casting: Use client: fixedPublicClient as any
               const retryAccount = await toSimpleSmartAccount({
                 client: fixedPublicClient as any,
                 signer: ownerAccount,
@@ -286,16 +282,23 @@ export async function POST(request: NextRequest) {
           throw new Error(`Failed to create Smart Account ${i + 1}: Account is null or missing address`)
         }
 
-        // Encrypt private key before storage
+        // Enkripsi & Simpan: Encrypt private key before storage
         const encryptedPrivateKey = encryptPrivateKey(ownerPrivateKey)
 
-        botWallets.push({
-          ownerPrivateKey: encryptedPrivateKey,
-          smartWalletAddress: account.address,
-          index: i,
-        })
+        // Susun objek wallets_data sesuai struktur yang diminta
+        const walletData: BotWalletData = {
+          smart_account_address: account.address,
+          owner_public_address: ownerAccount.address,
+          owner_private_key: encryptedPrivateKey,
+          chain: 'base',
+        }
 
-        console.log(`  Bot Wallet ${i + 1}: ${account.address}`)
+        wallets_data.push(walletData)
+
+        console.log(`  Bot Wallet ${i + 1}:`)
+        console.log(`    - Smart Account: ${account.address}`)
+        console.log(`    - Owner (EOA): ${ownerAccount.address}`)
+        console.log(`    - Chain: base`)
       }
     } catch (walletGenError: any) {
       console.error("❌ Error generating bot wallets:", walletGenError)
@@ -311,17 +314,20 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // Save to database
+    // Save to database using upsert
     // IMPORTANT: Using user_address column (NOT user_id) - this is the Smart Wallet address
-    const { error: insertError } = await supabase
+    // Use upsert to handle both insert and update cases
+    const { error: upsertError } = await supabase
       .from("user_bot_wallets")
-      .insert({
+      .upsert({
         user_address: normalizedUserAddress,
-        wallets_data: botWallets,
+        wallets_data: wallets_data,
+      }, {
+        onConflict: 'user_address',
       })
 
-    if (insertError) {
-      console.error("❌ Error saving bot wallets:", insertError)
+    if (upsertError) {
+      console.error("❌ Error saving bot wallets:", upsertError)
       return NextResponse.json(
         { error: "Failed to save bot wallets to database" },
         { status: 500 }
@@ -329,13 +335,14 @@ export async function POST(request: NextRequest) {
     }
 
     console.log(`✅ Successfully created 5 bot wallets for user: ${userAddress}`)
+    console.log(`   Saved to database with user_address: ${normalizedUserAddress}`)
 
     // Return wallet addresses only (not encrypted keys for security)
     return NextResponse.json({
       success: true,
-      wallets: botWallets.map((w) => ({
-        smartWalletAddress: w.smartWalletAddress,
-        index: w.index,
+      wallets: wallets_data.map((w, idx) => ({
+        smartWalletAddress: w.smart_account_address,
+        index: idx,
       })),
       created: true,
     })
