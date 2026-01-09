@@ -7,10 +7,30 @@ import { PrivyProvider } from "@/components/privy-provider"
 import { MiniAppProvider } from "@/components/miniapp-provider"
 import "./globals.css"
 
+// CRITICAL: Initialize environment variables at top level (before any component or function)
+// This prevents "Cannot access before initialization" errors in production
+const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "https://farbump.vercel.app"
+
 const jetbrainsMono = JetBrains_Mono({
   subsets: ["latin"],
   variable: "--font-jetbrains-mono",
 })
+
+// CRITICAL: Initialize frameEmbed at top level to prevent initialization errors
+const frameEmbed = {
+  version: "next",
+  imageUrl: `${APP_URL}/farbump-logo.png`,
+  button: {
+    title: "Bump!",
+    action: {
+      type: "launch_frame",
+      url: APP_URL,
+      name: "FarBump",
+      splashImageUrl: `${APP_URL}/farbump-logo.png`,
+      splashBackgroundColor: "#000000"
+    }
+  }
+}
 
 export const metadata: Metadata = {
   title: "FarBump - Token Bump Bot",
@@ -40,24 +60,6 @@ export default function RootLayout({
 }: Readonly<{
   children: React.ReactNode
 }>) {
-  // Get app URL from environment variable or use default from manifest
-  const appUrl = process.env.NEXT_PUBLIC_APP_URL || "https://farbump.vercel.app"
-  
-  // FrameEmbed JSON for sharing
-  const frameEmbed = {
-    version: "next",
-    imageUrl: `${appUrl}/farbump-logo.png`,
-    button: {
-      title: "Bump!",
-      action: {
-        type: "launch_frame",
-        url: appUrl,
-        name: "FarBump",
-        splashImageUrl: `${appUrl}/farbump-logo.png`,
-        splashBackgroundColor: "#000000"
-      }
-    }
-  }
 
   return (
     <html lang="en">
@@ -69,7 +71,7 @@ export default function RootLayout({
         <meta name="apple-mobile-web-app-title" content="FarBump" />
         <meta 
           name="fc:frame" 
-          content={JSON.stringify(frameEmbed)} 
+          content={JSON.stringify(frameEmbed)}
         />
         {/* Preconnect to Quick Auth server for better performance */}
         {/* Based on: https://miniapps.farcaster.xyz/docs/sdk/quick-auth */}

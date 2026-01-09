@@ -19,20 +19,23 @@ const wagmiConfig = createConfig({
 // 2. Inisialisasi Query Client
 const queryClient = new QueryClient()
 
+// CRITICAL: Initialize environment variables at top level (before component)
+// This prevents "Cannot access before initialization" errors in production
+const PRIVY_APP_ID = process.env.NEXT_PUBLIC_PRIVY_APP_ID
+
+if (!PRIVY_APP_ID) {
+  throw new Error("NEXT_PUBLIC_PRIVY_APP_ID environment variable is required")
+}
+
 interface PrivyProviderProps {
   children: ReactNode
 }
 
 export function PrivyProvider({ children }: PrivyProviderProps) {
-  const appId = process.env.NEXT_PUBLIC_PRIVY_APP_ID
-
-  if (!appId) {
-    throw new Error("NEXT_PUBLIC_PRIVY_APP_ID environment variable is required")
-  }
 
   return (
     <PrivyProviderBase
-      appId={appId}
+      appId={PRIVY_APP_ID}
       config={{
         loginMethods: ["farcaster"],
         appearance: {

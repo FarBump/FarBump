@@ -35,6 +35,9 @@ interface CreditBalance {
  * Withdraw uses useBumpBalance() which reads directly from blockchain.
  */
 export function useCreditBalance(userAddress: string | null, options?: { enabled?: boolean }) {
+  // CRITICAL: Initialize Supabase client inside hook (not at module level)
+  // This ensures environment variables are available when hook is called
+  // Using lazy initialization to prevent "Cannot access before initialization" errors
   const supabase = createSupabaseClient()
   
   // Track if 406 error occurred - disable query if RLS policy not fixed
