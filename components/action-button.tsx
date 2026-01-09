@@ -11,6 +11,7 @@ interface ActionButtonProps {
   isVerified?: boolean
   buyAmountUsd?: string
   loadingState?: string | null // Loading state message (e.g., "Checking Wallets...")
+  hasBotWallets?: boolean // Whether user has 5 bot wallets created
 }
 
 export function ActionButton({ 
@@ -20,16 +21,39 @@ export function ActionButton({
   balanceWei = null, 
   isVerified = false,
   buyAmountUsd = "0",
-  loadingState = null
+  loadingState = null,
+  hasBotWallets = false
 }: ActionButtonProps) {
-  // Button is locked if:
-  // - No credits (check both balanceWei and credits USD)
-  // - Token not verified
-  // - Buy amount not set or invalid
-  // Check balanceWei first - user might have ETH credit even if USD conversion fails
+  // CRITICAL: Check credit using BigInt to avoid precision loss
+  // balance_wei is stored as string in database, must use BigInt for comparison
   const hasCredit = balanceWei ? BigInt(balanceWei) > BigInt(0) : credits > 0
-  const isLocked = !hasCredit || !isVerified || !buyAmountUsd || parseFloat(buyAmountUsd) <= 0
+  
+  // Button is locked if:
+  // - No credits (check balanceWei first using BigInt)
+  // - Token not verified (only required if bot wallets exist)
+  // - Buy amount not set or invalid (only required if bot wallets exist)
+  // If no bot wallets, user can still click to generate wallets (token verification not required yet)
+  const isLocked = !hasCredit || (hasBotWallets && (!isVerified || !buyAmountUsd || parseFloat(buyAmountUsd) <= 0))
   const isLoading = !!loadingState
+  
+  // Determine button text based on state:
+  // - If credit 0: 'No fuel detected'
+  // - If credit > 0 but bot wallets not created: 'Generate Bot Wallet'
+  // - If credit > 0 and bot wallets exist: 'Start Bumping' (or 'Stop Bumping' if active)
+  const getButtonText = () => {
+    if (isActive) {
+      return "Stop Bumping"
+    }
+    if (!hasCredit) {
+      return "No Fuel Detected"
+    }
+    if (!hasBotWallets) {
+      return "Generate Bot Wallet"
+    }
+    return "Start Bumping"
+  }
+  
+  const buttonText = getButtonText()
 
   return (
     <Button
@@ -49,7 +73,7 @@ export function ActionButton({
       {isLocked ? (
         <>
           <Lock className="mr-2 h-5 w-5" />
-          No Fuel Detected
+          {buttonText}
         </>
       ) : isLoading ? (
         <>
@@ -59,12 +83,12 @@ export function ActionButton({
       ) : isActive ? (
         <>
           <Square className="mr-2 h-5 w-5" />
-          Stop Bumping
+          {buttonText}
         </>
       ) : (
         <>
           <Play className="mr-2 h-5 w-5" />
-          Start Bumping
+          {buttonText}
         </>
       )}
     </Button>

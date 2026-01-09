@@ -25,6 +25,7 @@ import { base } from "wagmi/chains"
 import { isAddress } from "viem"
 import { useCreditBalance } from "@/hooks/use-credit-balance"
 import { useBotSession } from "@/hooks/use-bot-session"
+import { useBotWallets } from "@/hooks/use-bot-wallets"
 import { parseUnits } from "viem"
 import { toast } from "sonner"
 
@@ -257,8 +258,30 @@ export default function BumpBotDashboard() {
   const [botWallets, setBotWallets] = useState<Array<{ smartWalletAddress: string; index: number }> | null>(null)
   
   // Fetch credit balance from database
-  const { data: creditData, isLoading: isLoadingCredit } = useCreditBalance(privySmartWalletAddress)
+  // CRITICAL: This reads balance_wei from user_credits table based on user_address
+  // Real-time updates: refetchOnWindowFocus, refetchOnMount, refetchOnReconnect
+  const { data: creditData, isLoading: isLoadingCredit, refetch: refetchCredit } = useCreditBalance(privySmartWalletAddress, {
+    enabled: !!privySmartWalletAddress,
+  })
   const credits = creditData?.balanceUsd || 0
+  
+  // CRITICAL: Check if user has credit using BigInt to avoid precision loss
+  // balance_wei is stored as string in database, convert to BigInt for comparison
+  const hasCredit = creditData?.balanceWei ? BigInt(creditData.balanceWei) > BigInt(0) : false
+  
+  // Fetch bot wallets to check if they exist
+  // This determines whether to show "Generate Bot Wallet" or "Start Bumping"
+  const { 
+    data: existingBotWallets, 
+    isLoading: isLoadingBotWallets 
+  } = useBotWallets({
+    userAddress: privySmartWalletAddress,
+    enabled: !!privySmartWalletAddress && hasCredit, // Only fetch if user has credit
+  })
+  
+  // Check if bot wallets exist (should have 5 wallets)
+  // CRITICAL: Use Array.isArray to ensure type safety
+  const hasBotWallets = Array.isArray(existingBotWallets) && existingBotWallets.length === 5
   
   // Bot session management
   const { session, startSession, stopSession, isStarting, isStopping } = useBotSession(privySmartWalletAddress)
@@ -837,6 +860,7 @@ export default function BumpBotDashboard() {
               onBuyAmountChange={setBuyAmountUsd}
               intervalSeconds={intervalSeconds}
               onIntervalChange={setIntervalSeconds}
+              onCreditUpdate={refetchCredit}
             />
             <ActionButton 
               isActive={isActive} 
@@ -846,6 +870,7 @@ export default function BumpBotDashboard() {
               isVerified={isTokenVerified}
               buyAmountUsd={buyAmountUsd}
               loadingState={bumpLoadingState}
+              hasBotWallets={hasBotWallets}
             />
             {/* Bot Live Activity - Realtime feed from bot_logs table */}
             {/* Always visible when user is connected - shows logs even when bot is not running */}

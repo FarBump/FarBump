@@ -21,6 +21,7 @@ interface ConfigPanelProps {
   onBuyAmountChange?: (amount: string) => void
   intervalSeconds?: number
   onIntervalChange?: (seconds: number) => void
+  onCreditUpdate?: (options?: any) => Promise<any> | void // Callback to refetch credit balance after convert (React Query refetch)
 }
 
 export function ConfigPanel({ 
@@ -30,7 +31,8 @@ export function ConfigPanel({
   buyAmountUsd = "0.0001",
   onBuyAmountChange,
   intervalSeconds = 60,
-  onIntervalChange
+  onIntervalChange,
+  onCreditUpdate
 }: ConfigPanelProps) {
   // Fetch $BUMP token balance from Smart Wallet address (same as WalletCard)
   const { formattedBalance, isLoading: isLoadingBalance } = useBumpBalance({
@@ -128,8 +130,18 @@ export function ConfigPanel({
   }, [convertAmount, smartWalletAddress])
   
   // Close modal and reset on success
+  // CRITICAL: Refetch credit balance after successful convert to update UI in real-time
   useEffect(() => {
     if (convertSuccess && convertModalOpen) {
+      // Trigger credit balance refetch to update UI immediately
+      // This ensures button text updates from "No Fuel Detected" to "Generate Bot Wallet" or "Start Bumping"
+      if (onCreditUpdate) {
+        // Small delay to ensure backend has processed the sync-credit API call
+        setTimeout(() => {
+          onCreditUpdate()
+        }, 1000)
+      }
+      
       const timer = setTimeout(() => {
         setConvertModalOpen(false)
         setConvertAmount("")
@@ -137,7 +149,7 @@ export function ConfigPanel({
       }, 3000) // Close after 3 seconds
       return () => clearTimeout(timer)
     }
-  }, [convertSuccess, convertModalOpen, resetConvert])
+  }, [convertSuccess, convertModalOpen, resetConvert, onCreditUpdate])
 
   // Handle Buy $BUMP using Farcaster Native Swap
   // Based on: https://miniapps.farcaster.xyz/docs/sdk/actions/swap-token#buytoken-optional
