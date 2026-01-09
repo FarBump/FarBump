@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { privateKeyToAccount, generatePrivateKey } from "viem/accounts"
 import { toSimpleSmartAccount } from "permissionless/accounts"
-import { createPublicClient, http, type Address, getContractAddress, keccak256, encodePacked } from "viem"
+import { createPublicClient, http, type Address, getContractAddress, keccak256, encodePacked, isAddress } from "viem"
 import { base } from "viem/chains"
 import { createSupabaseServiceClient } from "@/lib/supabase"
 import { encryptPrivateKey } from "@/lib/bot-encryption"
@@ -39,9 +39,25 @@ export async function POST(request: NextRequest) {
     const body = await request.json()
     const { userAddress } = body as { userAddress: string }
 
+    // Validation: Pastikan userAddress yang dikirim dari frontend divalidasi sebagai alamat yang benar
     if (!userAddress) {
       return NextResponse.json(
         { error: "Missing required field: userAddress" },
+        { status: 400 }
+      )
+    }
+
+    // Validation: Validate userAddress is a valid Ethereum address
+    if (typeof userAddress !== 'string') {
+      return NextResponse.json(
+        { error: "Invalid userAddress: must be a string" },
+        { status: 400 }
+      )
+    }
+
+    if (!isAddress(userAddress)) {
+      return NextResponse.json(
+        { error: `Invalid Ethereum address format: ${userAddress}` },
         { status: 400 }
       )
     }
@@ -147,32 +163,52 @@ export async function POST(request: NextRequest) {
 
     try {
       for (let i = 0; i < 5; i++) {
-        // Generate EOA private key (Signer for bot wallet)
-        const ownerPrivateKey = generatePrivateKey()
+        // Periksa fungsi pembuat smart account: Pastikan semua variabel dicek keberadaannya
+        // sebelum menggunakan operator 'in' atau membaca properti
         
-        // Create EOA account from private key (required as owner/signer for SimpleAccount)
-        const ownerAccount = privateKeyToAccount(ownerPrivateKey)
-
-        // Create SimpleAccount Smart Wallet address deterministically
-        // Use toSimpleSmartAccount from permissionless
+        // Generate EOA private key (Signer for bot wallet)
+        let ownerPrivateKey: `0x${string}` | null = null
+        let ownerAccount: ReturnType<typeof privateKeyToAccount> | null = null
         let account: { address: Address } | null = null
         
         try {
-          console.log(`  Creating Smart Account ${i + 1}:`)
-          console.log(`    - Chain: ${publicClient.chain.name} (ID: ${publicClient.chain.id})`)
-          console.log(`    - EntryPoint: ${entryPointAddress} (v0.6)`)
-          console.log(`    - Factory: ${factoryAddress}`)
-          console.log(`    - Index: ${i}`)
-          console.log(`    - Owner (EOA Signer): ${ownerAccount.address}`)
-          
-          // CRITICAL: Verify chain object before each call
-          if (!publicClient.chain) {
-            throw new Error("Chain object is undefined before toSimpleSmartAccount call")
+          // Step 1: Generate private key
+          if (!ownerPrivateKey) {
+            ownerPrivateKey = generatePrivateKey()
+            if (!ownerPrivateKey || typeof ownerPrivateKey !== 'string') {
+              throw new Error(`Failed to generate private key for wallet ${i + 1}`)
+            }
           }
           
+          // Step 2: Create EOA account from private key (required as owner/signer for SimpleAccount)
+          if (!ownerAccount && ownerPrivateKey) {
+            ownerAccount = privateKeyToAccount(ownerPrivateKey)
+            if (!ownerAccount || !ownerAccount.address) {
+              throw new Error(`Failed to create owner account for wallet ${i + 1}`)
+            }
+          }
+          
+          // Step 3: Validate publicClient and chain before proceeding
+          if (!publicClient) {
+            throw new Error(`PublicClient is undefined for wallet ${i + 1}`)
+          }
+          
+          if (!publicClient.chain) {
+            throw new Error(`PublicClient.chain is undefined for wallet ${i + 1}`)
+          }
+          
+          // Step 4: Validate chain object properties before using 'in' operator
+          // CRITICAL: Check if chain object exists and is an object before using 'in' operator
+          if (typeof publicClient.chain !== 'object' || publicClient.chain === null) {
+            throw new Error(`Chain object is not a valid object for wallet ${i + 1}`)
+          }
+          
+          // Step 5: Ensure 'type' property exists before using 'in' operator
           // PENTING: Before calling toSimpleSmartAccount, ensure 'type' property exists
-          if (!('type' in publicClient.chain)) {
-            console.warn(`   ⚠️ Chain missing 'type' property, adding it...`)
+          // Check if 'type' property exists safely
+          const chainType = (publicClient.chain as any)?.type
+          if (!chainType && !('type' in publicClient.chain)) {
+            console.warn(`   ⚠️ Chain missing 'type' property for wallet ${i + 1}, adding it...`)
             Object.defineProperty(publicClient.chain, 'type', {
               value: 'base',
               enumerable: true,
@@ -181,6 +217,20 @@ export async function POST(request: NextRequest) {
             })
           }
           
+          // Step 6: Validate provider/client before calling toSimpleSmartAccount
+          if (!ownerAccount) {
+            throw new Error(`Owner account is null for wallet ${i + 1}`)
+          }
+          
+          console.log(`  Creating Smart Account ${i + 1}:`)
+          console.log(`    - Chain: ${publicClient.chain?.name || 'unknown'} (ID: ${publicClient.chain?.id || 'unknown'})`)
+          console.log(`    - EntryPoint: ${entryPointAddress} (v0.6)`)
+          console.log(`    - Factory: ${factoryAddress}`)
+          console.log(`    - Index: ${i}`)
+          console.log(`    - Owner (EOA Signer): ${ownerAccount.address}`)
+          console.log(`    - Chain has 'type' property: ${'type' in publicClient.chain}`)
+          
+          // Step 7: Create SimpleAccount Smart Wallet address deterministically
           // Casting: Use client: publicClient as any for library compatibility
           const smartAccount = await toSimpleSmartAccount({
             client: publicClient as any,
@@ -193,12 +243,21 @@ export async function POST(request: NextRequest) {
             index: BigInt(i), // Deterministic index for this wallet
           } as any)
           
-          if (smartAccount && smartAccount.address) {
-            account = { address: smartAccount.address }
-            console.log(`  ✅ Smart Account ${i + 1} created: ${account.address}`)
-          } else {
-            throw new Error("toSimpleSmartAccount returned invalid result")
+          // Step 8: Validate smartAccount result
+          if (!smartAccount) {
+            throw new Error(`toSimpleSmartAccount returned null for wallet ${i + 1}`)
           }
+          
+          if (!smartAccount.address) {
+            throw new Error(`toSimpleSmartAccount returned account without address for wallet ${i + 1}`)
+          }
+          
+          if (!isAddress(smartAccount.address)) {
+            throw new Error(`toSimpleSmartAccount returned invalid address for wallet ${i + 1}: ${smartAccount.address}`)
+          }
+          
+          account = { address: smartAccount.address }
+          console.log(`  ✅ Smart Account ${i + 1} created: ${account.address}`)
         } catch (accountError: any) {
           console.error(`❌ Error creating Smart Account ${i + 1}:`, accountError)
           console.error(`   Error type: ${accountError?.constructor?.name || typeof accountError}`)
@@ -210,10 +269,15 @@ export async function POST(request: NextRequest) {
           const isTypeError = errorMessage.includes("Cannot use 'in' operator") && errorMessage.includes("type")
           
           if (isTypeError) {
-            console.error(`   🔍 Detected 'in' operator error - attempting manual chain patching...`)
+            console.error(`   🔍 Detected 'in' operator error for wallet ${i + 1} - attempting manual chain patching...`)
             
             // Try creating a new publicClient with explicit chain patching
             try {
+              // Validate ownerAccount before retry
+              if (!ownerAccount || !ownerAccount.address) {
+                throw new Error(`Owner account is invalid for wallet ${i + 1} retry`)
+              }
+              
               // Create baseChain with explicit type property
               const retryBaseChain = {
                 ...base,
@@ -225,13 +289,24 @@ export async function POST(request: NextRequest) {
                 transport: http(process.env.NEXT_PUBLIC_BASE_RPC_URL || "https://mainnet.base.org"),
               })
               
-              // Validate fixed client
-              if (!fixedPublicClient || !fixedPublicClient.chain) {
-                throw new Error("Failed to create fixed publicClient")
+              // Validate fixed client - Periksa fungsi pembuat smart account: Pastikan semua variabel dicek
+              if (!fixedPublicClient) {
+                throw new Error(`Failed to create fixed publicClient for wallet ${i + 1}`)
+              }
+              
+              if (!fixedPublicClient.chain) {
+                throw new Error(`Fixed publicClient.chain is undefined for wallet ${i + 1}`)
+              }
+              
+              // CRITICAL: Check if chain object exists and is an object before using 'in' operator
+              if (typeof fixedPublicClient.chain !== 'object' || fixedPublicClient.chain === null) {
+                throw new Error(`Fixed chain object is not a valid object for wallet ${i + 1}`)
               }
               
               // PENTING: Before calling toSimpleSmartAccount, ensure 'type' property exists
-              if (!('type' in fixedPublicClient.chain)) {
+              // Check if 'type' property exists safely before using 'in' operator
+              const retryChainType = (fixedPublicClient.chain as any)?.type
+              if (!retryChainType && !('type' in fixedPublicClient.chain)) {
                 Object.defineProperty(fixedPublicClient.chain, 'type', {
                   value: 'base',
                   enumerable: true,
@@ -240,7 +315,7 @@ export async function POST(request: NextRequest) {
                 })
               }
               
-              console.log(`   Retrying with manually patched chain object...`)
+              console.log(`   Retrying with manually patched chain object for wallet ${i + 1}...`)
               console.log(`   Chain type: ${typeof fixedPublicClient.chain}`)
               console.log(`   Chain has 'type': ${'type' in fixedPublicClient.chain}`)
               console.log(`   Chain 'type' value: ${(fixedPublicClient.chain as any).type}`)
@@ -257,16 +332,27 @@ export async function POST(request: NextRequest) {
                 index: BigInt(i),
               } as any)
               
-              if (retryAccount && retryAccount.address) {
-                account = { address: retryAccount.address }
-                console.log(`  ✅ Smart Account ${i + 1} created with retry: ${account.address}`)
-              } else {
-                throw new Error("Retry returned invalid result")
+              // Validate retry result
+              if (!retryAccount) {
+                throw new Error(`Retry returned null for wallet ${i + 1}`)
               }
+              
+              if (!retryAccount.address) {
+                throw new Error(`Retry returned account without address for wallet ${i + 1}`)
+              }
+              
+              if (!isAddress(retryAccount.address)) {
+                throw new Error(`Retry returned invalid address for wallet ${i + 1}: ${retryAccount.address}`)
+              }
+              
+              account = { address: retryAccount.address }
+              console.log(`  ✅ Smart Account ${i + 1} created with retry: ${account.address}`)
             } catch (retryError: any) {
-              console.error(`   ❌ Retry also failed:`, retryError?.message)
+              console.error(`   ❌ Retry also failed for wallet ${i + 1}:`, retryError?.message)
+              console.error(`   Retry error type: ${retryError?.constructor?.name || typeof retryError}`)
+              console.error(`   Retry error stack: ${retryError?.stack || "No stack trace"}`)
               throw new Error(
-                `Failed to create Smart Account ${i + 1}: ${accountError?.message || String(accountError)}`
+                `Failed to create Smart Account ${i + 1}: ${accountError?.message || String(accountError)}. Retry failed: ${retryError?.message || String(retryError)}`
               )
             }
           } else {
@@ -281,9 +367,27 @@ export async function POST(request: NextRequest) {
         if (!account || !account.address) {
           throw new Error(`Failed to create Smart Account ${i + 1}: Account is null or missing address`)
         }
+        
+        // CRITICAL: Validate ownerAccount before using it
+        if (!ownerAccount || !ownerAccount.address) {
+          throw new Error(`Failed to create Smart Account ${i + 1}: Owner account is null or missing address`)
+        }
+        
+        // CRITICAL: Validate ownerPrivateKey before encryption
+        if (!ownerPrivateKey || typeof ownerPrivateKey !== 'string') {
+          throw new Error(`Failed to create Smart Account ${i + 1}: Private key is invalid`)
+        }
 
         // Enkripsi & Simpan: Encrypt private key before storage
-        const encryptedPrivateKey = encryptPrivateKey(ownerPrivateKey)
+        let encryptedPrivateKey: string
+        try {
+          encryptedPrivateKey = encryptPrivateKey(ownerPrivateKey)
+          if (!encryptedPrivateKey || typeof encryptedPrivateKey !== 'string') {
+            throw new Error(`Encryption failed for wallet ${i + 1}`)
+          }
+        } catch (encryptError: any) {
+          throw new Error(`Failed to encrypt private key for wallet ${i + 1}: ${encryptError?.message || String(encryptError)}`)
+        }
 
         // Susun objek wallets_data sesuai struktur yang diminta
         const walletData: BotWalletData = {
@@ -295,10 +399,11 @@ export async function POST(request: NextRequest) {
 
         wallets_data.push(walletData)
 
-        console.log(`  Bot Wallet ${i + 1}:`)
+        console.log(`  ✅ Bot Wallet ${i + 1} completed:`)
         console.log(`    - Smart Account: ${account.address}`)
         console.log(`    - Owner (EOA): ${ownerAccount.address}`)
         console.log(`    - Chain: base`)
+        console.log(`    - Private key encrypted: Yes`)
       }
     } catch (walletGenError: any) {
       console.error("❌ Error generating bot wallets:", walletGenError)
