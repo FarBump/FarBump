@@ -1,18 +1,25 @@
 import { createRequire } from 'module'
 const require = createRequire(import.meta.url)
-const webpack = require('webpack')
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  // PENTING: Memaksa Next.js untuk memproses library blockchain dengan benar
-  transpilePackages: ['viem', 'permissionless', 'ox', '@uniswap/v4-sdk', '@abstract-foundation/agw-client'],
+  // PENTING: Inilah kunci memperbaiki error 'in operator' di Next.js 16
+  transpilePackages: [
+    'viem', 
+    'permissionless', 
+    'ox', 
+    '@uniswap/v4-sdk', 
+    '@abstract-foundation/agw-client'
+  ],
   
   typescript: {
-    ignoreBuildErrors: true,
+    ignoreBuildErrors: true, // Menjaga agar build tetap lanjut meski ada mismatch type
   },
+  
   images: {
     unoptimized: true,
   },
+
   async redirects() {
     return [
       {
@@ -22,28 +29,20 @@ const nextConfig = {
       },
     ]
   },
+
   webpack: (config, { isServer }) => {
-    // Sediakan fallback untuk modul Node.js yang hilang di browser
     if (!isServer) {
+      // Menyediakan fallback kosong untuk modul nodejs di browser
       config.resolve.fallback = {
         ...config.resolve.fallback,
         fs: false,
         net: false,
         tls: false,
-        crypto: require.resolve('crypto-browserify'), // Lebih aman daripada 'false'
-        stream: require.resolve('stream-browserify'),
+        crypto: false,
+        stream: false,
+        os: false,
       }
     }
-
-    // Fix untuk "in operator" error dan ESM compatibility
-    config.externals = [...(config.externals || [])]
-    
-    // Matikan warning terkait library yang memiliki dependency opsional
-    config.ignoreWarnings = [
-      { module: /node_modules\/pino/ },
-      { message: /critical dependency/i },
-    ]
-
     return config
   },
 }
