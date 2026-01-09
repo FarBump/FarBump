@@ -6,22 +6,26 @@ import { Play, Square, Lock, Loader2 } from "lucide-react"
 interface ActionButtonProps {
   isActive: boolean
   onToggle: () => void
+  onGenerateWallets?: () => void | Promise<void> // Separate callback for generating wallets
   credits?: number
   balanceWei?: string | null // Credit balance in wei (for checking if user has any credit)
   isVerified?: boolean
   buyAmountUsd?: string
   loadingState?: string | null // Loading state message (e.g., "Checking Wallets...")
+  isLoadingWallets?: boolean // Loading state for wallet generation
   hasBotWallets?: boolean // Whether user has 5 bot wallets created
 }
 
 export function ActionButton({ 
   isActive, 
-  onToggle, 
+  onToggle,
+  onGenerateWallets,
   credits = 0,
   balanceWei = null, 
   isVerified = false,
   buyAmountUsd = "0",
   loadingState = null,
+  isLoadingWallets = false,
   hasBotWallets = false
 }: ActionButtonProps) {
   // CRITICAL: Check credit using BigInt to avoid precision loss
@@ -34,7 +38,7 @@ export function ActionButton({
   // - Buy amount not set or invalid (only required if bot wallets exist)
   // If no bot wallets, user can still click to generate wallets (token verification not required yet)
   const isLocked = !hasCredit || (hasBotWallets && (!isVerified || !buyAmountUsd || parseFloat(buyAmountUsd) <= 0))
-  const isLoading = !!loadingState
+  const isLoading = !!loadingState || isLoadingWallets
   
   // Determine button text based on state:
   // - If credit 0: 'No fuel detected'
@@ -54,11 +58,24 @@ export function ActionButton({
   }
   
   const buttonText = getButtonText()
+  
+  // Determine which handler to use based on state
+  const handleClick = () => {
+    if (isLocked || isLoading) return
+    
+    // If no bot wallets and has credit, call onGenerateWallets
+    if (!hasBotWallets && hasCredit && onGenerateWallets) {
+      onGenerateWallets()
+    } else {
+      // Otherwise, call onToggle (start/stop bumping)
+      onToggle()
+    }
+  }
 
   return (
     <Button
       size="lg"
-      onClick={isLocked || isLoading ? undefined : onToggle}
+      onClick={handleClick}
       disabled={isLocked || isLoading}
       className={`w-full h-14 text-base font-semibold transition-all ${
         isLocked
