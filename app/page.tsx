@@ -25,7 +25,7 @@ import { base } from "wagmi/chains"
 import { isAddress } from "viem"
 import { useCreditBalance } from "@/hooks/use-credit-balance"
 import { useBotSession } from "@/hooks/use-bot-session"
-import { useBotWallets } from "@/hooks/use-bot-wallets"
+// Removed useBotWallets import - using manual state management instead
 import { parseUnits } from "viem"
 import { toast } from "sonner"
 
@@ -269,15 +269,11 @@ export default function BumpBotDashboard() {
   // balance_wei is stored as string in database, convert to BigInt for comparison
   const hasCredit = creditData?.balanceWei ? BigInt(creditData.balanceWei) > BigInt(0) : false
   
-  // Fetch bot wallets to check if they exist
-  // This determines whether to show "Generate Bot Wallet" or "Start Bumping"
-  const { 
-    data: existingBotWallets, 
-    isLoading: isLoadingBotWallets 
-  } = useBotWallets({
-    userAddress: privySmartWalletAddress,
-    enabled: !!privySmartWalletAddress && hasCredit, // Only fetch if user has credit
-  })
+  // CRITICAL: Don't auto-fetch bot wallets
+  // Only fetch when user clicks "Generate Bot Wallet" button
+  // This prevents unnecessary API calls and errors when user doesn't have credit
+  const [existingBotWallets, setExistingBotWallets] = useState<Array<{ smartWalletAddress: string; index: number }> | null>(null)
+  const [isLoadingBotWallets, setIsLoadingBotWallets] = useState(false)
   
   // Check if bot wallets exist (should have 5 wallets)
   // CRITICAL: Use Array.isArray to ensure type safety
@@ -542,7 +538,66 @@ export default function BumpBotDashboard() {
   // CRITICAL: Wrap with useCallback to prevent unnecessary re-renders
   const handleToggle = useCallback(async () => {
     if (!isActive) {
-      // Starting bot session - NEW FLOW
+      // Check if user needs to generate bot wallets first
+      if (!hasBotWallets) {
+        // User clicked "Generate Bot Wallet" - generate wallets first
+        if (!privySmartWalletAddress || !isAddress(privySmartWalletAddress)) {
+          toast.error("Smart wallet not ready")
+          return
+        }
+        
+        if (!hasCredit) {
+          toast.error("No credit detected. Please convert $BUMP to credit first.")
+          return
+        }
+        
+        try {
+          setIsLoadingBotWallets(true)
+          setBumpLoadingState("Generating Bot Wallets...")
+          console.log("🔄 Generating bot wallets for user:", privySmartWalletAddress)
+          
+          const walletsResponse = await fetch("/api/bot/get-or-create-wallets", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ userAddress: privySmartWalletAddress }),
+          })
+          
+          if (!walletsResponse.ok) {
+            const errorData = await walletsResponse.json().catch(() => ({}))
+            throw new Error(errorData.error || "Failed to generate bot wallets")
+          }
+          
+          const walletsData = await walletsResponse.json()
+          const wallets = walletsData.wallets as Array<{ smartWalletAddress: string; index: number }>
+          
+          // Validate - Ensure we have exactly 5 wallets
+          if (!wallets || wallets.length !== 5) {
+            throw new Error(`Expected 5 bot wallets, but got ${wallets?.length || 0}`)
+          }
+          
+          console.log("✅ Generated 5 bot wallets successfully")
+          setExistingBotWallets(wallets)
+          setBotWallets(wallets)
+          setBumpLoadingState(null)
+          setIsLoadingBotWallets(false)
+          
+          if (walletsData.created) {
+            toast.success("5 bot wallets created successfully! You can now start bumping.")
+          } else {
+            toast.success("Bot wallets ready!")
+          }
+        } catch (error: any) {
+          console.error("❌ Failed to generate bot wallets:", error)
+          setBumpLoadingState(null)
+          setIsLoadingBotWallets(false)
+          toast.error(error.message || "Failed to generate bot wallets")
+        }
+        return
+      }
+      
+      // User has bot wallets - proceed with starting bot session
       if (!isTokenVerified || !targetTokenAddress) {
         toast.error("Please verify target token address first")
         return
@@ -578,50 +633,9 @@ export default function BumpBotDashboard() {
           return
         }
         
-        // STEP 1: Check/Create Bot Wallets
-        // IMPORTANT: Using privySmartWalletAddress (Smart Wallet contract address, NOT Embedded Wallet)
-        // This is the unique identifier used throughout the database (user_address column)
-        setBumpLoadingState("Checking Wallets...")
-        console.log("🔄 Step 1: Checking/Creating bot wallets...")
-        console.log("   User Address (Smart Wallet):", privySmartWalletAddress)
-        
-        const walletsResponse = await fetch("/api/bot/get-or-create-wallets", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ userAddress: privySmartWalletAddress }),
-        })
-        
-        if (!walletsResponse.ok) {
-          const errorData = await walletsResponse.json().catch(() => ({}))
-          throw new Error(errorData.error || "Failed to get or create bot wallets")
-        }
-        
-        const walletsData = await walletsResponse.json()
-        const wallets = walletsData.wallets as Array<{ smartWalletAddress: string; index: number }>
-        
-        // STEP 2: Validate - Ensure we have exactly 5 wallets
-        if (!wallets || wallets.length !== 5) {
-          throw new Error(`Expected 5 bot wallets, but got ${wallets?.length || 0}`)
-        }
-        
-        console.log("✅ Step 2: Validated 5 bot wallets exist")
-        setBotWallets(wallets)
-        
-        if (walletsData.created) {
-          setBumpLoadingState("Wallets Created")
-          toast.success("5 bot wallets created successfully")
-          // Small delay to show the success message
-          await new Promise(resolve => setTimeout(resolve, 500))
-        } else {
-          setBumpLoadingState("Wallets Ready")
-          console.log("✅ Using existing bot wallets")
-        }
-        
-        // STEP 3: Start Session
+        // STEP 1: Start Session (wallets already exist)
         setBumpLoadingState("Starting Session...")
-        console.log("🔄 Step 3: Starting bot session...")
+        console.log("🔄 Starting bot session...")
         
         await startSession({
           userAddress: privySmartWalletAddress,
@@ -630,11 +644,11 @@ export default function BumpBotDashboard() {
           intervalSeconds: intervalSeconds,
         })
         
-        console.log("✅ Step 3: Bot session started")
+        console.log("✅ Bot session started")
         
-        // STEP 4: Trigger First Swap
+        // STEP 2: Trigger First Swap
         setBumpLoadingState("Executing First Swap...")
-        console.log("🔄 Step 4: Executing first swap...")
+        console.log("🔄 Executing first swap...")
         
         // Use wallet index 0 for the first swap (round robin will continue from here)
         const firstSwapResponse = await fetch("/api/bot/execute-swap", {
@@ -654,7 +668,7 @@ export default function BumpBotDashboard() {
           // Don't throw - session is started, backend will continue with scheduled swaps
           toast.warning("Session started, but first swap failed. Bot will retry on next interval.")
         } else {
-          console.log("✅ Step 4: First swap executed successfully")
+          console.log("✅ First swap executed successfully")
         }
         
         // Clear loading state
@@ -682,7 +696,7 @@ export default function BumpBotDashboard() {
         toast.error(error.message || "Failed to stop bot session")
       }
     }
-  }, [isActive, isTokenVerified, targetTokenAddress, buyAmountUsd, privySmartWalletAddress, intervalSeconds, credits, startSession, stopSession])
+  }, [isActive, isTokenVerified, targetTokenAddress, buyAmountUsd, privySmartWalletAddress, intervalSeconds, credits, startSession, stopSession, hasBotWallets, hasCredit])
   
   // Sync isActive with session status
   // Use useRef to track previous status to prevent infinite loops

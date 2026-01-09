@@ -115,9 +115,31 @@ export async function POST(request: NextRequest) {
           console.log(`    - Index: ${i}`)
           console.log(`    - Owner (EOA Signer): ${ownerAccount.address}`)
           
+          // CRITICAL: Ensure chain object is properly defined before calling toSimpleSmartAccount
+          // Permissionless library checks for 'type' property using 'in' operator
+          // We need to ensure chain object exists and has all required properties
+          const chain = publicClient.chain
+          if (!chain || typeof chain !== 'object') {
+            throw new Error("Chain object is undefined or invalid")
+          }
+          
+          // Create a safe chain object with all required properties
+          // This prevents "Cannot use 'in' operator" errors
+          const safeChain = {
+            ...chain,
+            // Ensure type property exists (permissionless may check for this)
+            type: (chain as any).type || 'base',
+          }
+          
+          // Create a safe client with the chain object
+          const safeClient = {
+            ...publicClient,
+            chain: safeChain,
+          }
+          
           // Use same approach as execute-swap route (simpler and proven to work)
           const smartAccount = await toSimpleSmartAccount({
-            client: publicClient,
+            client: safeClient as any,
             signer: ownerAccount,
             entryPoint: {
               address: entryPointAddress,
