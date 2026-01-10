@@ -176,7 +176,7 @@ export async function POST(request: NextRequest) {
       token_address: null, // System message
       amount_wei: totalFunding.toString(),
       status: "pending",
-      message: `[System] Mengirim seluruh saldo Credit (${totalEth} ETH / $${totalUsd.toFixed(2)}) secara merata ke 5 bot wallets`,
+      message: `[System] Funding 5 bots with total ${totalEth} ETH ($${totalUsd.toFixed(2)})... Pending`,
       tx_hash: null, // Will be filled after batch transaction completes
     }).select("id").single()
     

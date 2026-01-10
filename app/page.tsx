@@ -13,7 +13,6 @@ import { BotLiveActivity } from "@/components/bot-live-activity"
 import { PriceChart } from "@/components/price-chart"
 import { AnalyticsCards } from "@/components/analytics-cards"
 import { WalletHistory } from "@/components/wallet-history"
-import { GlobalFeed } from "@/components/global-feed"
 import { User } from "lucide-react"
 import Image from "next/image"
 import { useFarcasterMiniApp } from "@/components/miniapp-provider"
@@ -749,8 +748,11 @@ export default function BumpBotDashboard() {
               console.warn("Failed to fetch ETH price for log:", e)
             }
             
-            // Update main system log
+            // Update main system log with success message
             if (fundData.systemLogId) {
+              const totalEth = Number(fundData.totalFunding) / 1e18
+              const totalUsd = totalEth * (ethPriceForLog || 0)
+              
               await fetch("/api/bot/logs/update", {
                 method: "POST",
                 headers: {
@@ -760,6 +762,7 @@ export default function BumpBotDashboard() {
                   logId: fundData.systemLogId,
                   txHash: fundingTxHash,
                   status: "success",
+                  message: `[System] Funding 5 bots with total ${totalEth.toFixed(6)} ETH ($${totalUsd.toFixed(2)})... Success`,
                 }),
               }).catch(err => console.warn("Failed to update system log:", err))
             }
@@ -809,30 +812,26 @@ export default function BumpBotDashboard() {
         
         console.log("✅ Bot session started")
         
-        // STEP 3: Trigger First Swap (with round-robin)
-        setBumpLoadingState("Executing First Swap...")
-        console.log("🔄 Executing first swap (Bot Wallet #1)...")
+        // STEP 3: Trigger Continuous Swap Loop (Server-Side)
+        // This will run perpetually until all wallets are depleted or session is stopped
+        setBumpLoadingState("Starting Continuous Swap Loop...")
+        console.log("🔄 Triggering continuous swap loop (server-side)...")
         
-        // Use wallet index 0 for the first swap (round robin will continue from here)
-        const firstSwapResponse = await fetch("/api/bot/execute-swap", {
+        // Trigger continuous swap loop (non-blocking - runs in background)
+        fetch("/api/bot/continuous-swap", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
           },
           body: JSON.stringify({
             userAddress: privySmartWalletAddress,
-            walletIndex: 0, // Start with first wallet (round-robin)
           }),
+        }).catch(err => {
+          console.error("❌ Error triggering continuous swap loop:", err)
+          // Don't throw - session is started, user can manually trigger swaps
         })
         
-        if (!firstSwapResponse.ok) {
-          const errorData = await firstSwapResponse.json().catch(() => ({}))
-          console.warn("⚠️ First swap failed, but session is started:", errorData.error)
-          // Don't throw - session is started, backend will continue with scheduled swaps
-          toast.warning("Session started, but first swap failed. Bot will retry on next interval.")
-        } else {
-          console.log("✅ First swap executed successfully")
-        }
+        console.log("✅ Continuous swap loop triggered (running in background)")
         
         // Clear loading state
         setBumpLoadingState(null)
@@ -842,7 +841,7 @@ export default function BumpBotDashboard() {
         setActiveTab("activity")
         
         // Don't set isActive here - let useEffect sync it from session status
-        toast.success("Bot started successfully! All-In funding completed. Live activity will appear below.")
+        toast.success("Bot started successfully! Continuous bumping is now running. Check Live Activity for updates.")
       } catch (error: any) {
         console.error("❌ Failed to start bot:", error)
         setBumpLoadingState(null)
@@ -990,7 +989,7 @@ export default function BumpBotDashboard() {
         </header>
 
         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-          <TabsList className="w-full grid grid-cols-4 p-1 bg-card border border-border">
+          <TabsList className="w-full grid grid-cols-3 p-1 bg-card border border-border">
             <TabsTrigger
               value="control"
               className="text-xs font-medium data-[state=active]:bg-primary data-[state=active]:text-primary-foreground"
@@ -1008,12 +1007,6 @@ export default function BumpBotDashboard() {
               className="text-xs font-medium data-[state=active]:bg-primary data-[state=active]:text-primary-foreground"
             >
               Wallet History
-            </TabsTrigger>
-            <TabsTrigger
-              value="global"
-              className="text-xs font-medium data-[state=active]:bg-primary data-[state=active]:text-primary-foreground"
-            >
-              Global Feed
             </TabsTrigger>
           </TabsList>
 
@@ -1075,10 +1068,6 @@ export default function BumpBotDashboard() {
 
           <TabsContent value="history" className="mt-4">
             <WalletHistory />
-          </TabsContent>
-
-          <TabsContent value="global" className="mt-4">
-            <GlobalFeed />
           </TabsContent>
         </Tabs>
       </div>

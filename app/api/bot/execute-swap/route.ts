@@ -252,14 +252,14 @@ export async function POST(request: NextRequest) {
           .eq("user_address", normalizedUserAddress)
           .eq("status", "running")
 
-        // Log system message with format: [System] Saldo Bot #X tidak cukup ($ < 0.01). Bumping dihentikan.
+        // Log system message: [System] All bot balances below $0.01. Bumping session completed.
         await supabase.from("bot_logs").insert({
           user_address: normalizedUserAddress,
           wallet_address: null,
           token_address: null,
           amount_wei: "0",
           status: "stopped",
-          message: `[System] Saldo habis di semua bot wallet (semua di bawah $${MIN_AMOUNT_USD.toFixed(2)}). Bumping dihentikan.`,
+          message: `[System] All bot balances below $${MIN_AMOUNT_USD.toFixed(2)}. Bumping session completed.`,
         })
 
         return NextResponse.json(
@@ -297,8 +297,8 @@ export async function POST(request: NextRequest) {
       sellToken: "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", // Native ETH
       buyToken: tokenAddress,
       sellAmount: actualSellAmountWei.toString(),
-      taker: botWallet.smartWalletAddress,
-      slippagePercentage: "1", // 1% slippage
+      taker: botWalletAddress,
+      slippagePercentage: "1", // 1% slippage (compatible with $0.01 trades)
       enablePermit2: "true", // Enable Permit2 for efficient approvals
       intentOnFill: "true", // Indicates intent to fill the quote
       enableSlippageProtection: "false", // Disable slippage protection for bot trades
@@ -322,7 +322,7 @@ export async function POST(request: NextRequest) {
       // Database insert uses user_address column (NOT user_id)
       await supabase.from("bot_logs").insert({
         user_address: normalizedUserAddress,
-        wallet_address: botWallet.smartWalletAddress,
+        wallet_address: botWalletAddress,
         token_address: tokenAddress,
         amount_wei: actualSellAmountWei.toString(),
         status: "failed",
@@ -383,7 +383,7 @@ export async function POST(request: NextRequest) {
     // Execute swap transaction
     console.log(`🔄 Executing swap transaction...`)
     
-    // Log pending transaction with format: [Bot #1] Melakukan swap senilai $0.01 ke Target Token... [Lihat Transaksi]
+    // Log pending transaction with format: [Bot #X] Swapping $0.01 for [Target Token]... Pending
     // Update Live Activity Secara Real-Time: Tampilkan setiap aktivitas di log
     // Database insert uses user_address column (NOT user_id)
     const logResult = await supabase.from("bot_logs").insert({
@@ -392,7 +392,7 @@ export async function POST(request: NextRequest) {
       token_address: tokenAddress,
       amount_wei: actualSellAmountWei.toString(),
       status: "pending",
-      message: `[Bot #${walletIndex + 1}] Melakukan swap senilai $${amountUsd.toFixed(2)} ke Target Token...`,
+      message: `[Bot #${walletIndex + 1}] Swapping $${amountUsd.toFixed(2)} for Target Token... Pending`,
     }).select("id").single()
     
     const logId = logResult.data?.id
@@ -455,13 +455,13 @@ export async function POST(request: NextRequest) {
       })
 
       if (txReceipt.status === "success") {
-        // Update log with success: [Bot #1] Melakukan swap senilai $0.01 ke Target Token... [Lihat Transaksi]
+        // Update log with success: [Bot #X] Swapping $0.01 for [Target Token]... [View on BaseScan]
         await supabase
           .from("bot_logs")
           .update({
             tx_hash: txHash,
             status: "success",
-            message: `[Bot #${walletIndex + 1}] Melakukan swap senilai $${amountUsd.toFixed(2)} ke Target Token... [Lihat Transaksi]`,
+            message: `[Bot #${walletIndex + 1}] Swapping $${amountUsd.toFixed(2)} for Target Token... [View on BaseScan]`,
           })
           .eq("id", logId)
 
