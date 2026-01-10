@@ -4,7 +4,7 @@ import { useState, useEffect } from "react"
 import { Card } from "@/components/ui/card"
 import { Slider } from "@/components/ui/slider"
 import { Input } from "@/components/ui/input"
-import { Clock, Coins, Fuel, ExternalLink, AlertCircle, ArrowRightLeft, ArrowDownUp, Loader2 } from "lucide-react"
+import { Clock, Coins, Fuel, ExternalLink, AlertCircle, ArrowRightLeft, ArrowDownUp, Loader2, DollarSign, Info } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { useBumpBalance } from "@/hooks/use-bump-balance"
 import { useFarcasterMiniApp } from "@/components/miniapp-provider"
@@ -448,7 +448,7 @@ export function ConfigPanel({
 
           <div className="space-y-3">
             <div className="flex items-center gap-2">
-              <Coins className="h-4 w-4 text-primary" />
+              <DollarSign className="h-4 w-4 text-primary" />
               <label className="text-sm font-medium text-foreground">Amount per Bump</label>
             </div>
             <div className="relative">
@@ -467,6 +467,20 @@ export function ConfigPanel({
             <p className="text-xs text-muted-foreground">
               Amount per swap execution (minimum $0.01 USD, continuously until you stop the bot)
             </p>
+          </div>
+
+          {/* Gas Fee Information */}
+          <div className="rounded-lg bg-blue-500/10 border border-blue-500/20 p-3">
+            <div className="flex items-start gap-2">
+              <Info className="h-4 w-4 text-blue-500 mt-0.5 shrink-0" />
+              <div className="space-y-1">
+                <p className="text-xs font-medium text-blue-500">Gas Fee Notice</p>
+                <p className="text-[10px] text-muted-foreground leading-relaxed">
+                  You'll pay a small one-time gas fee (~$0.01) for the initial setup to fund 5 bot wallets. 
+                  All subsequent swaps are <span className="font-semibold text-foreground">100% gasless</span> via Coinbase Paymaster.
+                </p>
+              </div>
+            </div>
           </div>
         </div>
       </Card>

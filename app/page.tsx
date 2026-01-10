@@ -734,8 +734,12 @@ export default function BumpBotDashboard() {
         console.log("✅ Funding instructions prepared:", fundData)
         
         // Execute batch transfer using Privy Smart Wallet
-        setBumpLoadingState("Executing Batch Transfer...")
+        // IMPORTANT: User pays gas for this setup transaction (no Paymaster)
+        // This avoids Coinbase Paymaster allowlist issues for bot wallet addresses
+        // Gas cost on Base is very cheap (~$0.01 for batch transfer to 5 wallets)
+        setBumpLoadingState("Executing Batch Transfer (You pay gas for setup)...")
         console.log(`📤 Sending ${fundData.transfers.length} transfers in batch...`)
+        console.log(`💡 Note: User pays gas for this setup transaction (~$0.01 on Base)`)
         
         if (!smartWalletClient) {
           throw new Error("Smart Wallet client not available. Please connect your wallet.")
@@ -748,9 +752,11 @@ export default function BumpBotDashboard() {
           value: BigInt(transfer.value),
         }))
         
-        // Execute batch transaction
+        // Execute batch transaction WITHOUT Paymaster (user pays gas)
+        // This avoids allowlist issues with Coinbase Paymaster during funding
         const fundingTxHash = await smartWalletClient.sendTransaction({
           calls: batchCalls as any,
+          // No paymaster config - user pays gas for setup
         }) as `0x${string}`
         
         console.log("✅ Batch transfer sent! Hash:", fundingTxHash)
