@@ -18,14 +18,22 @@ interface BotWalletData {
  * API Route: Get or create 5 bot wallets using Coinbase CDP SDK V2
  * 
  * Official Documentation: 
- * https://docs.cdp.coinbase.com/server-wallets/v2/using-the-wallet-api/managing-accounts
+ * - Quickstart: https://docs.cdp.coinbase.com/server-wallets/v2/introduction/quickstart
+ * - Managing Accounts: https://docs.cdp.coinbase.com/server-wallets/v2/using-the-wallet-api/managing-accounts
  * 
  * CDP SDK V2 Features:
  * - Automatic key management by Coinbase in secure AWS Nitro Enclaves
- * - Named accounts for easier access (getOrCreateAccount)
+ * - Auto-loads credentials from environment variables (CDP_API_KEY_ID, CDP_API_KEY_SECRET, CDP_WALLET_SECRET)
  * - Native gas sponsorship support
  * - EVM and Smart Account support
  * - Production-grade security
+ * 
+ * Environment Variables Required:
+ * - CDP_API_KEY_ID: Your CDP API Key ID
+ * - CDP_API_KEY_SECRET: Your CDP API Key Secret
+ * - CDP_WALLET_SECRET: Your Wallet Secret
+ * 
+ * Get these from: https://portal.cdp.coinbase.com/
  * 
  * Logic:
  * 1. Check if user already has 5 bot wallets in database
@@ -105,44 +113,47 @@ export async function POST(request: NextRequest) {
     }
 
     // Step 3: Initialize Coinbase CDP Client V2
-    // Official method: https://docs.cdp.coinbase.com/server-wallets/v2/
+    // Official Quickstart: https://docs.cdp.coinbase.com/server-wallets/v2/introduction/quickstart
+    // The CDP Client automatically loads credentials from environment variables:
+    // - CDP_API_KEY_ID
+    // - CDP_API_KEY_SECRET
+    // - CDP_WALLET_SECRET (optional but recommended)
     console.log("🔧 Initializing Coinbase CDP SDK V2...")
     
-    const rawKey = process.env.CDP_PRIVATE_KEY
-    const keyName = process.env.CDP_API_KEY_NAME
+    // Check if required environment variables are present
+    const apiKeyId = process.env.CDP_API_KEY_ID
+    const apiKeySecret = process.env.CDP_API_KEY_SECRET
+    const walletSecret = process.env.CDP_WALLET_SECRET
 
-    if (!rawKey || !keyName) {
+    if (!apiKeyId || !apiKeySecret) {
       console.error("❌ Missing CDP credentials in environment variables")
-      console.error("   Expected: CDP_API_KEY_NAME and CDP_PRIVATE_KEY")
+      console.error("   Required: CDP_API_KEY_ID, CDP_API_KEY_SECRET")
+      console.error("   Optional: CDP_WALLET_SECRET")
       console.error("   Get these from: https://portal.cdp.coinbase.com/")
       return NextResponse.json(
         { 
           error: "CDP Credentials not found in .env", 
-          details: "Please set CDP_API_KEY_NAME and CDP_PRIVATE_KEY in environment variables. See CDP-SETUP-BENAR.md for instructions." 
+          details: "Please set CDP_API_KEY_ID and CDP_API_KEY_SECRET in environment variables. Get your API key from https://portal.cdp.coinbase.com/" 
         },
         { status: 500 }
       )
     }
 
-    // Sanitize the private key to handle literal \n from .env
-    // When storing PEM keys in .env, newlines are often escaped as \\n (literal backslash-n)
-    // We need to convert them back to actual newline characters for proper PEM parsing
-    const cleanKey = rawKey.trim().replace(/\\n/g, '\n')
-    
-    console.log("🔑 CDP Private Key sanitization:")
-    console.log(`   Raw key length: ${rawKey.length} chars`)
-    console.log(`   Clean key length: ${cleanKey.length} chars`)
-    console.log(`   Key starts with: ${cleanKey.substring(0, 30)}...`)
+    console.log("✅ CDP credentials found:")
+    console.log(`   CDP_API_KEY_ID: ${apiKeyId.substring(0, 20)}...`)
+    console.log(`   CDP_API_KEY_SECRET: ${apiKeySecret.substring(0, 10)}...`)
+    console.log(`   CDP_WALLET_SECRET: ${walletSecret ? 'Set' : 'Not set (optional)'}`)
 
     // Initialize CDP Client V2
-    // Reference: https://docs.cdp.coinbase.com/server-wallets/v2/using-the-wallet-api/managing-accounts
+    // According to the official quickstart, CdpClient() auto-loads from env vars
+    // Reference: https://docs.cdp.coinbase.com/server-wallets/v2/introduction/quickstart#project-setup
     let cdp: CdpClient
     try {
-      cdp = new CdpClient({
-        apiKeyName: keyName,
-        privateKey: cleanKey,
-      })
-      console.log("✅ CDP Client V2 initialized successfully with clean PEM key")
+      // The CdpClient constructor automatically reads from environment variables
+      // No need to pass credentials explicitly
+      cdp = new CdpClient()
+      console.log("✅ CDP Client V2 initialized successfully")
+      console.log("   SDK will auto-load credentials from environment")
     } catch (configError: any) {
       console.error("❌ Failed to initialize CDP Client:", configError)
       console.error("   Error message:", configError.message)
@@ -157,26 +168,35 @@ export async function POST(request: NextRequest) {
     }
 
     // Step 4: Create 5 new EVM accounts using CDP V2
-    // Official method: cdp.evm.createAccount()
-    // Reference: https://docs.cdp.coinbase.com/server-wallets/v2/using-the-wallet-api/managing-accounts#creating-accounts
+    // Official method from Quickstart: cdp.evm.createAccount()
+    // Reference: https://docs.cdp.coinbase.com/server-wallets/v2/introduction/quickstart#1-create-an-account
+    // 
+    // Example from docs:
+    // const account = await cdp.evm.createAccount();
+    // console.log(`Created EVM account: ${account.address}`);
+    //
+    // Output: Created EVM account: 0x3c0D84055994c3062819Ce8730869D0aDeA4c3Bf
     console.log("🚀 Creating 5 bot EVM accounts using CDP V2...")
+    console.log("   Reference: https://docs.cdp.coinbase.com/server-wallets/v2/introduction/quickstart#1-create-an-account")
 
     const walletsToInsert: BotWalletData[] = []
 
     for (let i = 0; i < 5; i++) {
-      console.log(`   Creating EVM account ${i + 1}/5...`)
+      console.log(`\n   [${i + 1}/5] Creating EVM account...`)
 
       try {
-        // Create EVM account on Base network
-        // CDP V2 automatically manages the account on base-mainnet
+        // Create EVM account using official CDP V2 method
+        // This creates a regular EVM account, not a Smart Account
+        // For Smart Accounts, use: cdp.evm.createSmartAccount({ owner: ownerAccount })
         const account = await cdp.evm.createAccount()
 
         if (!account || !account.address) {
           throw new Error(`Account ${i + 1} created but missing address`)
         }
 
-        console.log(`   ✅ EVM Account ${i + 1} created:`)
+        console.log(`   ✅ EVM Account ${i + 1} created successfully`)
         console.log(`      Address: ${account.address}`)
+        console.log(`      Network: base-mainnet (default)`)
 
         walletsToInsert.push({
           smart_account_address: account.address as Address,
@@ -184,11 +204,13 @@ export async function POST(request: NextRequest) {
           network: "base-mainnet",
         })
       } catch (walletError: any) {
-        console.error(`   ❌ Failed to create account ${i + 1}:`, walletError)
-        console.error(`   Error details:`, walletError.message)
+        console.error(`\n   ❌ Failed to create account ${i + 1}:`)
+        console.error(`      Error: ${walletError.message}`)
+        if (walletError.response) {
+          console.error(`      API Response:`, walletError.response.data)
+        }
         
         // If one wallet fails, we should still try to create the rest
-        // But log the error and continue
         console.log(`   ⚠️  Continuing to next wallet...`)
         continue
       }
