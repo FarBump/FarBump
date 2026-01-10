@@ -1,74 +1,44 @@
 import { NextRequest, NextResponse } from "next/server"
-import { 
-  getAddress, 
-  encodeFunctionData, 
-  keccak256, 
-  encodeAbiParameters, 
-  getContractAddress,
-  type Address,
-  type Hex,
-  isAddress 
-} from "viem"
-import { generatePrivateKey, privateKeyToAccount } from "viem/accounts"
+import { type Address, isAddress } from "viem"
 import { createSupabaseServiceClient } from "@/lib/supabase"
-import { encryptPrivateKey } from "@/lib/bot-encryption"
+import { Coinbase, Wallet } from "@coinbase/coinbase-sdk"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
 
-// Konstanta Resmi (Base Mainnet)
-const FACTORY: Address = "0x9406Cc6185a346906296840746125a0E44976454"
-const ENTRY_POINT: Address = "0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789"
-
-// Proxy Bytecode for SimpleAccount (standard bytecode for SimpleAccount proxies)
-// This is the minimal proxy bytecode that delegates all calls to the implementation
-const PROXY_BYTECODE = `0x3d602d80600a3d3981f3363d3d373d3d3d363d73${FACTORY.toLowerCase().slice(2)}5af43d82803e903d91602b57fd5bf3` as Hex
-
-// ABI untuk SimpleAccountFactory.createAccount
-const SIMPLE_ACCOUNT_FACTORY_ABI = [
-  {
-    name: "createAccount",
-    type: "function",
-    stateMutability: "nonpayable",
-    inputs: [
-      { name: "owner", type: "address" },
-      { name: "salt", type: "uint256" }
-    ],
-    outputs: [{ name: "account", type: "address" }]
-  }
-] as const
-
-// Updated interface to match new wallets_data structure
+// Updated interface to use CDP Server Wallet ID
 interface BotWalletData {
-  smart_account_address: Address
-  owner_public_address: Address
-  owner_private_key: string // Encrypted
-  chain: string
+  coinbase_wallet_id: string // CDP Wallet ID (used to fetch wallet from CDP)
+  smart_account_address: Address // Default address of the wallet
+  chain: string // Network ID (e.g., 'base-mainnet')
 }
 
 /**
- * API Route: Get or create 5 bot wallets for user
+ * API Route: Get or create 5 bot wallets using CDP Server Wallets V2
+ * 
+ * Benefits of CDP Server Wallets:
+ * - Private keys managed by Coinbase in secure AWS Nitro Enclaves
+ * - Native gas sponsorship (no Paymaster allowlist issues)
+ * - Simple API (no manual CREATE2, encryption, or signing)
+ * - Production-grade security and reliability
  * 
  * Logic:
  * 1. Check if user already has bot wallets in database
- * 2. If yes, return existing wallets (decrypt not needed here, just return encrypted)
- * 3. If no, generate 5 EOA private keys, calculate Smart Wallet addresses using CREATE2, encrypt, save
+ * 2. If yes, return existing wallet info
+ * 3. If no, create 5 new wallets using Wallet.create()
+ * 4. Store wallet.getId() and wallet.getDefaultAddress() in database
  * 
  * Security:
- * - Private keys are encrypted before storage
- * - Never exposed to client
- * - Only server-side operations
- * - Uses CREATE2 for deterministic address calculation (100% accurate, no library dependency)
- * 
- * PENTING: Jangan mengimpor atau memanggil toSimpleSmartAccount atau signerToSimpleSmartAccount 
- * dari permissionless di dalam file ini agar tidak memicu error internal 'in operator'
+ * - Private keys never exposed (managed by CDP)
+ * - Server-side only operations
+ * - CDP credentials from environment variables
  */
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
     const { userAddress } = body as { userAddress: string }
 
-    // Validation: Pastikan userAddress yang dikirim dari frontend divalidasi sebagai alamat yang benar
+    // Validation: Ensure userAddress is provided
     if (!userAddress) {
       return NextResponse.json(
         { error: "Missing required field: userAddress" },
@@ -91,208 +61,139 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // IMPORTANT: userAddress is the Smart Wallet address from Privy (NOT Embedded Wallet)
-    // This is used as the unique identifier (user_address) in all database tables
-    // We do NOT use Supabase Auth (auth.uid() or getUser()) - only wallet address-based identification
+    // IMPORTANT: userAddress is the Smart Wallet address from Privy
+    // This is used as the unique identifier in all database tables
     const normalizedUserAddress = userAddress.toLowerCase()
 
     const supabase = createSupabaseServiceClient()
 
-    // Check if user already has bot wallets
-    // Database query uses user_address column (NOT user_id)
+    // Step 1: Check if user already has bot wallets
     const { data: existingWallets, error: fetchError } = await supabase
-      .from("user_bot_wallets")
-      .select("wallets_data")
+      .from("wallets_data")
+      .select("*")
       .eq("user_address", normalizedUserAddress)
-      .single()
 
-    if (existingWallets && !fetchError) {
-      // User already has wallets, return them
-      console.log(`✅ Found existing bot wallets for user: ${userAddress}`)
-      const walletsData = existingWallets.wallets_data as BotWalletData[] | BotWalletData
-      
-      // Handle both array and object formats
-      const walletsArray = Array.isArray(walletsData) 
-        ? walletsData 
-        : walletsData ? [walletsData] : []
-      
-      // Convert to expected format for frontend
-      const wallets = walletsArray.map((w, idx) => ({
-        smartWalletAddress: w.smart_account_address,
-        index: idx,
-      }))
-      
+    if (fetchError) {
+      console.error("❌ Supabase fetch error:", fetchError)
+      return NextResponse.json(
+        { error: "Failed to fetch existing wallets", details: fetchError.message },
+        { status: 500 }
+      )
+    }
+
+    // Step 2: If user already has 5 wallets, return them
+    if (existingWallets && existingWallets.length === 5) {
+      console.log(`✅ User ${normalizedUserAddress} already has 5 bot wallets (CDP)`)
       return NextResponse.json({
-        success: true,
-        wallets: wallets,
-        created: false,
+        message: "Bot wallets already exist",
+        wallets: existingWallets.map(w => ({
+          coinbase_wallet_id: w.coinbase_wallet_id,
+          smart_account_address: w.smart_account_address,
+          chain: w.chain,
+        })),
       })
     }
 
-    // Generate 5 new bot wallets using CREATE2 manual calculation
-    console.log(`🔄 Generating 5 new bot wallets for user: ${userAddress}`)
-    console.log(`   Normalized user address: ${normalizedUserAddress}`)
-    console.log(`   Using CREATE2 manual calculation (Helper Resmi Viem)`)
-    console.log(`   Factory: ${FACTORY}`)
-    console.log(`   EntryPoint: ${ENTRY_POINT}`)
+    // Step 3: Initialize Coinbase SDK
+    console.log("🔧 Initializing Coinbase CDP SDK...")
     
-    const wallets_data: BotWalletData[] = []
+    const cdpApiKeyName = process.env.CDP_API_KEY_NAME
+    const cdpPrivateKey = process.env.CDP_PRIVATE_KEY
 
-    try {
-      for (let i = 0; i < 5; i++) {
-        console.log(`\n  📝 Creating Bot Wallet ${i + 1} (Index: ${i}):`)
-        
-        try {
-          // Step a: Generate Private Key baru
-          const ownerPrivateKey = generatePrivateKey()
-          if (!ownerPrivateKey || typeof ownerPrivateKey !== 'string') {
-            throw new Error(`Failed to generate private key for wallet ${i + 1}`)
-          }
-          console.log(`    ✅ Private key generated`)
-          
-          // Step b: Ambil ownerAddress dari Private Key tersebut
-          const ownerAccount = privateKeyToAccount(ownerPrivateKey)
-          if (!ownerAccount || !ownerAccount.address) {
-            throw new Error(`Failed to create owner account for wallet ${i + 1}`)
-          }
-          const ownerAddress = getAddress(ownerAccount.address) // Normalize to checksum format
-          console.log(`    ✅ Owner address: ${ownerAddress}`)
-          
-          // Step c: Hitung salt menggunakan keccak256(encodeAbiParameters([{ type: 'address' }, { type: 'uint256' }], [ownerAddress, BigInt(i)]))
-          const salt = keccak256(
-            encodeAbiParameters(
-              [
-                { type: "address" },
-                { type: "uint256" }
-              ],
-              [ownerAddress, BigInt(i)]
-            )
-          )
-          console.log(`    ✅ Salt calculated: ${salt}`)
-          
-          // Step d: Hitung initCode (CallData untuk Factory)
-          // encodeFunctionData dengan ABI createAccount(owner, salt)
-          const initCode = encodeFunctionData({
-            abi: SIMPLE_ACCOUNT_FACTORY_ABI,
-            functionName: "createAccount",
-            args: [ownerAddress, BigInt(i)]
-          })
-          console.log(`    ✅ InitCode (createAccount calldata): ${initCode}`)
-          
-          // Step e: Dapatkan smartAccountAddress menggunakan helper resmi Viem
-          // CRITICAL: Use PROXY_BYTECODE instead of initCode for correct address calculation
-          // The initCode is the calldata for createAccount, but CREATE2 needs the proxy bytecode
-          const smartAccountAddress = getContractAddress({
-            from: FACTORY,
-            salt: salt,
-            bytecode: PROXY_BYTECODE,
-            opcode: "CREATE2"
-          })
-          console.log(`    ✅ Smart Account Address (CREATE2): ${smartAccountAddress}`)
-          
-          // Validate address
-          if (!isAddress(smartAccountAddress)) {
-            throw new Error(`Invalid smart account address generated for wallet ${i + 1}: ${smartAccountAddress}`)
-          }
-          
-          // CRITICAL: Validate ownerPrivateKey before encryption
-          if (!ownerPrivateKey || typeof ownerPrivateKey !== 'string') {
-            throw new Error(`Private key is invalid for wallet ${i + 1}`)
-          }
-
-          // Enkripsi & Simpan: Encrypt private key before storage
-          let encryptedPrivateKey: string
-          try {
-            encryptedPrivateKey = encryptPrivateKey(ownerPrivateKey)
-            if (!encryptedPrivateKey || typeof encryptedPrivateKey !== 'string') {
-              throw new Error(`Encryption failed for wallet ${i + 1}`)
-            }
-          } catch (encryptError: any) {
-            throw new Error(`Failed to encrypt private key for wallet ${i + 1}: ${encryptError?.message || String(encryptError)}`)
-          }
-
-          // Susun objek wallets_data sesuai struktur yang diminta
-          // Pastikan 'wallets_data' menyimpan 'smart_account_address: account.address'
-          const walletData: BotWalletData = {
-            smart_account_address: smartAccountAddress, // ✅ Menggunakan hasil CREATE2 calculation
-            owner_public_address: ownerAddress,
-            owner_private_key: encryptedPrivateKey,
-            chain: 'base',
-          }
-
-          wallets_data.push(walletData)
-
-          console.log(`  ✅ Bot Wallet ${i + 1} completed:`)
-          console.log(`    - Smart Account Address: ${smartAccountAddress}`)
-          console.log(`    - Owner (EOA): ${ownerAddress}`)
-          console.log(`    - Chain: base`)
-          console.log(`    - Private key encrypted: Yes`)
-        } catch (walletError: any) {
-          console.error(`❌ Error creating Bot Wallet ${i + 1}:`, walletError)
-          console.error(`   Error type: ${walletError?.constructor?.name || typeof walletError}`)
-          console.error(`   Error message: ${walletError?.message || String(walletError)}`)
-          console.error(`   Error stack: ${walletError?.stack || "No stack trace"}`)
-          throw new Error(
-            `Failed to create Bot Wallet ${i + 1}: ${walletError?.message || String(walletError)}`
-          )
-        }
-      }
-    } catch (walletGenError: any) {
-      console.error("❌ Error generating bot wallets:", walletGenError)
-      console.error("   Error type:", walletGenError?.constructor?.name || typeof walletGenError)
-      console.error("   Error message:", walletGenError?.message || String(walletGenError))
-      console.error("   Error stack:", walletGenError?.stack || "No stack trace")
+    if (!cdpApiKeyName || !cdpPrivateKey) {
+      console.error("❌ Missing CDP credentials in environment variables")
       return NextResponse.json(
         { 
-          error: `Failed to generate bot wallets: ${walletGenError?.message || "Unknown error"}`,
-          details: process.env.NODE_ENV === "development" ? walletGenError?.stack : undefined
+          error: "CDP credentials not configured", 
+          details: "Please set CDP_API_KEY_NAME and CDP_PRIVATE_KEY in .env" 
         },
         { status: 500 }
       )
     }
 
-    // Save to database using upsert
-    // IMPORTANT: Using user_address column (NOT user_id) - this is the Smart Wallet address
-    // Use upsert to handle both insert and update cases
-    const { error: upsertError } = await supabase
-      .from("user_bot_wallets")
-      .upsert({
-        user_address: normalizedUserAddress,
-        wallets_data: wallets_data,
-      }, {
-        onConflict: 'user_address',
-      })
+    // Configure Coinbase SDK
+    Coinbase.configure({
+      apiKeyName: cdpApiKeyName,
+      privateKey: cdpPrivateKey,
+    })
 
-    if (upsertError) {
-      console.error("❌ Error saving bot wallets:", upsertError)
+    console.log("✅ CDP SDK configured successfully")
+
+    // Step 4: Create 5 new wallets using CDP
+    console.log("🚀 Creating 5 bot wallets using CDP Server Wallets V2...")
+
+    const walletsToInsert: BotWalletData[] = []
+
+    for (let i = 0; i < 5; i++) {
+      console.log(`   Creating wallet ${i + 1}/5...`)
+
+      try {
+        // Create wallet on Base Mainnet
+        const wallet = await Wallet.create({
+          networkId: "base-mainnet",
+        })
+
+        const walletId = wallet.getId()
+        const defaultAddress = wallet.getDefaultAddress()
+
+        if (!walletId || !defaultAddress) {
+          throw new Error(`Wallet ${i + 1} created but missing ID or address`)
+        }
+
+        console.log(`   ✅ Wallet ${i + 1} created:`)
+        console.log(`      CDP Wallet ID: ${walletId}`)
+        console.log(`      Address: ${defaultAddress.getId()}`)
+
+        walletsToInsert.push({
+          coinbase_wallet_id: walletId,
+          smart_account_address: defaultAddress.getId() as Address,
+          chain: "base-mainnet",
+        })
+      } catch (walletError: any) {
+        console.error(`   ❌ Failed to create wallet ${i + 1}:`, walletError)
+        throw new Error(`Wallet creation failed at index ${i}: ${walletError.message}`)
+      }
+    }
+
+    console.log(`✅ All 5 wallets created successfully (CDP)`)
+
+    // Step 5: Save wallets to database
+    console.log("💾 Saving wallets to Supabase...")
+
+    const walletsToStore = walletsToInsert.map((wallet) => ({
+      user_address: normalizedUserAddress,
+      coinbase_wallet_id: wallet.coinbase_wallet_id,
+      smart_account_address: wallet.smart_account_address,
+      chain: wallet.chain,
+      created_at: new Date().toISOString(),
+    }))
+
+    const { data: insertedWallets, error: insertError } = await supabase
+      .from("wallets_data")
+      .insert(walletsToStore)
+      .select()
+
+    if (insertError) {
+      console.error("❌ Supabase insert error:", insertError)
       return NextResponse.json(
-        { error: "Failed to save bot wallets to database" },
+        { error: "Failed to save wallets to database", details: insertError.message },
         { status: 500 }
       )
     }
 
-    console.log(`\n✅ Successfully created 5 bot wallets for user: ${userAddress}`)
-    console.log(`   Saved to database with user_address: ${normalizedUserAddress}`)
-    console.log(`   All addresses calculated using CREATE2 (100% accurate, no library dependency)`)
+    console.log(`✅ Saved ${insertedWallets.length} wallets to database`)
 
-    // Return wallet addresses only (not encrypted keys for security)
     return NextResponse.json({
-      success: true,
-      wallets: wallets_data.map((w, idx) => ({
-        smartWalletAddress: w.smart_account_address,
-        index: idx,
-      })),
-      created: true,
+      message: "Successfully created 5 bot wallets using CDP",
+      wallets: walletsToInsert,
     })
   } catch (error: any) {
     console.error("❌ Error in get-or-create-wallets:", error)
-    console.error("   Error type:", error?.constructor?.name || typeof error)
-    console.error("   Error message:", error?.message || String(error))
-    console.error("   Error stack:", error?.stack || "No stack trace")
     return NextResponse.json(
       { 
-        error: error?.message || "Internal server error",
-        details: process.env.NODE_ENV === "development" ? error?.stack : undefined
+        error: "Internal server error", 
+        details: error.message,
+        stack: process.env.NODE_ENV === 'development' ? error.stack : undefined,
       },
       { status: 500 }
     )
