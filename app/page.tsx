@@ -286,6 +286,41 @@ export default function BumpBotDashboard() {
   const [existingBotWallets, setExistingBotWallets] = useState<Array<{ smartWalletAddress: string; index: number }> | null>(null)
   const [isLoadingBotWallets, setIsLoadingBotWallets] = useState(false)
   
+  // Fetch existing bot wallets from database on mount
+  // This ensures button shows "Start Bumping" if user already has 5 wallets
+  useEffect(() => {
+    if (!privySmartWalletAddress || !isMounted || !hasCredit) return
+    
+    const fetchExistingWallets = async () => {
+      try {
+        const normalizedUserAddress = privySmartWalletAddress.toLowerCase()
+        const walletsResponse = await fetch("/api/bot/get-or-create-wallets", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ userAddress: normalizedUserAddress }),
+        })
+        
+        if (walletsResponse.ok) {
+          const walletsData = await walletsResponse.json()
+          const wallets = walletsData?.wallets as Array<{ smartWalletAddress: string; index: number }> | undefined
+          
+          // Validate - Ensure we have exactly 5 wallets
+          if (wallets && wallets.length === 5) {
+            const validWallets = wallets.filter(w => w?.smartWalletAddress && typeof w.smartWalletAddress === 'string')
+            if (validWallets.length === 5) {
+              setExistingBotWallets(validWallets)
+              console.log("✅ Found existing 5 bot wallets in database")
+            }
+          }
+        }
+      } catch (error) {
+        console.error("Error fetching existing bot wallets:", error)
+      }
+    }
+    
+    fetchExistingWallets()
+  }, [privySmartWalletAddress, isMounted, hasCredit])
+  
   // Check if bot wallets exist (should have 5 wallets)
   // CRITICAL: More strict checking for null and undefined
   // Don't check if not mounted or data is undefined/null (prevents hydration errors)
