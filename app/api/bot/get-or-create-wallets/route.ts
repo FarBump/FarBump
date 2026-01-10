@@ -24,10 +24,6 @@ const ENTRY_POINT: Address = "0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789"
 // This is the minimal proxy bytecode that delegates all calls to the implementation
 const PROXY_BYTECODE = `0x3d602d80600a3d3981f3363d3d373d3d3d363d73${FACTORY.toLowerCase().slice(2)}5af43d82803e903d91602b57fd5bf3` as Hex
 
-// Proxy Bytecode for SimpleAccount (standard bytecode for SimpleAccount proxies)
-// This is the minimal proxy bytecode that delegates all calls to the implementation
-const PROXY_BYTECODE = `0x3d602d80600a3d3981f3363d3d373d3d3d363d73${FACTORY.toLowerCase().slice(2)}5af43d82803e903d91602b57fd5bf3` as Hex
-
 // ABI untuk SimpleAccountFactory.createAccount
 const SIMPLE_ACCOUNT_FACTORY_ABI = [
   {
