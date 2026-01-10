@@ -1,39 +1,41 @@
 import { NextRequest, NextResponse } from "next/server"
 import { type Address, isAddress } from "viem"
 import { createSupabaseServiceClient } from "@/lib/supabase"
-import { Coinbase, Wallet } from "@coinbase/coinbase-sdk"
+import { CdpClient } from "@coinbase/cdp-sdk"
+import "dotenv/config"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
 
-// Updated interface to use CDP Wallet
+// Updated interface to use CDP Server Wallet V2
 interface BotWalletData {
-  smart_account_address: Address // Wallet address from CDP
-  owner_address: Address // Same as smart_account_address for regular wallets
+  smart_account_address: Address // Account address from CDP
+  owner_address: Address // Same as smart_account_address for regular accounts
   network: string // Network ID (e.g., 'base-mainnet')
 }
 
 /**
- * API Route: Get or create 5 bot wallets using Coinbase CDP SDK
+ * API Route: Get or create 5 bot wallets using Coinbase CDP SDK V2
  * 
- * Official Coinbase CDP Documentation:
- * https://docs.cdp.coinbase.com/wallets/docs/creating-wallets
+ * Official Documentation: 
+ * https://docs.cdp.coinbase.com/server-wallets/v2/using-the-wallet-api/managing-accounts
  * 
- * Benefits:
- * - Private keys managed securely by Coinbase
- * - No manual key generation or encryption needed
- * - Gas sponsorship support (when configured)
+ * CDP SDK V2 Features:
+ * - Automatic key management by Coinbase in secure AWS Nitro Enclaves
+ * - Named accounts for easier access (getOrCreateAccount)
+ * - Native gas sponsorship support
+ * - EVM and Smart Account support
  * - Production-grade security
  * 
  * Logic:
  * 1. Check if user already has 5 bot wallets in database
  * 2. If yes, return existing wallet info with hasBotWallets: true
- * 3. If no, create 5 new wallets using Wallet.create()
- * 4. Store wallet addresses in database
+ * 3. If no, create 5 new EVM accounts using cdp.evm.createAccount()
+ * 4. Store account addresses in database with user_address categorization
  * 5. Each user's wallets are isolated by user_address column
  * 
  * Database Schema:
- * - user_address: Main user's Smart Wallet address (from Privy)
+ * - user_address: Main user's Smart Wallet address (from Privy) - unique identifier
  * - smart_account_address: Bot wallet address from CDP
  * - owner_address: Same as smart_account_address (for compatibility)
  * - network: 'base-mainnet'
@@ -88,7 +90,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Step 2: If user already has 5 wallets, return them
-    // This ensures each user has exactly 5 bot wallets, no mixing
+    // This ensures each user has exactly 5 bot wallets, no mixing between users
     if (existingWallets && existingWallets.length === 5) {
       console.log(`✅ User ${normalizedUserAddress} already has 5 bot wallets`)
       return NextResponse.json({
@@ -102,9 +104,9 @@ export async function POST(request: NextRequest) {
       })
     }
 
-    // Step 3: Initialize Coinbase SDK
-    // Official method: https://docs.cdp.coinbase.com/wallets/docs/authentication
-    console.log("🔧 Initializing Coinbase CDP SDK...")
+    // Step 3: Initialize Coinbase CDP Client V2
+    // Official method: https://docs.cdp.coinbase.com/server-wallets/v2/
+    console.log("🔧 Initializing Coinbase CDP SDK V2...")
     
     const cdpApiKeyName = process.env.CDP_API_KEY_NAME
     const cdpPrivateKey = process.env.CDP_PRIVATE_KEY
@@ -122,69 +124,81 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // Configure Coinbase SDK with credentials
-    // Official documentation: https://docs.cdp.coinbase.com/wallets/docs/authentication#configure-sdk
+    // Initialize CDP Client V2
+    // Reference: https://docs.cdp.coinbase.com/server-wallets/v2/using-the-wallet-api/managing-accounts
+    let cdp: CdpClient
     try {
-      Coinbase.configure({
+      cdp = new CdpClient({
         apiKeyName: cdpApiKeyName,
         privateKey: cdpPrivateKey,
       })
-      console.log("✅ CDP SDK configured successfully")
+      console.log("✅ CDP Client V2 initialized successfully")
     } catch (configError: any) {
-      console.error("❌ Failed to configure CDP SDK:", configError)
+      console.error("❌ Failed to initialize CDP Client:", configError)
       return NextResponse.json(
         { 
-          error: "Failed to configure CDP SDK", 
+          error: "Failed to initialize CDP Client", 
           details: configError.message 
         },
         { status: 500 }
       )
     }
 
-    // Step 4: Create 5 new wallets using CDP
-    // Official method: https://docs.cdp.coinbase.com/wallets/docs/creating-wallets
-    console.log("🚀 Creating 5 bot wallets using Coinbase CDP...")
+    // Step 4: Create 5 new EVM accounts using CDP V2
+    // Official method: cdp.evm.createAccount()
+    // Reference: https://docs.cdp.coinbase.com/server-wallets/v2/using-the-wallet-api/managing-accounts#creating-accounts
+    console.log("🚀 Creating 5 bot EVM accounts using CDP V2...")
 
     const walletsToInsert: BotWalletData[] = []
 
     for (let i = 0; i < 5; i++) {
-      console.log(`   Creating wallet ${i + 1}/5...`)
+      console.log(`   Creating EVM account ${i + 1}/5...`)
 
       try {
-        // Create wallet on Base Mainnet
-        // Official API: Wallet.create({ networkId: 'base-mainnet' })
-        const wallet = await Wallet.create({
-          networkId: "base-mainnet",
-        })
+        // Create EVM account on Base network
+        // CDP V2 automatically manages the account on base-mainnet
+        const account = await cdp.evm.createAccount()
 
-        // Get wallet address
-        const defaultAddress = wallet.getDefaultAddress()
-
-        if (!defaultAddress) {
-          throw new Error(`Wallet ${i + 1} created but missing default address`)
+        if (!account || !account.address) {
+          throw new Error(`Account ${i + 1} created but missing address`)
         }
 
-        const walletAddress = defaultAddress.getId()
-        
-        console.log(`   ✅ Wallet ${i + 1} created:`)
-        console.log(`      Address: ${walletAddress}`)
+        console.log(`   ✅ EVM Account ${i + 1} created:`)
+        console.log(`      Address: ${account.address}`)
 
         walletsToInsert.push({
-          smart_account_address: walletAddress as Address,
-          owner_address: walletAddress as Address, // For regular wallets, owner = smart account
+          smart_account_address: account.address as Address,
+          owner_address: account.address as Address, // For regular EVM accounts, owner = address
           network: "base-mainnet",
         })
       } catch (walletError: any) {
-        console.error(`   ❌ Failed to create wallet ${i + 1}:`, walletError)
+        console.error(`   ❌ Failed to create account ${i + 1}:`, walletError)
         console.error(`   Error details:`, walletError.message)
-        throw new Error(`Wallet creation failed at index ${i}: ${walletError.message}`)
+        
+        // If one wallet fails, we should still try to create the rest
+        // But log the error and continue
+        console.log(`   ⚠️  Continuing to next wallet...`)
+        continue
       }
     }
 
-    console.log(`✅ All 5 wallets created successfully`)
+    // Check if we successfully created all 5 wallets
+    if (walletsToInsert.length < 5) {
+      console.error(`❌ Only created ${walletsToInsert.length}/5 wallets`)
+      return NextResponse.json(
+        { 
+          error: "Failed to create all 5 wallets", 
+          details: `Only ${walletsToInsert.length} wallets were created successfully` 
+        },
+        { status: 500 }
+      )
+    }
+
+    console.log(`✅ All 5 EVM accounts created successfully`)
 
     // Step 5: Save wallets to database
     // IMPORTANT: Each wallet is tied to user_address to ensure proper categorization
+    // This prevents wallets from mixing between different users
     console.log("💾 Saving wallets to Supabase...")
 
     const walletsToStore = walletsToInsert.map((wallet) => ({
@@ -212,7 +226,7 @@ export async function POST(request: NextRequest) {
     console.log(`✅ Wallets categorized under user: ${normalizedUserAddress}`)
 
     return NextResponse.json({
-      message: "Successfully created 5 bot wallets using CDP",
+      message: "Successfully created 5 bot wallets using CDP V2",
       wallets: walletsToInsert,
       hasBotWallets: true, // Flag for frontend to show "Start Bumping" button
     })
