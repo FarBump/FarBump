@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@abstract-foundation/agw-client": "latest",
+    "@coinbase/cdp-sdk": "^1.43.0",
     "@coinbase/coinbase-sdk": "^0.25.0",
     "@farcaster/miniapp-sdk": "^0.2.1",
     "@hookform/resolvers": "^3.10.0",
