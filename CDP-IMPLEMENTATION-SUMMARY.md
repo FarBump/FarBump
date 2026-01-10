@@ -396,3 +396,5 @@ SELECT * FROM wallets_data WHERE coinbase_wallet_id IS NOT NULL;
 
 Just add your CDP credentials and test the flow. Everything else is done! 🚀
 
+
+

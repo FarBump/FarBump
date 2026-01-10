@@ -277,3 +277,5 @@ COINGECKO_API_KEY=your-coingecko-api-key
 **No code changes needed** - only environment configuration!
 
 
+
+

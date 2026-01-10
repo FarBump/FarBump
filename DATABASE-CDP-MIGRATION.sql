@@ -57,3 +57,5 @@ COMMENT ON COLUMN wallets_data.chain IS 'Network ID (e.g., base-mainnet, base-se
 -- Uncomment the line below if you want to start fresh
 -- DELETE FROM wallets_data WHERE coinbase_wallet_id IS NULL;
 
+
+

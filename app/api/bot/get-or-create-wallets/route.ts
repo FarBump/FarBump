@@ -108,36 +108,48 @@ export async function POST(request: NextRequest) {
     // Official method: https://docs.cdp.coinbase.com/server-wallets/v2/
     console.log("🔧 Initializing Coinbase CDP SDK V2...")
     
-    const cdpApiKeyName = process.env.CDP_API_KEY_NAME
-    const cdpPrivateKey = process.env.CDP_PRIVATE_KEY
+    const rawKey = process.env.CDP_PRIVATE_KEY
+    const keyName = process.env.CDP_API_KEY_NAME
 
-    if (!cdpApiKeyName || !cdpPrivateKey) {
+    if (!rawKey || !keyName) {
       console.error("❌ Missing CDP credentials in environment variables")
       console.error("   Expected: CDP_API_KEY_NAME and CDP_PRIVATE_KEY")
       console.error("   Get these from: https://portal.cdp.coinbase.com/")
       return NextResponse.json(
         { 
-          error: "CDP credentials not configured", 
+          error: "CDP Credentials not found in .env", 
           details: "Please set CDP_API_KEY_NAME and CDP_PRIVATE_KEY in environment variables. See CDP-SETUP-BENAR.md for instructions." 
         },
         { status: 500 }
       )
     }
 
+    // Sanitize the private key to handle literal \n from .env
+    // When storing PEM keys in .env, newlines are often escaped as \\n (literal backslash-n)
+    // We need to convert them back to actual newline characters for proper PEM parsing
+    const cleanKey = rawKey.trim().replace(/\\n/g, '\n')
+    
+    console.log("🔑 CDP Private Key sanitization:")
+    console.log(`   Raw key length: ${rawKey.length} chars`)
+    console.log(`   Clean key length: ${cleanKey.length} chars`)
+    console.log(`   Key starts with: ${cleanKey.substring(0, 30)}...`)
+
     // Initialize CDP Client V2
     // Reference: https://docs.cdp.coinbase.com/server-wallets/v2/using-the-wallet-api/managing-accounts
     let cdp: CdpClient
     try {
       cdp = new CdpClient({
-        apiKeyName: cdpApiKeyName,
-        privateKey: cdpPrivateKey,
+        apiKeyName: keyName,
+        privateKey: cleanKey,
       })
-      console.log("✅ CDP Client V2 initialized successfully")
+      console.log("✅ CDP Client V2 initialized successfully with clean PEM key")
     } catch (configError: any) {
       console.error("❌ Failed to initialize CDP Client:", configError)
+      console.error("   Error message:", configError.message)
+      console.error("   Error stack:", configError.stack)
       return NextResponse.json(
         { 
-          error: "Failed to initialize CDP Client", 
+          error: "Failed to configure CDP SDK", 
           details: configError.message 
         },
         { status: 500 }
