@@ -6,6 +6,7 @@ import {
   encodeAbiParameters, 
   getContractAddress,
   type Address,
+  type Hex,
   isAddress 
 } from "viem"
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts"
@@ -18,6 +19,14 @@ export const runtime = "nodejs"
 // Konstanta Resmi (Base Mainnet)
 const FACTORY: Address = "0x9406Cc6185a346906296840746125a0E44976454"
 const ENTRY_POINT: Address = "0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789"
+
+// Proxy Bytecode for SimpleAccount (standard bytecode for SimpleAccount proxies)
+// This is the minimal proxy bytecode that delegates all calls to the implementation
+const PROXY_BYTECODE = `0x3d602d80600a3d3981f3363d3d373d3d3d363d73${FACTORY.toLowerCase().slice(2)}5af43d82803e903d91602b57fd5bf3` as Hex
+
+// Proxy Bytecode for SimpleAccount (standard bytecode for SimpleAccount proxies)
+// This is the minimal proxy bytecode that delegates all calls to the implementation
+const PROXY_BYTECODE = `0x3d602d80600a3d3981f3363d3d373d3d3d363d73${FACTORY.toLowerCase().slice(2)}5af43d82803e903d91602b57fd5bf3` as Hex
 
 // ABI untuk SimpleAccountFactory.createAccount
 const SIMPLE_ACCOUNT_FACTORY_ABI = [
@@ -175,11 +184,12 @@ export async function POST(request: NextRequest) {
           console.log(`    ✅ InitCode (createAccount calldata): ${initCode}`)
           
           // Step e: Dapatkan smartAccountAddress menggunakan helper resmi Viem
-          // getContractAddress({ from: FACTORY, salt: salt, bytecode: initCode, opcode: 'CREATE2' })
+          // CRITICAL: Use PROXY_BYTECODE instead of initCode for correct address calculation
+          // The initCode is the calldata for createAccount, but CREATE2 needs the proxy bytecode
           const smartAccountAddress = getContractAddress({
             from: FACTORY,
             salt: salt,
-            bytecode: initCode,
+            bytecode: PROXY_BYTECODE,
             opcode: "CREATE2"
           })
           console.log(`    ✅ Smart Account Address (CREATE2): ${smartAccountAddress}`)
