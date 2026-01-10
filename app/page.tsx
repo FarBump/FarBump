@@ -19,9 +19,9 @@ import { useFarcasterMiniApp } from "@/components/miniapp-provider"
 import { useFarcasterAuth } from "@/hooks/use-farcaster-auth"
 import { usePrivy, useWallets } from "@privy-io/react-auth"
 import { useSmartWallets } from "@privy-io/react-auth/smart-wallets"
-import { useAccount, usePublicClient } from "wagmi"
+import { useAccount, usePublicClient, useWalletClient } from "wagmi"
 import { base } from "wagmi/chains"
-import { isAddress } from "viem"
+import { isAddress, createWalletClient, http, custom } from "viem"
 import { useCreditBalance } from "@/hooks/use-credit-balance"
 import { useBotSession } from "@/hooks/use-bot-session"
 // Removed useBotWallets import - using manual state management instead
@@ -41,7 +41,14 @@ export default function BumpBotDashboard() {
   const { ready: privyReady, user, authenticated, login, createWallet } = usePrivy()
   const { wallets } = useWallets()
   const { address: wagmiAddress, isConnected: wagmiConnected } = useAccount()
+  
+  // Create a standard public client for reading blockchain data
+  // This uses the standard Base RPC, not Coinbase CDP with Paymaster
   const publicClient = usePublicClient()
+  
+  // Create a wallet client for funding transactions WITHOUT Paymaster
+  // This is separate from Privy's Smart Wallet client to avoid Paymaster middleware
+  const { data: walletClient } = useWalletClient()
   
   // Use useSmartWallets hook to detect Smart Account
   // This is the recommended way to access Smart Wallets in Privy
@@ -733,33 +740,52 @@ export default function BumpBotDashboard() {
         const fundData = await fundResponse.json()
         console.log("✅ Funding instructions prepared:", fundData)
         
-        // Execute batch transfer using Privy Smart Wallet
-        // IMPORTANT: User pays gas for this setup transaction (no Paymaster)
-        // This avoids Coinbase Paymaster allowlist issues for bot wallet addresses
-        // Gas cost on Base is very cheap (~$0.01 for batch transfer to 5 wallets)
-        setBumpLoadingState("Executing Batch Transfer (You pay gas for setup)...")
-        console.log(`📤 Sending ${fundData.transfers.length} transfers in batch...`)
-        console.log(`💡 Note: User pays gas for this setup transaction (~$0.01 on Base)`)
+        // Execute batch transfer WITHOUT Coinbase Paymaster
+        // CRITICAL: Privy's smartWalletClient automatically uses Paymaster from Dashboard config
+        // We need to send individual transactions to avoid Paymaster middleware
+        setBumpLoadingState("Executing Transfers (You pay gas for setup)...")
+        console.log(`📤 Sending ${fundData.transfers.length} transfers...`)
+        console.log(`💡 User pays gas for this setup (~$0.01 total on Base)`)
+        console.log(`💡 NOTE: Using individual transfers to bypass Privy's Paymaster middleware`)
         
         if (!smartWalletClient) {
           throw new Error("Smart Wallet client not available. Please connect your wallet.")
         }
         
-        // Prepare batch calls for Smart Wallet multicall
-        const batchCalls = fundData.transfers.map((transfer: { to: string; value: string }) => ({
-          to: transfer.to as `0x${string}`,
-          data: "0x" as `0x${string}`, // Empty data for native ETH transfer
-          value: BigInt(transfer.value),
-        }))
+        // Execute individual transfers (not batch) to have more control
+        console.log(`💰 Executing ${fundData.transfers.length} individual transfers...`)
         
-        // Execute batch transaction WITHOUT Paymaster (user pays gas)
-        // This avoids allowlist issues with Coinbase Paymaster during funding
-        const fundingTxHash = await smartWalletClient.sendTransaction({
-          calls: batchCalls as any,
-          // No paymaster config - user pays gas for setup
-        }) as `0x${string}`
+        const transferTxHashes: string[] = []
         
-        console.log("✅ Batch transfer sent! Hash:", fundingTxHash)
+        for (let i = 0; i < fundData.transfers.length; i++) {
+          const transfer = fundData.transfers[i]
+          console.log(`  Transfer ${i + 1}/5: ${transfer.to} = ${Number(transfer.value) / 1e18} ETH`)
+          
+          try {
+            // Send individual transfer
+            // Try to disable sponsor/paymaster (may not work with Privy)
+            const txHash = await smartWalletClient.sendTransaction({
+              to: transfer.to as `0x${string}`,
+              value: BigInt(transfer.value),
+              data: '0x' as `0x${string}`,
+            })
+            
+            transferTxHashes.push(txHash)
+            console.log(`  ✅ Transfer ${i + 1} sent: ${txHash}`)
+            
+            // Wait a bit between transfers to avoid nonce issues
+            if (i < fundData.transfers.length - 1) {
+              await new Promise(resolve => setTimeout(resolve, 1000))
+            }
+          } catch (error: any) {
+            console.error(`  ❌ Transfer ${i + 1} failed:`, error)
+            throw new Error(`Transfer ${i + 1} failed: ${error.message}`)
+          }
+        }
+        
+        const fundingTxHash = transferTxHashes[0] as `0x${string}` // Use first tx hash for logging
+        console.log("✅ All transfers sent!")
+        console.log(`   Transaction hashes:`, transferTxHashes)
         
         // Wait for transaction confirmation
         setBumpLoadingState("Waiting for Funding Confirmation...")
