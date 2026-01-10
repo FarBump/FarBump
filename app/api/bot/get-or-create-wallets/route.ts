@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { type Address, isAddress } from "viem"
 import { createSupabaseServiceClient } from "@/lib/supabase"
-import { CdpClient } from "@coinbase/cdp-sdk"
+import { Coinbase, Wallet } from "@coinbase/coinbase-sdk"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
@@ -97,67 +97,68 @@ export async function POST(request: NextRequest) {
       })
     }
 
-    // Step 3: Initialize Coinbase CDP Client
-    console.log("🔧 Initializing Coinbase CDP Client...")
+    // Step 3: Initialize Coinbase SDK
+    console.log("🔧 Initializing Coinbase CDP SDK...")
     
-    const cdpApiKeyId = process.env.CDP_API_KEY_ID
-    const cdpApiKeySecret = process.env.CDP_API_KEY_SECRET
+    const cdpApiKeyName = process.env.CDP_API_KEY_NAME
+    const cdpPrivateKey = process.env.CDP_PRIVATE_KEY
 
-    if (!cdpApiKeyId || !cdpApiKeySecret) {
+    if (!cdpApiKeyName || !cdpPrivateKey) {
       console.error("❌ Missing CDP credentials in environment variables")
       return NextResponse.json(
         { 
           error: "CDP credentials not configured", 
-          details: "Please set CDP_API_KEY_ID and CDP_API_KEY_SECRET in .env" 
+          details: "Please set CDP_API_KEY_NAME and CDP_PRIVATE_KEY in .env" 
         },
         { status: 500 }
       )
     }
 
-    // Configure CDP Client
-    const cdp = new CdpClient({
-      apiKeyId: cdpApiKeyId,
-      apiKeySecret: cdpApiKeySecret,
+    // Configure Coinbase SDK
+    Coinbase.configure({
+      apiKeyName: cdpApiKeyName,
+      privateKey: cdpPrivateKey,
     })
 
-    console.log("✅ CDP Client configured successfully")
+    console.log("✅ CDP SDK configured successfully")
 
-    // Step 4: Create 5 smart accounts using CDP
-    console.log("🚀 Creating 5 bot smart accounts (EIP-4337) on Base Mainnet...")
+    // Step 4: Create 5 new wallets using CDP
+    console.log("🚀 Creating 5 bot wallets using CDP Server Wallets V2...")
 
     const walletsToInsert: BotWalletData[] = []
 
     for (let i = 0; i < 5; i++) {
-      console.log(`   Creating smart account ${i + 1}/5...`)
+      console.log(`   Creating wallet ${i + 1}/5...`)
 
       try {
-        // Create owner EOA account (CDP manages the private key)
-        const owner = await cdp.evm.createAccount({})
-        
-        console.log(`   Owner EOA created: ${owner.address}`)
-
-        // Create smart account with the owner
-        // This is an EIP-4337 smart account with gas sponsorship support
-        const smartAccount = await cdp.evm.createSmartAccount({
-          owner,
+        // Create wallet on Base Mainnet
+        const wallet = await Wallet.create({
+          networkId: "base-mainnet",
         })
 
-        console.log(`   ✅ Smart Account ${i + 1} created:`)
-        console.log(`      Smart Account Address: ${smartAccount.address}`)
-        console.log(`      Owner Address: ${owner.address}`)
+        const defaultAddress = wallet.getDefaultAddress()
+
+        if (!defaultAddress) {
+          throw new Error(`Wallet ${i + 1} created but missing default address`)
+        }
+
+        const walletAddress = defaultAddress.getId()
+        
+        console.log(`   ✅ Wallet ${i + 1} created:`)
+        console.log(`      Address: ${walletAddress}`)
 
         walletsToInsert.push({
-          smart_account_address: smartAccount.address as Address,
-          owner_address: owner.address as Address,
+          smart_account_address: walletAddress as Address,
+          owner_address: walletAddress as Address, // For regular wallets, owner = smart account
           network: "base-mainnet",
         })
       } catch (walletError: any) {
-        console.error(`   ❌ Failed to create smart account ${i + 1}:`, walletError)
-        throw new Error(`Smart account creation failed at index ${i}: ${walletError.message}`)
+        console.error(`   ❌ Failed to create wallet ${i + 1}:`, walletError)
+        throw new Error(`Wallet creation failed at index ${i}: ${walletError.message}`)
       }
     }
 
-    console.log(`✅ All 5 smart accounts created successfully (CDP EIP-4337)`)
+    console.log(`✅ All 5 wallets created successfully (CDP)`)
 
     // Step 5: Save wallets to database
     console.log("💾 Saving wallets to Supabase...")
