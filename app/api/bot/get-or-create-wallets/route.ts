@@ -1,32 +1,34 @@
 import { NextRequest, NextResponse } from "next/server"
 import { type Address, isAddress } from "viem"
 import { createSupabaseServiceClient } from "@/lib/supabase"
-import { Coinbase, Wallet } from "@coinbase/coinbase-sdk"
+import { CdpClient } from "@coinbase/cdp-sdk"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
 
-// Updated interface to use CDP Server Wallet ID
+// Updated interface to use CDP Smart Account
 interface BotWalletData {
-  coinbase_wallet_id: string // CDP Wallet ID (used to fetch wallet from CDP)
-  smart_account_address: Address // Default address of the wallet
-  chain: string // Network ID (e.g., 'base-mainnet')
+  smart_account_address: Address // Smart Account address (EIP-4337)
+  owner_address: Address // Owner EOA address
+  network: string // Network ID (e.g., 'base-mainnet')
 }
 
 /**
- * API Route: Get or create 5 bot wallets using CDP Server Wallets V2
+ * API Route: Get or create 5 bot smart wallets using CDP Server Wallets V2
  * 
- * Benefits of CDP Server Wallets:
- * - Private keys managed by Coinbase in secure AWS Nitro Enclaves
- * - Native gas sponsorship (no Paymaster allowlist issues)
- * - Simple API (no manual CREATE2, encryption, or signing)
- * - Production-grade security and reliability
+ * CDP Smart Accounts (EIP-4337) Benefits:
+ * - Native gas sponsorship (no Paymaster configuration needed)
+ * - Transaction batching support
+ * - Private keys managed by Coinbase in AWS Nitro Enclaves
+ * - Spend permissions support
+ * - Production-grade security
  * 
  * Logic:
- * 1. Check if user already has bot wallets in database
+ * 1. Check if user already has 5 bot wallets in database
  * 2. If yes, return existing wallet info
- * 3. If no, create 5 new wallets using Wallet.create()
- * 4. Store wallet.getId() and wallet.getDefaultAddress() in database
+ * 3. If no, create 5 new smart accounts using cdp.evm.createSmartAccount()
+ * 4. Each smart account has an owner EOA that CDP manages
+ * 5. Store smart account addresses in database
  * 
  * Security:
  * - Private keys never exposed (managed by CDP)
@@ -83,88 +85,88 @@ export async function POST(request: NextRequest) {
 
     // Step 2: If user already has 5 wallets, return them
     if (existingWallets && existingWallets.length === 5) {
-      console.log(`✅ User ${normalizedUserAddress} already has 5 bot wallets (CDP)`)
+      console.log(`✅ User ${normalizedUserAddress} already has 5 bot wallets (CDP Smart Accounts)`)
       return NextResponse.json({
         message: "Bot wallets already exist",
         wallets: existingWallets.map(w => ({
-          coinbase_wallet_id: w.coinbase_wallet_id,
           smart_account_address: w.smart_account_address,
-          chain: w.chain,
+          owner_address: w.owner_address,
+          network: w.network,
         })),
+        hasBotWallets: true,
       })
     }
 
-    // Step 3: Initialize Coinbase SDK
-    console.log("🔧 Initializing Coinbase CDP SDK...")
+    // Step 3: Initialize Coinbase CDP Client
+    console.log("🔧 Initializing Coinbase CDP Client...")
     
-    const cdpApiKeyName = process.env.CDP_API_KEY_NAME
-    const cdpPrivateKey = process.env.CDP_PRIVATE_KEY
+    const cdpApiKeyId = process.env.CDP_API_KEY_ID
+    const cdpApiKeySecret = process.env.CDP_API_KEY_SECRET
 
-    if (!cdpApiKeyName || !cdpPrivateKey) {
+    if (!cdpApiKeyId || !cdpApiKeySecret) {
       console.error("❌ Missing CDP credentials in environment variables")
       return NextResponse.json(
         { 
           error: "CDP credentials not configured", 
-          details: "Please set CDP_API_KEY_NAME and CDP_PRIVATE_KEY in .env" 
+          details: "Please set CDP_API_KEY_ID and CDP_API_KEY_SECRET in .env" 
         },
         { status: 500 }
       )
     }
 
-    // Configure Coinbase SDK
-    Coinbase.configure({
-      apiKeyName: cdpApiKeyName,
-      privateKey: cdpPrivateKey,
+    // Configure CDP Client
+    const cdp = new CdpClient({
+      apiKeyId: cdpApiKeyId,
+      apiKeySecret: cdpApiKeySecret,
     })
 
-    console.log("✅ CDP SDK configured successfully")
+    console.log("✅ CDP Client configured successfully")
 
-    // Step 4: Create 5 new wallets using CDP
-    console.log("🚀 Creating 5 bot wallets using CDP Server Wallets V2...")
+    // Step 4: Create 5 smart accounts using CDP
+    console.log("🚀 Creating 5 bot smart accounts (EIP-4337) on Base Mainnet...")
 
     const walletsToInsert: BotWalletData[] = []
 
     for (let i = 0; i < 5; i++) {
-      console.log(`   Creating wallet ${i + 1}/5...`)
+      console.log(`   Creating smart account ${i + 1}/5...`)
 
       try {
-        // Create wallet on Base Mainnet
-        const wallet = await Wallet.create({
-          networkId: "base-mainnet",
+        // Create owner EOA account (CDP manages the private key)
+        const owner = await cdp.evm.createAccount({})
+        
+        console.log(`   Owner EOA created: ${owner.address}`)
+
+        // Create smart account with the owner
+        // This is an EIP-4337 smart account with gas sponsorship support
+        const smartAccount = await cdp.evm.createSmartAccount({
+          owner,
         })
 
-        const walletId = wallet.getId()
-        const defaultAddress = wallet.getDefaultAddress()
-
-        if (!walletId || !defaultAddress) {
-          throw new Error(`Wallet ${i + 1} created but missing ID or address`)
-        }
-
-        console.log(`   ✅ Wallet ${i + 1} created:`)
-        console.log(`      CDP Wallet ID: ${walletId}`)
-        console.log(`      Address: ${defaultAddress.getId()}`)
+        console.log(`   ✅ Smart Account ${i + 1} created:`)
+        console.log(`      Smart Account Address: ${smartAccount.address}`)
+        console.log(`      Owner Address: ${owner.address}`)
 
         walletsToInsert.push({
-          coinbase_wallet_id: walletId,
-          smart_account_address: defaultAddress.getId() as Address,
-          chain: "base-mainnet",
+          smart_account_address: smartAccount.address as Address,
+          owner_address: owner.address as Address,
+          network: "base-mainnet",
         })
       } catch (walletError: any) {
-        console.error(`   ❌ Failed to create wallet ${i + 1}:`, walletError)
-        throw new Error(`Wallet creation failed at index ${i}: ${walletError.message}`)
+        console.error(`   ❌ Failed to create smart account ${i + 1}:`, walletError)
+        throw new Error(`Smart account creation failed at index ${i}: ${walletError.message}`)
       }
     }
 
-    console.log(`✅ All 5 wallets created successfully (CDP)`)
+    console.log(`✅ All 5 smart accounts created successfully (CDP EIP-4337)`)
 
     // Step 5: Save wallets to database
     console.log("💾 Saving wallets to Supabase...")
 
     const walletsToStore = walletsToInsert.map((wallet) => ({
       user_address: normalizedUserAddress,
-      coinbase_wallet_id: wallet.coinbase_wallet_id,
       smart_account_address: wallet.smart_account_address,
-      chain: wallet.chain,
+      owner_address: wallet.owner_address,
+      network: wallet.network,
       created_at: new Date().toISOString(),
     }))
 
@@ -184,8 +186,9 @@ export async function POST(request: NextRequest) {
     console.log(`✅ Saved ${insertedWallets.length} wallets to database`)
 
     return NextResponse.json({
-      message: "Successfully created 5 bot wallets using CDP",
+      message: "Successfully created 5 bot smart accounts using CDP",
       wallets: walletsToInsert,
+      hasBotWallets: true,
     })
   } catch (error: any) {
     console.error("❌ Error in get-or-create-wallets:", error)
