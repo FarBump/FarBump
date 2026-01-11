@@ -80,12 +80,34 @@ export function useDistributeCredits() {
       
       console.log(`   Amount per bot: ${formatEther(amountPerBot)} ETH`)
 
-      // Validate minimum amount (at least 0.0001 ETH per bot)
-      const MIN_AMOUNT_PER_BOT = parseEther("0.0001")
-      if (amountPerBot < MIN_AMOUNT_PER_BOT) {
+      // Validate minimum amount per bot: $0.01 USD minimum
+      // Fetch ETH price to calculate minimum in ETH
+      setStatus("Fetching ETH price...")
+      const MIN_AMOUNT_USD = 0.01
+      
+      let ethPriceUsd = 0
+      try {
+        const priceResponse = await fetch("/api/eth-price")
+        const priceData = await priceResponse.json()
+        if (priceData.success && priceData.price) {
+          ethPriceUsd = priceData.price
+        } else {
+          throw new Error("Failed to get ETH price")
+        }
+      } catch (priceError) {
+        console.error("Error fetching ETH price:", priceError)
+        throw new Error("Failed to fetch ETH price for validation")
+      }
+      
+      const minAmountPerBotEth = MIN_AMOUNT_USD / ethPriceUsd
+      const minAmountPerBotWei = parseEther(minAmountPerBotEth.toString())
+      
+      console.log(`   Minimum per bot: $${MIN_AMOUNT_USD} USD (${formatEther(minAmountPerBotWei)} ETH)`)
+      
+      if (amountPerBot < minAmountPerBotWei) {
         throw new Error(
-          `Insufficient credit. Each bot needs at least ${formatEther(MIN_AMOUNT_PER_BOT)} ETH. ` +
-          `You have ${formatEther(creditBalanceWei)} ETH total.`
+          `Insufficient credit. Each bot needs at least $${MIN_AMOUNT_USD} USD (${formatEther(minAmountPerBotWei)} ETH). ` +
+          `You have ${formatEther(creditBalanceWei)} ETH total ($${(Number(formatEther(creditBalanceWei)) * ethPriceUsd).toFixed(2)} USD).`
         )
       }
 

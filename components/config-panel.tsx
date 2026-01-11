@@ -468,20 +468,6 @@ export function ConfigPanel({
               Amount per swap execution (minimum $0.01 USD, continuously until you stop the bot)
             </p>
           </div>
-
-          {/* Gas Fee Information */}
-          <div className="rounded-lg bg-blue-500/10 border border-blue-500/20 p-3">
-            <div className="flex items-start gap-2">
-              <Info className="h-4 w-4 text-blue-500 mt-0.5 shrink-0" />
-              <div className="space-y-1">
-                <p className="text-xs font-medium text-blue-500">Gas Fee Notice</p>
-                <p className="text-[10px] text-muted-foreground leading-relaxed">
-                  You'll pay a small one-time gas fee (~$0.01) for the initial setup to fund 5 bot wallets. 
-                  All subsequent swaps are <span className="font-semibold text-foreground">100% gasless</span> via Coinbase Paymaster.
-                </p>
-              </div>
-            </div>
-          </div>
         </div>
       </Card>
     </div>
