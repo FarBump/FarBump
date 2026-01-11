@@ -1,0 +1,198 @@
+"use client"
+
+import { useState } from "react"
+import { useSmartWallets } from "@privy-io/react-auth/smart-wallets"
+import { usePublicClient } from "wagmi"
+import { formatEther, parseEther, type Address, type Hex } from "viem"
+import { toast } from "sonner"
+
+interface BotWallet {
+  smartWalletAddress: string
+  ownerAddress?: string
+  network?: string
+}
+
+interface DistributeCreditsParams {
+  userAddress: Address
+  botWallets: BotWallet[]
+  creditBalanceWei: bigint // Total credit from database
+}
+
+/**
+ * Hook to automatically distribute user's credit (ETH) evenly to 5 bot smart wallets
+ * 
+ * This hook:
+ * 1. Fetches 5 bot smart wallet addresses from database
+ * 2. Calculates equal distribution (total credit / 5)
+ * 3. Sends ETH from user's smart wallet to each bot wallet
+ * 4. Uses batch transactions for efficiency
+ * 5. Handles gas estimation and errors
+ * 
+ * Called automatically when user clicks "Start Bumping"
+ */
+export function useDistributeCredits() {
+  const { client: smartWalletClient } = useSmartWallets()
+  const publicClient = usePublicClient()
+  
+  const [hash, setHash] = useState<`0x${string}` | null>(null)
+  const [isPending, setIsPending] = useState(false)
+  const [isSuccess, setIsSuccess] = useState(false)
+  const [error, setError] = useState<Error | null>(null)
+  const [status, setStatus] = useState<string | null>(null)
+
+  const reset = () => {
+    setHash(null)
+    setIsPending(false)
+    setIsSuccess(false)
+    setError(null)
+    setStatus(null)
+  }
+
+  const distribute = async ({ userAddress, botWallets, creditBalanceWei }: DistributeCreditsParams) => {
+    reset()
+    setIsPending(true)
+
+    try {
+      // Validation: Smart Wallet Client
+      if (!smartWalletClient) {
+        throw new Error("Smart Wallet not connected. Please login again.")
+      }
+
+      // Validation: Bot Wallets
+      if (!botWallets || botWallets.length !== 5) {
+        throw new Error(`Expected 5 bot wallets, but found ${botWallets?.length || 0}`)
+      }
+
+      // Validation: Credit Balance
+      if (!creditBalanceWei || creditBalanceWei <= BigInt(0)) {
+        throw new Error("No credit balance available for distribution")
+      }
+
+      console.log("💰 Starting Credit Distribution...")
+      console.log(`   User: ${userAddress}`)
+      console.log(`   Total Credit: ${formatEther(creditBalanceWei)} ETH`)
+      console.log(`   Bot Wallets: ${botWallets.length}`)
+
+      setStatus("Calculating distribution...")
+
+      // Calculate amount per bot wallet (equal distribution)
+      const amountPerBot = creditBalanceWei / BigInt(5)
+      
+      console.log(`   Amount per bot: ${formatEther(amountPerBot)} ETH`)
+
+      // Validate minimum amount (at least 0.0001 ETH per bot)
+      const MIN_AMOUNT_PER_BOT = parseEther("0.0001")
+      if (amountPerBot < MIN_AMOUNT_PER_BOT) {
+        throw new Error(
+          `Insufficient credit. Each bot needs at least ${formatEther(MIN_AMOUNT_PER_BOT)} ETH. ` +
+          `You have ${formatEther(creditBalanceWei)} ETH total.`
+        )
+      }
+
+      // Check user's Smart Wallet balance
+      setStatus("Checking wallet balance...")
+      const userBalance = await publicClient.getBalance({ address: userAddress })
+      
+      console.log(`   User balance: ${formatEther(userBalance)} ETH`)
+
+      if (userBalance < creditBalanceWei) {
+        throw new Error(
+          `Insufficient balance in Smart Wallet. ` +
+          `Required: ${formatEther(creditBalanceWei)} ETH, ` +
+          `Available: ${formatEther(userBalance)} ETH`
+        )
+      }
+
+      // Prepare batch transactions to all 5 bot wallets
+      setStatus("Preparing transactions...")
+      
+      const calls = botWallets.map((wallet, index) => {
+        console.log(`   [${index + 1}/5] Preparing transfer to Bot #${index + 1}`)
+        console.log(`      → Address: ${wallet.smartWalletAddress}`)
+        console.log(`      → Amount: ${formatEther(amountPerBot)} ETH`)
+        
+        return {
+          to: wallet.smartWalletAddress as Address,
+          data: "0x" as Hex, // Empty data for native ETH transfer
+          value: amountPerBot,
+        }
+      })
+
+      console.log("✅ All 5 transfers prepared")
+      console.log("📤 Sending batch transaction...")
+
+      setStatus("Distributing credits to bot wallets...")
+
+      // Execute batch transaction
+      // Privy Smart Wallet will handle this as a single transaction with multiple calls
+      const txHash = await smartWalletClient.sendTransaction({
+        calls: calls as any,
+      })
+
+      console.log(`✅ Transaction sent! Hash: ${txHash}`)
+      setHash(txHash)
+
+      setStatus("Waiting for confirmation...")
+
+      // Wait for transaction confirmation
+      const receipt = await publicClient.waitForTransactionReceipt({
+        hash: txHash,
+        confirmations: 1,
+      })
+
+      if (receipt.status === "success") {
+        console.log("✅ Distribution successful!")
+        console.log(`   Transaction: https://basescan.org/tx/${txHash}`)
+        console.log(`   Distributed ${formatEther(amountPerBot)} ETH to each of 5 bot wallets`)
+        
+        setIsSuccess(true)
+        setStatus("Distribution completed!")
+        
+        toast.success(
+          `Successfully distributed ${formatEther(creditBalanceWei)} ETH to 5 bot wallets!`,
+          {
+            description: `${formatEther(amountPerBot)} ETH sent to each bot wallet`,
+            action: {
+              label: "View",
+              onClick: () => window.open(`https://basescan.org/tx/${txHash}`, "_blank"),
+            },
+          }
+        )
+
+        return {
+          success: true,
+          txHash,
+          amountPerBot: formatEther(amountPerBot),
+          totalDistributed: formatEther(creditBalanceWei),
+        }
+      } else {
+        throw new Error("Transaction failed")
+      }
+    } catch (err: any) {
+      console.error("❌ Distribution failed:", err)
+      
+      const errorMessage = err.message || "Failed to distribute credits"
+      setError(err)
+      setStatus(null)
+      
+      toast.error("Distribution failed", {
+        description: errorMessage,
+      })
+
+      throw err
+    } finally {
+      setIsPending(false)
+    }
+  }
+
+  return {
+    distribute,
+    hash,
+    isPending,
+    isSuccess,
+    error,
+    status,
+    reset,
+  }
+}
+

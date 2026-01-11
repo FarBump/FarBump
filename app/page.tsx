@@ -24,6 +24,7 @@ import { base } from "wagmi/chains"
 import { isAddress, createWalletClient, http, custom } from "viem"
 import { useCreditBalance } from "@/hooks/use-credit-balance"
 import { useBotSession } from "@/hooks/use-bot-session"
+import { useDistributeCredits } from "@/hooks/use-distribute-credits"
 // Removed useBotWallets import - using manual state management instead
 import { parseUnits } from "viem"
 import { toast } from "sonner"
@@ -341,6 +342,15 @@ export default function BumpBotDashboard() {
   // Bot session management
   // Expose refetch function to manually refresh session data after wallet creation
   const { session, startSession, stopSession, isStarting, isStopping, refetch: refetchSession } = useBotSession(privySmartWalletAddress)
+
+  // Auto-distribute credits hook
+  // This will distribute user's credits evenly to 5 bot wallets when starting session
+  const { 
+    distribute: distributeCredits, 
+    isPending: isDistributing, 
+    isSuccess: isDistributionSuccess,
+    status: distributionStatus,
+  } = useDistributeCredits()
 
   // Extract user data from Privy user object (prioritize Privy user data)
   // Use user.farcaster.pfp and user.farcaster.username from Privy user object
@@ -717,156 +727,37 @@ export default function BumpBotDashboard() {
           return
         }
         
-        // STEP 1: All-In Funding - Mass Funding ke 5 Bot Wallets
-        setBumpLoadingState("Preparing Mass Funding...")
-        console.log("🔄 Starting All-In Funding to 5 bot wallets...")
+        // STEP 1: Auto-distribute credits evenly to 5 bot wallets
+        setBumpLoadingState("Distributing credits to bot wallets...")
+        console.log("💰 Auto-distributing credits to 5 bot wallets...")
         
-        // Get funding instructions from API
-        const fundResponse = await fetch("/api/bot/mass-fund", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            userAddress: privySmartWalletAddress,
-          }),
-        })
-        
-        if (!fundResponse.ok) {
-          const errorData = await fundResponse.json().catch(() => ({}))
-          throw new Error(errorData.error || "Failed to prepare mass funding")
+        if (!creditData?.balanceWei) {
+          throw new Error("Credit balance not found")
         }
         
-        const fundData = await fundResponse.json()
-        console.log("✅ Funding instructions prepared:", fundData)
-        
-        // Execute batch transfer WITHOUT Coinbase Paymaster
-        // CRITICAL: Privy's smartWalletClient automatically uses Paymaster from Dashboard config
-        // We need to send individual transactions to avoid Paymaster middleware
-        setBumpLoadingState("Executing Transfers (You pay gas for setup)...")
-        console.log(`📤 Sending ${fundData.transfers.length} transfers...`)
-        console.log(`💡 User pays gas for this setup (~$0.01 total on Base)`)
-        console.log(`💡 NOTE: Using individual transfers to bypass Privy's Paymaster middleware`)
-        
-        if (!smartWalletClient) {
-          throw new Error("Smart Wallet client not available. Please connect your wallet.")
+        if (!existingBotWallets || existingBotWallets.length !== 5) {
+          throw new Error("Bot wallets not found. Please generate bot wallets first.")
         }
         
-        // Execute individual transfers (not batch) to have more control
-        console.log(`💰 Executing ${fundData.transfers.length} individual transfers...`)
-        
-        const transferTxHashes: string[] = []
-        
-        for (let i = 0; i < fundData.transfers.length; i++) {
-          const transfer = fundData.transfers[i]
-          console.log(`  Transfer ${i + 1}/5: ${transfer.to} = ${Number(transfer.value) / 1e18} ETH`)
-          
-          try {
-            // Send individual transfer
-            // Try to disable sponsor/paymaster (may not work with Privy)
-            const txHash = await smartWalletClient.sendTransaction({
-              to: transfer.to as `0x${string}`,
-              value: BigInt(transfer.value),
-              data: '0x' as `0x${string}`,
-            })
-            
-            transferTxHashes.push(txHash)
-            console.log(`  ✅ Transfer ${i + 1} sent: ${txHash}`)
-            
-            // Wait a bit between transfers to avoid nonce issues
-            if (i < fundData.transfers.length - 1) {
-              await new Promise(resolve => setTimeout(resolve, 1000))
-            }
-          } catch (error: any) {
-            console.error(`  ❌ Transfer ${i + 1} failed:`, error)
-            throw new Error(`Transfer ${i + 1} failed: ${error.message}`)
-          }
-        }
-        
-        const fundingTxHash = transferTxHashes[0] as `0x${string}` // Use first tx hash for logging
-        console.log("✅ All transfers sent!")
-        console.log(`   Transaction hashes:`, transferTxHashes)
-        
-        // Wait for transaction confirmation
-        setBumpLoadingState("Waiting for Funding Confirmation...")
-        if (publicClient) {
-          const receipt = await publicClient.waitForTransactionReceipt({
-            hash: fundingTxHash,
-            timeout: 60000,
+        try {
+          // Distribute credits using hook
+          await distributeCredits({
+            userAddress: privySmartWalletAddress as `0x${string}`,
+            botWallets: existingBotWallets,
+            creditBalanceWei: BigInt(creditData.balanceWei),
           })
-          console.log("✅ Funding confirmed on-chain")
           
-          // Update bot_logs dengan tx_hash untuk system message dan individual wallet logs
-          // Sinkronisasi Live Activity Log: Update semua log dengan tx_hash setelah funding selesai
-          if (receipt.status === "success") {
-            // Get ETH price for USD conversion in log messages
-            let ethPriceForLog = 0
-            try {
-              const priceResp = await fetch("/api/eth-price", {
-                headers: { Accept: "application/json" },
-              })
-              if (priceResp.ok) {
-                const priceData = await priceResp.json()
-                if (priceData.success && typeof priceData.price === "number") {
-                  ethPriceForLog = priceData.price
-                }
-              }
-            } catch (e) {
-              console.warn("Failed to fetch ETH price for log:", e)
-            }
-            
-            // Update main system log with success message
-            if (fundData.systemLogId) {
-              const totalEth = Number(fundData.totalFunding) / 1e18
-              const totalUsd = totalEth * (ethPriceForLog || 0)
-              
-              await fetch("/api/bot/logs/update", {
-                method: "POST",
-                headers: {
-                  "Content-Type": "application/json",
-                },
-                body: JSON.stringify({
-                  logId: fundData.systemLogId,
-                  txHash: fundingTxHash,
-                  status: "success",
-                  message: `[System] Funding 5 bots with total ${totalEth.toFixed(6)} ETH ($${totalUsd.toFixed(2)})... Success`,
-                }),
-              }).catch(err => console.warn("Failed to update system log:", err))
-            }
-            
-            // Update individual wallet logs with tx_hash and success status
-            // Format: [System] Mengirim 0.000003 ETH ($0.01) ke Bot #1... Berhasil
-            if (fundData.walletLogIds && Array.isArray(fundData.walletLogIds) && fundData.transfers) {
-              await Promise.all(
-                fundData.walletLogIds.map(async (logId: number, index: number) => {
-                  if (!logId) return null
-                  const transfer = fundData.transfers[index]
-                  if (!transfer || !transfer.value) return null
-                  
-                  const walletEth = Number(transfer.value) / 1e18
-                  const walletUsd = walletEth * (ethPriceForLog || 0)
-                  
-                  return fetch("/api/bot/logs/update", {
-                    method: "POST",
-                    headers: {
-                      "Content-Type": "application/json",
-                    },
-                    body: JSON.stringify({
-                      logId: logId,
-                      txHash: fundingTxHash,
-                      status: "success",
-                      message: `[System] Mengirim ${walletEth.toFixed(6)} ETH ($${walletUsd.toFixed(2)}) ke Bot #${index + 1}... Berhasil`,
-                    }),
-                  }).catch(err => console.warn(`Failed to update wallet log ${logId}:`, err))
-                })
-              )
-            }
-            
-            console.log("✅ Funding transaction confirmed and logged successfully")
-          }
+          console.log("✅ Credits distributed successfully!")
+        } catch (distributeError: any) {
+          console.error("❌ Distribution failed:", distributeError)
+          setBumpLoadingState(null)
+          throw new Error(`Failed to distribute credits: ${distributeError.message}`)
         }
         
-        // STEP 2: Start Session (after funding completes)
+        // Wait a bit for balances to update
+        await new Promise(resolve => setTimeout(resolve, 2000))
+        
+        // STEP 2: Start Bot Session
         setBumpLoadingState("Starting Session...")
         console.log("🔄 Starting bot session...")
         
