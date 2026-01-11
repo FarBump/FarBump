@@ -7,10 +7,10 @@ import "dotenv/config"
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
 
-// Updated interface to use CDP Server Wallet V2
+// Updated interface to use CDP Server Wallet V2 with Smart Accounts
 interface BotWalletData {
-  smart_account_address: Address // Account address from CDP
-  owner_address: Address // Same as smart_account_address for regular accounts
+  smart_account_address: Address // Smart Account address (for transactions)
+  owner_address: Address // EOA Owner address (for signing)
   network: string // Network ID (e.g., 'base-mainnet')
 }
 
@@ -101,14 +101,20 @@ export async function POST(request: NextRequest) {
     // This ensures each user has exactly 5 bot wallets, no mixing between users
     if (existingWallets && existingWallets.length === 5) {
       console.log(`✅ User ${normalizedUserAddress} already has 5 bot wallets`)
+      
+      // Format existing wallets for frontend compatibility
+      const formattedWallets = existingWallets.map((w, index) => ({
+        smartWalletAddress: w.smart_account_address,
+        ownerAddress: w.owner_address,
+        network: w.network,
+        index: index,
+      }))
+      
       return NextResponse.json({
         message: "Bot wallets already exist",
-        wallets: existingWallets.map(w => ({
-          smart_account_address: w.smart_account_address,
-          owner_address: w.owner_address,
-          network: w.network,
-        })),
+        wallets: formattedWallets,
         hasBotWallets: true, // Flag for frontend to show "Start Bumping" button
+        created: false, // Indicate these are existing wallets
       })
     }
 
@@ -167,44 +173,68 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // Step 4: Create 5 new EVM accounts using CDP V2
-    // Official method from Quickstart: cdp.evm.createAccount()
+    // Step 4: Create 5 Smart Accounts using CDP V2
+    // Official method: 
+    // 1. Create EOA owner account: cdp.evm.createAccount()
+    // 2. Create Smart Account: cdp.evm.createSmartAccount({ owner: account })
+    // 
     // Reference: https://docs.cdp.coinbase.com/server-wallets/v2/introduction/quickstart#1-create-an-account
     // 
     // Example from docs:
     // const account = await cdp.evm.createAccount();
-    // console.log(`Created EVM account: ${account.address}`);
+    // const smartAccount = await cdp.evm.createSmartAccount({ owner: account });
+    // console.log(`Created smart account: ${smartAccount.address}. Owner address: ${account.address}`);
     //
-    // Output: Created EVM account: 0x3c0D84055994c3062819Ce8730869D0aDeA4c3Bf
-    console.log("🚀 Creating 5 bot EVM accounts using CDP V2...")
+    // Smart Account Benefits:
+    // - Gasless transactions with native sponsorship
+    // - Advanced security features
+    // - Multi-sig capabilities
+    // - Account abstraction (ERC-4337)
+    console.log("🚀 Creating 5 Smart Accounts (Bot Wallets) using CDP V2...")
+    console.log("   Each wallet consists of:")
+    console.log("   - 1 EOA Owner Account (for signing)")
+    console.log("   - 1 Smart Account (for transactions)")
     console.log("   Reference: https://docs.cdp.coinbase.com/server-wallets/v2/introduction/quickstart#1-create-an-account")
 
     const walletsToInsert: BotWalletData[] = []
 
     for (let i = 0; i < 5; i++) {
-      console.log(`\n   [${i + 1}/5] Creating EVM account...`)
+      console.log(`\n   [${i + 1}/5] Creating Smart Account...`)
 
       try {
-        // Create EVM account using official CDP V2 method
-        // This creates a regular EVM account, not a Smart Account
-        // For Smart Accounts, use: cdp.evm.createSmartAccount({ owner: ownerAccount })
-        const account = await cdp.evm.createAccount()
+        // Step 4.1: Create EOA owner account
+        console.log(`      → Creating EOA owner account...`)
+        const ownerAccount = await cdp.evm.createAccount()
 
-        if (!account || !account.address) {
-          throw new Error(`Account ${i + 1} created but missing address`)
+        if (!ownerAccount || !ownerAccount.address) {
+          throw new Error(`Owner account ${i + 1} created but missing address`)
         }
 
-        console.log(`   ✅ EVM Account ${i + 1} created successfully`)
-        console.log(`      Address: ${account.address}`)
-        console.log(`      Network: base-mainnet (default)`)
+        console.log(`      ✅ EOA Owner created: ${ownerAccount.address}`)
+
+        // Step 4.2: Create Smart Account with the owner
+        console.log(`      → Creating Smart Account with owner...`)
+        const smartAccount = await cdp.evm.createSmartAccount({
+          owner: ownerAccount,
+        })
+
+        if (!smartAccount || !smartAccount.address) {
+          throw new Error(`Smart account ${i + 1} created but missing address`)
+        }
+
+        console.log(`      ✅ Smart Account created: ${smartAccount.address}`)
+        console.log(`      📦 Wallet ${i + 1} complete:`)
+        console.log(`         Smart Account: ${smartAccount.address}`)
+        console.log(`         Owner Account: ${ownerAccount.address}`)
+        console.log(`         Network: base-mainnet (default)`)
 
         walletsToInsert.push({
-          smart_account_address: account.address as Address,
-          owner_address: account.address as Address, // For regular EVM accounts, owner = address
+          smart_account_address: smartAccount.address as Address,
+          owner_address: ownerAccount.address as Address, // Store owner separately
           network: "base-mainnet",
         })
       } catch (walletError: any) {
-        console.error(`\n   ❌ Failed to create account ${i + 1}:`)
+        console.error(`\n   ❌ Failed to create Smart Account ${i + 1}:`)
         console.error(`      Error: ${walletError.message}`)
         if (walletError.response) {
           console.error(`      API Response:`, walletError.response.data)
@@ -216,19 +246,19 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Check if we successfully created all 5 wallets
+    // Check if we successfully created all 5 Smart Accounts
     if (walletsToInsert.length < 5) {
-      console.error(`❌ Only created ${walletsToInsert.length}/5 wallets`)
+      console.error(`❌ Only created ${walletsToInsert.length}/5 Smart Accounts`)
       return NextResponse.json(
         { 
-          error: "Failed to create all 5 wallets", 
-          details: `Only ${walletsToInsert.length} wallets were created successfully` 
+          error: "Failed to create all 5 Smart Accounts", 
+          details: `Only ${walletsToInsert.length} Smart Accounts were created successfully` 
         },
         { status: 500 }
       )
     }
 
-    console.log(`✅ All 5 EVM accounts created successfully`)
+    console.log(`✅ All 5 Smart Accounts created successfully`)
 
     // Step 5: Save wallets to database
     // IMPORTANT: Each wallet is tied to user_address to ensure proper categorization
@@ -259,10 +289,19 @@ export async function POST(request: NextRequest) {
     console.log(`✅ Saved ${insertedWallets.length} wallets to database`)
     console.log(`✅ Wallets categorized under user: ${normalizedUserAddress}`)
 
+    // Format wallets for frontend compatibility
+    const formattedWallets = walletsToInsert.map((wallet, index) => ({
+      smartWalletAddress: wallet.smart_account_address,
+      ownerAddress: wallet.owner_address,
+      network: wallet.network,
+      index: index,
+    }))
+
     return NextResponse.json({
-      message: "Successfully created 5 bot wallets using CDP V2",
-      wallets: walletsToInsert,
+      message: "Successfully created 5 Smart Accounts using CDP V2",
+      wallets: formattedWallets, // Send formatted wallets with smartWalletAddress property
       hasBotWallets: true, // Flag for frontend to show "Start Bumping" button
+      created: true, // Indicate these are newly created wallets
     })
   } catch (error: any) {
     console.error("❌ Error in get-or-create-wallets:", error)

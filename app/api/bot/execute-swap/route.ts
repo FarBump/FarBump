@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from "next/server"
-import { formatEther, parseEther, type Address } from "viem"
+import { formatEther, parseEther, type Address, type Hex, createPublicClient, http } from "viem"
+import { base } from "viem/chains"
 import { createSupabaseServiceClient } from "@/lib/supabase"
-import { Coinbase, Wallet } from "@coinbase/coinbase-sdk"
+import { CdpClient } from "@coinbase/cdp-sdk"
+import "dotenv/config"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
@@ -12,22 +14,30 @@ const MIN_AMOUNT_USD = 0.01
 // 0x Protocol Router (for swap quotes)
 const ZEROX_ROUTER = "0xDef1C0ded9bec7F1a1670819833240f027b25EfF"
 
+// Public client for balance checks
+const publicClient = createPublicClient({
+  chain: base,
+  transport: http(process.env.NEXT_PUBLIC_BASE_RPC_URL),
+})
+
 /**
- * API Route: Execute Swap for Bot Wallet using CDP Server Wallets V2
+ * API Route: Execute Swap for Bot Smart Account using CDP Server Wallets V2
  * 
- * This route:
- * 1. Fetches bot wallet from CDP using wallet ID
- * 2. Checks balance (must be >= MIN_AMOUNT_USD)
- * 3. Gets swap quote from 0x API
- * 4. Executes swap using wallet.invokeContract (gasless via CDP)
- * 5. Updates wallet rotation index for round-robin
- * 6. Logs all activities
+ * CDP V2 Smart Account Flow:
+ * 1. Fetch Smart Account address and Owner address from database
+ * 2. Check Smart Account balance (must be >= MIN_AMOUNT_USD)
+ * 3. Get swap quote from 0x API
+ * 4. Use CDP SDK to sign and execute transaction via Smart Account
+ * 5. Native gas sponsorship (no Paymaster needed!)
+ * 6. Update wallet rotation index
+ * 7. Log all activities
  * 
- * Benefits:
- * - Native gas sponsorship (no Paymaster allowlist issues)
- * - CDP manages all signing securely
- * - No manual viem signing or User Operations
- * - Simpler and more reliable
+ * Benefits of Smart Accounts:
+ * - Native gas sponsorship by CDP (no Paymaster allowlist issues)
+ * - Account abstraction (ERC-4337)
+ * - Secure signing by CDP (no private key exposure)
+ * - Multi-sig capabilities
+ * - Simpler and more reliable than User Operations
  */
 export async function POST(request: NextRequest) {
   try {
@@ -95,17 +105,20 @@ export async function POST(request: NextRequest) {
       )
     }
 
+    const smartAccountAddress = botWallet.smart_account_address as Address
+    const ownerAddress = botWallet.owner_address as Address
+
     console.log(`🤖 Selected Bot #${walletIndex + 1}:`)
-    console.log(`   CDP Wallet ID: ${botWallet.coinbase_wallet_id}`)
-    console.log(`   Address: ${botWallet.smart_account_address}`)
+    console.log(`   Smart Account: ${smartAccountAddress}`)
+    console.log(`   Owner Account: ${ownerAddress}`)
 
-    // Step 4: Initialize CDP SDK
-    console.log("🔧 Initializing Coinbase CDP SDK...")
+    // Step 4: Initialize CDP Client V2
+    console.log("🔧 Initializing Coinbase CDP SDK V2...")
     
-    const cdpApiKeyName = process.env.CDP_API_KEY_NAME
-    const cdpPrivateKey = process.env.CDP_PRIVATE_KEY
+    const apiKeyId = process.env.CDP_API_KEY_ID
+    const apiKeySecret = process.env.CDP_API_KEY_SECRET
 
-    if (!cdpApiKeyName || !cdpPrivateKey) {
+    if (!apiKeyId || !apiKeySecret) {
       console.error("❌ Missing CDP credentials")
       return NextResponse.json(
         { error: "CDP credentials not configured" },
@@ -113,46 +126,29 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    Coinbase.configure({
-      apiKeyName: cdpApiKeyName,
-      privateKey: cdpPrivateKey,
-    })
+    // CDP Client auto-loads from environment variables
+    const cdp = new CdpClient()
+    console.log(`✅ CDP Client V2 initialized`)
 
-    // Step 5: Fetch wallet from CDP
-    console.log(`📥 Fetching wallet from CDP...`)
+    // Step 5: Check Smart Account balance using public RPC
+    console.log(`💰 Checking Smart Account balance...`)
     
-    const wallet = await Wallet.fetch(botWallet.coinbase_wallet_id)
+    const balance = await publicClient.getBalance({ address: smartAccountAddress })
     
-    if (!wallet) {
-      console.error("❌ Failed to fetch wallet from CDP")
-      return NextResponse.json(
-        { error: "Failed to fetch wallet from CDP" },
-        { status: 500 }
-      )
-    }
-
-    console.log(`✅ Wallet fetched successfully`)
-
-    // Step 6: Check balance
-    console.log(`💰 Checking balance...`)
-    
-    const balance = await wallet.getBalance("eth")
-    const balanceInWei = BigInt(balance.toString())
-    
-    console.log(`   Balance: ${formatEther(balanceInWei)} ETH`)
+    console.log(`   Balance: ${formatEther(balance)} ETH`)
 
     // Fetch ETH price for USD conversion
     const ethPriceResponse = await fetch(`${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/api/eth-price`)
     const { price: ethPriceUsd } = await ethPriceResponse.json()
     
-    const balanceInUsd = Number(formatEther(balanceInWei)) * ethPriceUsd
+    const balanceInUsd = Number(formatEther(balance)) * ethPriceUsd
     console.log(`   Balance: $${balanceInUsd.toFixed(4)} USD`)
 
     // Check if balance is sufficient (minimum $0.01)
     const minAmountEth = MIN_AMOUNT_USD / ethPriceUsd
     const minAmountWei = BigInt(Math.floor(minAmountEth * 1e18))
 
-    if (balanceInWei < minAmountWei) {
+    if (balance < minAmountWei) {
       console.log(`⚠️ Bot #${walletIndex + 1} balance insufficient (${balanceInUsd.toFixed(4)} < ${MIN_AMOUNT_USD}) - Skipping`)
       
       // Log insufficient balance
@@ -168,11 +164,11 @@ export async function POST(request: NextRequest) {
       let allDepleted = true
       for (let i = 0; i < botWallets.length; i++) {
         const w = botWallets[i]
-        const wWallet = await Wallet.fetch(w.coinbase_wallet_id)
-        const wBalance = await wWallet.getBalance("eth")
-        const wBalanceWei = BigInt(wBalance.toString())
+        const wBalance = await publicClient.getBalance({ 
+          address: w.smart_account_address as Address 
+        })
         
-        if (wBalanceWei >= minAmountWei) {
+        if (wBalance >= minAmountWei) {
           allDepleted = false
           break
         }
@@ -241,7 +237,7 @@ export async function POST(request: NextRequest) {
       sellToken: "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE", // ETH
       buyToken: token_address,
       sellAmount: amountWei.toString(),
-      taker: botWallet.smart_account_address,
+      taker: smartAccountAddress, // Smart Account is the taker
       slippagePercentage: "0.01", // 1% slippage
     })
 
@@ -286,27 +282,44 @@ export async function POST(request: NextRequest) {
       console.error("❌ Failed to create log entry:", logError)
     }
 
-    // Step 10: Execute swap using CDP invokeContract (gasless!)
-    console.log(`🚀 Executing swap with CDP (gasless)...`)
+    // Step 10: Execute swap using CDP Smart Account
+    // For CDP Smart Accounts, we need to use the account.sendTransaction method
+    // Reference: https://docs.cdp.coinbase.com/server-wallets/v2/using-the-wallet-api/managing-accounts
+    console.log(`🚀 Executing swap with CDP Smart Account (gasless)...`)
     
     try {
-      const invocation = await wallet.invokeContract({
-        contractAddress: quote.to,
-        method: "swap", // Generic method name (0x will handle the actual function)
-        args: {
-          data: quote.data,
-        },
-        amount: BigInt(quote.value),
-        assetId: "eth",
-      })
-
-      // Wait for transaction to complete
-      await invocation.wait()
+      // Get the owner account to sign the transaction
+      // CDP Smart Accounts use the owner to sign on behalf of the Smart Account
+      console.log(`   → Getting owner account for signing...`)
       
-      const txHash = invocation.getTransactionHash()
+      const ownerAccount = await cdp.evm.getAccount({ address: ownerAddress })
+      
+      if (!ownerAccount) {
+        throw new Error("Failed to get owner account from CDP")
+      }
+      
+      console.log(`   ✅ Owner account retrieved`)
+      console.log(`   → Preparing transaction...`)
+      
+      // Send transaction from Smart Account using owner signature
+      // CDP will handle the Smart Account execution automatically
+      const tx = await ownerAccount.sendTransaction({
+        to: quote.to as Address,
+        data: quote.data as Hex,
+        value: BigInt(quote.value),
+      })
+      
+      console.log(`   ✅ Transaction submitted`)
+      console.log(`   → Waiting for confirmation...`)
+      
+      // Wait for transaction to be mined
+      await tx.wait()
+      
+      const txHash = tx.hash
       
       console.log(`✅ Swap executed successfully!`)
       console.log(`   Transaction: ${txHash}`)
+      console.log(`   Explorer: https://basescan.org/tx/${txHash}`)
 
       // Update log with tx hash
       if (logEntry) {
@@ -321,14 +334,13 @@ export async function POST(request: NextRequest) {
       }
 
       // Log remaining balance
-      const newBalance = await wallet.getBalance("eth")
-      const newBalanceWei = BigInt(newBalance.toString())
-      const newBalanceUsd = Number(formatEther(newBalanceWei)) * ethPriceUsd
+      const newBalance = await publicClient.getBalance({ address: smartAccountAddress })
+      const newBalanceUsd = Number(formatEther(newBalance)) * ethPriceUsd
 
       await supabase.from("bot_logs").insert({
         user_address: user_address.toLowerCase(),
         action: "balance_check",
-        message: `[System] Remaining balance in Bot #${walletIndex + 1}: ${formatEther(newBalanceWei)} ETH ($${newBalanceUsd.toFixed(2)})`,
+        message: `[System] Remaining balance in Bot #${walletIndex + 1}: ${formatEther(newBalance)} ETH ($${newBalanceUsd.toFixed(2)})`,
         status: "info",
         timestamp: new Date().toISOString(),
       })
@@ -346,11 +358,15 @@ export async function POST(request: NextRequest) {
         message: "Swap executed successfully",
         txHash,
         nextIndex,
-        remainingBalance: formatEther(newBalanceWei),
+        remainingBalance: formatEther(newBalance),
         remainingBalanceUsd: newBalanceUsd.toFixed(2),
       })
     } catch (swapError: any) {
       console.error("❌ Swap execution failed:", swapError)
+      console.error("   Error details:", swapError.message)
+      if (swapError.response) {
+        console.error("   API Response:", swapError.response.data)
+      }
 
       // Update log with error
       if (logEntry) {

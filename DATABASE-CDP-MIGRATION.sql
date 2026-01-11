@@ -59,3 +59,5 @@ COMMENT ON COLUMN wallets_data.chain IS 'Network ID (e.g., base-mainnet, base-se
 
 
 
+
+
