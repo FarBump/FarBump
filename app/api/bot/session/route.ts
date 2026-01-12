@@ -147,30 +147,62 @@ export async function POST(request: NextRequest) {
 
     // Create new session
     // IMPORTANT: Using user_address column (NOT user_id) - this is the Smart Wallet address
-    // Store amount_usd and interval_seconds in database
+    // Store amount_usd and interval_seconds in database (if columns exist)
     // buy_amount_per_bump_wei will be calculated dynamically on each swap using real-time ETH price
     // Bot runs continuously until user stops it manually - no total_sessions limit
+    
+    // Base required columns (must exist in all schemas)
+    const sessionDataToInsert: any = {
+      user_address: normalizedUserAddress,
+      token_address: tokenAddress,
+      buy_amount_per_bump_wei: amountWei.toString(),
+      total_sessions: 0,
+      current_session: 0,
+      wallet_rotation_index: 0,
+      status: "running",
+      started_at: new Date().toISOString(),
+    }
+
+    // Add optional columns (may not exist in older schemas)
+    // These will be ignored by database if columns don't exist
+    sessionDataToInsert.amount_usd = amountUsdValue.toString()
+    sessionDataToInsert.interval_seconds = intervalSeconds
+
     const { data: sessionData, error: insertError } = await supabase
       .from("bot_sessions")
-      .insert({
-        user_address: normalizedUserAddress,
-        token_address: tokenAddress,
-        amount_usd: amountUsdValue.toString(), // Store USD amount for reference
-        buy_amount_per_bump_wei: amountWei.toString(), // Store initial wei amount (will be recalculated on execution)
-        interval_seconds: intervalSeconds,
-        total_sessions: 0, // 0 = unlimited (runs continuously until stopped)
-        current_session: 0,
-        wallet_rotation_index: 0,
-        status: "running",
-        started_at: new Date().toISOString(),
-      })
+      .insert(sessionDataToInsert)
       .select()
       .single()
 
     if (insertError) {
       console.error("❌ Error creating bot session:", insertError)
+      console.error("   Error code:", insertError.code)
+      console.error("   Error message:", insertError.message)
+      console.error("   Error details:", insertError.details)
+      console.error("   Insert data:", JSON.stringify(sessionDataToInsert, null, 2))
+      
+      // Check if error is due to missing columns
+      const isColumnError = 
+        insertError.message?.includes("column") ||
+        insertError.message?.includes("does not exist") ||
+        insertError.code === "42703" // PostgreSQL undefined_column error code
+      
+      if (isColumnError) {
+        return NextResponse.json(
+          { 
+            error: "Database schema mismatch",
+            details: insertError.message,
+            hint: "Please run FIX-BOT-SESSIONS-SCHEMA.sql in Supabase SQL Editor to add missing columns (amount_usd, interval_seconds)"
+          },
+          { status: 500 }
+        )
+      }
+      
       return NextResponse.json(
-        { error: "Failed to create bot session" },
+        { 
+          error: "Failed to create bot session",
+          details: insertError.message,
+        },
         { status: 500 }
       )
     }
