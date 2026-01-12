@@ -560,12 +560,17 @@ export async function POST(request: NextRequest) {
       let userOpHash: any
       let userOpReceipt: any
       
+      // CDP SDK v2 requires "network" property in transaction requests
+      // Network should be "base-mainnet" for Base mainnet
+      const network = "base-mainnet"
+      
       // Try different method patterns based on CDP SDK v2 structure
       // Method 1: Try sendTransaction with calls array (most common pattern)
       if (typeof (smartAccount as any).sendTransaction === 'function') {
         console.log(`   → Method: sendTransaction with calls array`)
         try {
           userOpHash = await (smartAccount as any).sendTransaction({
+            network: network, // Required by CDP SDK v2
             calls: [transactionCall],
             isSponsored: true,
           })
@@ -574,7 +579,10 @@ export async function POST(request: NextRequest) {
           // Try direct transaction object as fallback
           console.log(`   → Trying sendTransaction with direct transaction object...`)
           try {
-            userOpHash = await (smartAccount as any).sendTransaction(transactionCall)
+            userOpHash = await (smartAccount as any).sendTransaction({
+              network: network, // Required by CDP SDK v2
+              ...transactionCall,
+            })
           } catch (err2: any) {
             console.error(`   ❌ sendTransaction (direct) also failed:`, err2.message)
             throw err // Throw original error
@@ -585,7 +593,10 @@ export async function POST(request: NextRequest) {
       else if (typeof (smartAccount as any).send === 'function') {
         console.log(`   → Method: send`)
         try {
-          userOpHash = await (smartAccount as any).send(transactionCall)
+          userOpHash = await (smartAccount as any).send({
+            network: network, // Required by CDP SDK v2
+            ...transactionCall,
+          })
         } catch (err: any) {
           console.error(`   ❌ send failed:`, err.message)
           throw err
@@ -595,7 +606,10 @@ export async function POST(request: NextRequest) {
       else if (typeof (smartAccount as any).execute === 'function') {
         console.log(`   → Method: execute`)
         try {
-          userOpHash = await (smartAccount as any).execute(transactionCall)
+          userOpHash = await (smartAccount as any).execute({
+            network: network, // Required by CDP SDK v2
+            ...transactionCall,
+          })
         } catch (err: any) {
           console.error(`   ❌ execute failed:`, err.message)
           throw err
@@ -608,7 +622,9 @@ export async function POST(request: NextRequest) {
         try {
           // Owner Account sends transaction directly to target contract
           // CDP SDK should handle Smart Account execution automatically
+          // CRITICAL: CDP SDK v2 requires "network" property
           userOpHash = await (ownerAccount as any).sendTransaction({
+            network: network, // Required by CDP SDK v2
             to: transaction.to as Address, // Send directly to target contract
             data: transaction.data as Hex,
             value: BigInt(transactionValue),
