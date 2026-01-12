@@ -785,6 +785,33 @@ export async function POST(request: NextRequest) {
           .eq("id", logEntry.id)
       }
 
+      // Step 11: Consume credit from bot wallet (reduce credit balance in database)
+      console.log(`💰 Consuming credit from bot wallet...`)
+      try {
+        const consumeResponse = await fetch(`${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/api/bot/consume-credit`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            userAddress: user_address,
+            botWalletAddress: smartAccountAddress,
+            consumedAmountWei: amountWei.toString(), // Amount consumed in this swap
+          }),
+        })
+
+        if (consumeResponse.ok) {
+          const consumeData = await consumeResponse.json()
+          console.log(`   ✅ Credit consumed: ${formatEther(BigInt(consumeData.consumedAmountWei || "0"))} ETH`)
+          console.log(`   → Remaining credit: ${formatEther(BigInt(consumeData.remainingCreditWei || "0"))} ETH`)
+        } else {
+          const errorData = await consumeResponse.json().catch(() => ({}))
+          console.warn(`   ⚠️ Failed to consume credit: ${errorData.error || consumeResponse.statusText}`)
+          // Don't throw - swap succeeded, just log warning
+        }
+      } catch (consumeError: any) {
+        console.warn(`   ⚠️ Error consuming credit: ${consumeError.message}`)
+        // Don't throw - swap succeeded, just log warning
+      }
+
       // Log remaining balance
       const newBalance = await publicClient.getBalance({ address: smartAccountAddress })
       const newBalanceUsd = Number(formatEther(newBalance)) * ethPriceUsd
@@ -800,7 +827,7 @@ export async function POST(request: NextRequest) {
         created_at: new Date().toISOString(),
       })
 
-      // Step 11: Update wallet rotation index
+      // Step 12: Update wallet rotation index
       const nextIndex = (wallet_rotation_index + 1) % 5
       await supabase
         .from("bot_sessions")
