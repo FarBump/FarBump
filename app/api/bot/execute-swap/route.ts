@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
-import { formatEther, parseEther, type Address, type Hex, createPublicClient, http } from "viem"
+import { formatEther, parseEther, isAddress, type Address, type Hex, createPublicClient, http } from "viem"
 import { base } from "viem/chains"
 import { createSupabaseServiceClient } from "@/lib/supabase"
 import { CdpClient } from "@coinbase/cdp-sdk"
@@ -165,7 +165,7 @@ export async function POST(request: NextRequest) {
         action: "swap_skipped",
         message: `[System] Saldo Bot #${walletIndex + 1} tidak cukup ($${balanceInUsd.toFixed(2)} < $${MIN_AMOUNT_USD}). Bumping dihentikan.`,
         status: "warning",
-        created_at: new Date().toISOString(),
+        timestamp: new Date().toISOString(),
       })
 
       // Check if all wallets are depleted
@@ -198,7 +198,7 @@ export async function POST(request: NextRequest) {
           action: "session_stopped",
           message: `[System] All bot balances below $${MIN_AMOUNT_USD}. Bumping session completed.`,
           status: "info",
-          created_at: new Date().toISOString(),
+          timestamp: new Date().toISOString(),
         })
 
         return NextResponse.json({
@@ -245,31 +245,153 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    const quoteParams = new URLSearchParams({
+    // Validate token address before making API call
+    if (!isAddress(token_address)) {
+      console.error(`❌ Invalid token address: ${token_address}`)
+      return NextResponse.json(
+        { error: "Invalid token address" },
+        { status: 400 }
+      )
+    }
+
+    // For native ETH swaps, use proper parameters
+    // Reference: https://0x.org/docs/api/swap-v2#get-quote
+    // IMPORTANT: For native ETH swaps, we need to ensure:
+    // 1. sellToken is the ETH placeholder address
+    // 2. buyToken is the target token address
+    // 3. taker is the address that holds the ETH (Smart Account)
+    // 4. sellAmount is in wei
+    // 5. For very small amounts, we may need to use buyAmount instead
+    
+    // Try with sellAmount first (standard approach)
+    let quoteParams = new URLSearchParams({
       chainId: "8453", // Base Mainnet
-      sellToken: "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE", // ETH
-      buyToken: token_address,
-      sellAmount: amountWei.toString(),
-      taker: smartAccountAddress, // Smart Account is the taker
-      slippagePercentage: "0.01", // 1% slippage
-      // Enable Universal Router for dynamic token support
-      // v2 API automatically uses Universal Router when beneficial
+      sellToken: "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE", // Native ETH placeholder
+      buyToken: token_address.toLowerCase(), // Target token (ensure lowercase)
+      sellAmount: amountWei.toString(), // Amount in wei
+      taker: smartAccountAddress.toLowerCase(), // Smart Account holds the ETH
+      slippagePercentage: "1.0", // 1% slippage
+      // Note: For native ETH, no allowance is needed (ETH is sent directly)
+      // The taker parameter specifies who holds the ETH balance (allowance holder)
+    })
+    
+    // If amount is very small (< 0.001 ETH), try using buyAmount instead
+    // This can help with tokens that have very high prices
+    const amountEth = Number(formatEther(amountWei))
+    if (amountEth < 0.001) {
+      console.log(`⚠️ Very small swap amount (${amountEth} ETH), trying alternative approach...`)
+      // For very small amounts, we might need to specify buyAmount instead
+      // But first, let's try the standard approach
+    }
+
+    const quoteUrl = `https://api.0x.org/swap/v2/quote?${quoteParams.toString()}`
+    console.log(`📊 Requesting quote from 0x API:`)
+    console.log(`   URL: ${quoteUrl}`)
+    console.log(`   Sell Token: ETH (native)`)
+    console.log(`   Buy Token: ${token_address}`)
+    console.log(`   Sell Amount: ${formatEther(amountWei)} ETH (${amountWei.toString()} wei)`)
+    console.log(`   Taker (Allowance Holder): ${smartAccountAddress}`)
+    
+    let quoteResponse = await fetch(quoteUrl, {
+      headers: {
+        "0x-api-key": zeroXApiKey,
+      },
     })
 
-    const quoteResponse = await fetch(
-      `https://api.0x.org/swap/v2/quote?${quoteParams.toString()}`,
-      {
-        headers: {
-          "0x-api-key": zeroXApiKey,
-        },
+    // If "no Route matched" error, try alternative approach with buyAmount
+    // This can help with tokens that have very high prices or very small amounts
+    if (!quoteResponse.ok) {
+      let errorData: any = {}
+      try {
+        errorData = await quoteResponse.json()
+      } catch (e) {
+        errorData = { message: quoteResponse.statusText }
       }
-    )
+      
+      // If "no Route matched", try with buyAmount instead (for high-priced tokens)
+      if (errorData.message && (errorData.message.includes("no Route matched") || errorData.message.includes("No route found"))) {
+        console.log(`⚠️ No route found with sellAmount, trying with buyAmount (for high-priced tokens)...`)
+        
+        // Try with a small buyAmount (1 unit of token)
+        // This works better for tokens with very high prices
+        const alternativeParams = new URLSearchParams({
+          chainId: "8453",
+          sellToken: "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",
+          buyToken: token_address.toLowerCase(),
+          buyAmount: "1", // Try to buy 1 unit of token
+          taker: smartAccountAddress.toLowerCase(),
+          slippagePercentage: "5.0", // Higher slippage for small amounts
+        })
+        
+        const alternativeUrl = `https://api.0x.org/swap/v2/quote?${alternativeParams.toString()}`
+        console.log(`   Trying alternative with buyAmount: ${alternativeUrl}`)
+        
+        const alternativeResponse = await fetch(alternativeUrl, {
+          headers: {
+            "0x-api-key": zeroXApiKey,
+          },
+        })
+        
+        if (alternativeResponse.ok) {
+          console.log(`✅ Alternative approach worked! Using buyAmount instead of sellAmount`)
+          quoteResponse = alternativeResponse
+        } else {
+          // Alternative also failed, use original error
+          console.error("❌ Alternative approach also failed")
+        }
+      }
+    }
 
     if (!quoteResponse.ok) {
-      const errorData = await quoteResponse.json()
+      let errorData: any = {}
+      try {
+        errorData = await quoteResponse.json()
+      } catch (e) {
+        errorData = { message: quoteResponse.statusText }
+      }
+      
       console.error("❌ 0x API error:", errorData)
+      console.error("   Status:", quoteResponse.status)
+      console.error("   Request params:", quoteParams.toString())
+      console.error("   Token address:", token_address)
+      console.error("   Smart Account:", smartAccountAddress)
+      console.error("   Amount:", amountWei.toString())
+      console.error("   Amount USD:", amountUsdValue)
+      console.error("   Amount ETH:", formatEther(amountWei))
+      
+      // Provide more helpful error message
+      let errorMessage = "Failed to get swap quote"
+      if (errorData.message) {
+        if (errorData.message.includes("no Route matched") || errorData.message.includes("No route found")) {
+          errorMessage = `No swap route found for token ${token_address}. Possible reasons: 1) Token has no liquidity on Base network, 2) Swap amount too small, 3) Token not tradeable. Please verify the token address is correct and has liquidity.`
+        } else if (errorData.message.includes("Insufficient liquidity")) {
+          errorMessage = `Insufficient liquidity for token ${token_address}. Try a smaller amount or a different token.`
+        } else if (errorData.message.includes("Invalid token")) {
+          errorMessage = `Invalid token address: ${token_address}. Please verify the token exists on Base network.`
+        } else {
+          errorMessage = errorData.message
+        }
+      }
+      
+      // Log error to database
+      await supabase.from("bot_logs").insert({
+        user_address: user_address.toLowerCase(),
+        wallet_address: smartAccountAddress,
+        token_address: token_address,
+        amount_wei: amountWei.toString(),
+        action: "swap_failed",
+        message: `[Bot #${walletIndex + 1}] Swap quote failed: ${errorMessage}`,
+        status: "error",
+        error_details: errorData,
+        timestamp: new Date().toISOString(),
+      })
+      
       return NextResponse.json(
-        { error: "Failed to get swap quote", details: errorData },
+        { 
+          error: errorMessage,
+          details: errorData,
+          hint: "Please verify: 1) Token address is correct, 2) Token has liquidity on Base network, 3) Swap amount is sufficient (minimum $0.01 USD). You can check token liquidity on BaseScan or DEX aggregators."
+        },
         { status: 500 }
       )
     }
@@ -291,7 +413,7 @@ export async function POST(request: NextRequest) {
         action: "swap_executing",
         message: `[Bot #${walletIndex + 1}] Melakukan swap senilai $${amountUsdValue.toFixed(2)} ke Target Token...`,
         status: "pending",
-        created_at: new Date().toISOString(),
+        timestamp: new Date().toISOString(),
       })
       .select()
       .single()
@@ -372,7 +494,7 @@ export async function POST(request: NextRequest) {
         action: "balance_check",
         message: `[System] Remaining balance in Bot #${walletIndex + 1}: ${formatEther(newBalance)} ETH ($${newBalanceUsd.toFixed(2)})`,
         status: "info",
-        created_at: new Date().toISOString(),
+        timestamp: new Date().toISOString(),
       })
 
       // Step 11: Update wallet rotation index

@@ -106,13 +106,29 @@ export default function BumpBotDashboard() {
   }, [targetTokenAddress, privySmartWalletAddress])
   
   // Load persisted token metadata when component mounts
+  // CRITICAL: Restore verified state from localStorage to ensure UI shows verified status
   useEffect(() => {
     if (typeof window !== "undefined" && privySmartWalletAddress && targetTokenAddress) {
-      // Token address is persisted, but we need to re-verify it
-      // This will be handled by TokenInput component when it mounts
-      setIsTokenVerified(true) // Assume verified if persisted
+      // Check if we have persisted metadata
+      const storedMetadata = localStorage.getItem(`targetTokenMetadata_${privySmartWalletAddress}`)
+      if (storedMetadata) {
+        try {
+          const metadata = JSON.parse(storedMetadata)
+          setTokenMetadata(metadata)
+          setIsTokenVerified(true)
+        } catch (e) {
+          console.error("Error parsing stored metadata:", e)
+        }
+      }
     }
-  }, [privySmartWalletAddress])
+  }, [privySmartWalletAddress, targetTokenAddress])
+  
+  // Persist token metadata when it changes
+  useEffect(() => {
+    if (typeof window !== "undefined" && privySmartWalletAddress && tokenMetadata) {
+      localStorage.setItem(`targetTokenMetadata_${privySmartWalletAddress}`, JSON.stringify(tokenMetadata))
+    }
+  }, [tokenMetadata, privySmartWalletAddress])
   
   // Farcaster Embed Wallet address (hanya untuk informasi, TIDAK digunakan untuk verifikasi atau transaksi)
   // Ini adalah wallet yang dibuat oleh Farcaster untuk user (custody address)
@@ -893,6 +909,7 @@ export default function BumpBotDashboard() {
         // This ensures it persists when switching tabs or doing other actions
         if (typeof window !== "undefined" && privySmartWalletAddress) {
           localStorage.removeItem(`targetTokenAddress_${privySmartWalletAddress}`)
+          localStorage.removeItem(`targetTokenMetadata_${privySmartWalletAddress}`)
         }
         setTargetTokenAddress(null)
         setIsTokenVerified(false)
@@ -1075,7 +1092,15 @@ export default function BumpBotDashboard() {
               }}
               onVerifiedChange={(isVerified, metadata) => {
                 setIsTokenVerified(isVerified)
-                setTokenMetadata(metadata || null)
+                if (metadata) {
+                  setTokenMetadata(metadata)
+                  // Persist metadata to localStorage
+                  if (typeof window !== "undefined" && privySmartWalletAddress) {
+                    localStorage.setItem(`targetTokenMetadata_${privySmartWalletAddress}`, JSON.stringify(metadata))
+                  }
+                } else {
+                  setTokenMetadata(null)
+                }
               }}
             />
             <ConfigPanel 
