@@ -157,7 +157,7 @@ export async function POST(request: NextRequest) {
         token_address: token_address,
         amount_wei: "0",
         action: "swap_skipped",
-        message: `[System] Saldo Bot #${walletIndex + 1} tidak cukup ($${balanceInUsd.toFixed(2)} < $${MIN_AMOUNT_USD}). Bumping dihentikan.`,
+        message: `[System] Bot #${walletIndex + 1} balance insufficient ($${balanceInUsd.toFixed(2)} < $${MIN_AMOUNT_USD}). Bumping stopped.`,
         status: "warning",
         created_at: new Date().toISOString(),
       })
@@ -417,7 +417,7 @@ export async function POST(request: NextRequest) {
         token_address: token_address,
         amount_wei: amountWei.toString(),
         action: "swap_executing",
-        message: `[Bot #${walletIndex + 1}] Melakukan swap senilai $${amountUsdValue.toFixed(2)} ke Target Token...`,
+        message: `[Bot #${walletIndex + 1}] Executing swap worth $${amountUsdValue.toFixed(2)} to Target Token...`,
         status: "pending",
         created_at: new Date().toISOString(),
       })
@@ -499,11 +499,22 @@ export async function POST(request: NextRequest) {
       // Note: Using type assertion because CDP SDK types may not fully expose sendTransaction
       // v2 API response structure: quote.transaction.to, quote.transaction.data, quote.transaction.value
       const transaction = quote.transaction || quote
+      
+      // Validate transaction data before executing
+      if (!transaction.to || !transaction.data) {
+        throw new Error("Invalid quote response: missing transaction.to or transaction.data")
+      }
+      
+      // Safely convert value to BigInt (handle undefined, null, or empty string)
+      const transactionValue = transaction.value 
+        ? (typeof transaction.value === 'string' ? transaction.value : String(transaction.value))
+        : "0"
+      
       const userOpHash = await (smartAccount as any).sendTransaction({
         calls: [{
           to: transaction.to as Address,
           data: transaction.data as Hex,
-          value: BigInt(transaction.value || "0"),
+          value: BigInt(transactionValue),
         }],
         isSponsored: true, // Enable gas sponsorship
       })
@@ -549,7 +560,7 @@ export async function POST(request: NextRequest) {
           .update({
             tx_hash: txHash,
             status: "success",
-            message: `[Bot #${walletIndex + 1}] Melakukan swap senilai $${amountUsdValue.toFixed(2)} ke Target Token... [Lihat Transaksi](https://basescan.org/tx/${txHash})`,
+            message: `[Bot #${walletIndex + 1}] Swap executed: $${amountUsdValue.toFixed(2)} to Target Token. [View Transaction](https://basescan.org/tx/${txHash})`,
           })
           .eq("id", logEntry.id)
       }
@@ -598,7 +609,7 @@ export async function POST(request: NextRequest) {
           .from("bot_logs")
           .update({
             status: "error",
-            message: `[Bot #${walletIndex + 1}] Swap gagal: ${swapError.message}`,
+            message: `[Bot #${walletIndex + 1}] Swap failed: ${swapError.message}`,
             error_details: {
               error: swapError.message,
               stack: process.env.NODE_ENV === 'development' ? swapError.stack : undefined,

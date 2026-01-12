@@ -105,23 +105,32 @@ export default function BumpBotDashboard() {
     }
   }, [targetTokenAddress, privySmartWalletAddress])
   
-  // Load persisted token metadata when component mounts
+  // Load persisted token metadata when component mounts or privySmartWalletAddress changes
   // CRITICAL: Restore verified state from localStorage to ensure UI shows verified status
+  // This ensures targetTokenAddress persists even when user switches tabs
   useEffect(() => {
-    if (typeof window !== "undefined" && privySmartWalletAddress && targetTokenAddress) {
-      // Check if we have persisted metadata
-      const storedMetadata = localStorage.getItem(`targetTokenMetadata_${privySmartWalletAddress}`)
-      if (storedMetadata) {
-        try {
-          const metadata = JSON.parse(storedMetadata)
-          setTokenMetadata(metadata)
-          setIsTokenVerified(true)
-        } catch (e) {
-          console.error("Error parsing stored metadata:", e)
+    if (typeof window !== "undefined" && privySmartWalletAddress) {
+      // First, restore targetTokenAddress from localStorage
+      const storedAddress = localStorage.getItem(`targetTokenAddress_${privySmartWalletAddress}`)
+      if (storedAddress && storedAddress !== targetTokenAddress) {
+        setTargetTokenAddress(storedAddress)
+      }
+      
+      // Then, restore metadata and verified status
+      if (storedAddress) {
+        const storedMetadata = localStorage.getItem(`targetTokenMetadata_${privySmartWalletAddress}`)
+        if (storedMetadata) {
+          try {
+            const metadata = JSON.parse(storedMetadata)
+            setTokenMetadata(metadata)
+            setIsTokenVerified(true)
+          } catch (e) {
+            console.error("Error parsing stored metadata:", e)
+          }
         }
       }
     }
-  }, [privySmartWalletAddress, targetTokenAddress])
+  }, [privySmartWalletAddress]) // Only depend on privySmartWalletAddress, not targetTokenAddress
   
   // Persist token metadata when it changes
   useEffect(() => {

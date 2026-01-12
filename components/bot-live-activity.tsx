@@ -193,7 +193,7 @@ export function BotLiveActivity({ userAddress, enabled = true, existingBotWallet
               return (
                 <div
                   key={log.id}
-                  className="flex items-center justify-between rounded-md bg-card/50 p-3 transition-all duration-200 hover:bg-card/80 animate-in fade-in slide-in-from-top-2"
+                  className="flex items-center justify-between rounded-md bg-card/50 p-2 sm:p-3 transition-all duration-200 hover:bg-card/80 animate-in fade-in slide-in-from-top-2"
                   style={{
                     animationDelay: `${index * 50}ms`,
                   }}
@@ -220,7 +220,7 @@ export function BotLiveActivity({ userAddress, enabled = true, existingBotWallet
                     {/* Activity Info */}
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2 mb-1">
-                        <p className="text-xs font-medium text-foreground truncate">
+                        <p className="text-[10px] sm:text-xs font-medium text-foreground truncate">
                           {walletLabel}
                         </p>
                         {log.tx_hash && (
@@ -235,18 +235,18 @@ export function BotLiveActivity({ userAddress, enabled = true, existingBotWallet
                           </a>
                         )}
                       </div>
-                      <p className="text-xs text-muted-foreground">
+                      <p className="text-[10px] sm:text-xs text-muted-foreground line-clamp-2 break-words">
                         {actionText}
                       </p>
                       {log.message && (
-                        <p className="mt-1 text-xs text-muted-foreground italic truncate">
+                        <p className="mt-1 text-[10px] sm:text-xs text-muted-foreground italic line-clamp-2 break-words">
                           {log.message}
                         </p>
                       )}
                     </div>
 
                     {/* Timestamp */}
-                    <span className="shrink-0 text-xs text-muted-foreground ml-2">
+                    <span className="shrink-0 text-[10px] sm:text-xs text-muted-foreground ml-2">
                       {formatRelativeTime(log.created_at)}
                     </span>
                   </div>
