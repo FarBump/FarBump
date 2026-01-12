@@ -16,20 +16,30 @@ interface CreditBalance {
  * Uses real-time ETH price from CoinGecko API
  * 
  * IMPORTANT: This is NOT the $BUMP token balance!
- * - Credit Balance = ETH value from converting $BUMP to ETH (stored in Supabase as wei)
- * - Database stores: balance_wei (90% of ETH from each convert transaction)
+ * - Credit Balance = Total ETH value from:
+ *   1. Main Smart Wallet: ETH obtained through "Convert $BUMP to credit" function
+ *   2. Bot Smart Wallets: Accumulated balance from 5 bot wallets obtained through "distribute" function
+ * - Database stores:
+ *   - user_credits.balance_wei: Main wallet credit (90% of ETH from each convert transaction)
+ *   - bot_wallet_credits.distributed_amount_wei: Bot wallet credits (from distribute function)
  * - Display: Converts wei → ETH → USD using real-time ETH price
  * - Used for paying for bump bot services in the future
  * - For $BUMP token balance, use useBumpBalance() instead
  * 
  * Credit Calculation:
- * - Each convert transaction: 90% of ETH result is stored in database (in wei)
- * - Total credit = Sum of all 90% portions from all convert transactions
+ * - Main wallet credit: Sum of all 90% portions from all convert transactions (stored in user_credits)
+ * - Bot wallet credits: Sum of all distributed amounts to bot wallets (stored in bot_wallet_credits)
+ * - Total credit = Main wallet credit + Bot wallet credits
  * - USD value = Total ETH credit × Current ETH price (refreshed every 15 seconds)
  * 
+ * Security:
+ * - Only credits from valid convert transactions and distribute operations are counted
+ * - Direct ETH transfers to smart wallets are NOT counted (prevents bypass)
+ * 
  * This ensures:
- * 1. Credit amount in ETH matches the actual ETH in Smart Wallet (90% of swap results)
+ * 1. Credit amount in ETH matches the actual ETH in Smart Wallets (from valid operations only)
  * 2. Credit value in USD follows ETH price fluctuations in real-time
+ * 3. Users cannot bypass the system by directly transferring ETH to their wallets
  * 
  * This hook is completely independent from withdraw operations.
  * Withdraw uses useBumpBalance() which reads directly from blockchain.
@@ -51,36 +61,29 @@ export function useCreditBalance(userAddress: string | null, options?: { enabled
         throw new Error("User address is required")
       }
 
-      // Fetch balance from database
-      const { data, error } = await supabase
+      // Fetch main wallet credit from database
+      const { data: mainCreditData, error: mainCreditError } = await supabase
         .from("user_credits")
         .select("balance_wei, last_updated")
         .eq("user_address", userAddress.toLowerCase())
         .single()
 
+      // Fetch bot wallet credits from database
+      const { data: botCreditsData, error: botCreditsError } = await supabase
+        .from("bot_wallet_credits")
+        .select("distributed_amount_wei")
+        .eq("user_address", userAddress.toLowerCase())
+
       // Handle errors gracefully
-      if (error) {
+      if (mainCreditError && mainCreditError.code !== "PGRST116") {
         // PGRST116 = no rows returned, which is OK for new users
-        if (error.code === "PGRST116") {
-          // New user, no credits yet - return default
-          return {
-            balanceWei: "0",
-            balanceEth: "0",
-            balanceUsd: 0,
-            lastUpdated: null,
-          }
-        }
-        
         // Error 406 (Not Acceptable) = RLS policy issue - return default instead of throwing
-        // Check error code and message
-        // Note: Browser console will still show the 406 network error, but we handle it gracefully
-        // Supabase PostgrestError doesn't have status property, so we check code and message
         const is406Error = 
-          error.code === "406" ||
-          error.message?.includes("406") || 
-          error.message?.includes("Not Acceptable") ||
-          error.details?.includes("406") ||
-          String(error).includes("406")
+          mainCreditError.code === "406" ||
+          mainCreditError.message?.includes("406") || 
+          mainCreditError.message?.includes("Not Acceptable") ||
+          mainCreditError.details?.includes("406") ||
+          String(mainCreditError).includes("406")
         
         if (is406Error) {
           // Mark 406 error occurred - disable future queries to prevent console spam
@@ -106,10 +109,20 @@ export function useCreditBalance(userAddress: string | null, options?: { enabled
         }
         
         // For other errors, still throw to maintain error visibility
-        throw error
+        throw mainCreditError
       }
 
-      const balanceWei = data?.balance_wei || "0"
+      // Calculate main wallet credit
+      const mainWalletCreditWei = mainCreditData?.balance_wei || "0"
+      
+      // Calculate bot wallet credits (sum of all distributed amounts)
+      const botWalletCreditsWei = botCreditsData?.reduce((sum, record) => {
+        return sum + BigInt(record.distributed_amount_wei || "0")
+      }, BigInt(0)) || BigInt(0)
+      
+      // Total credit = Main wallet credit + Bot wallet credits
+      const totalCreditWei = BigInt(mainWalletCreditWei) + botWalletCreditsWei
+      const balanceWei = totalCreditWei.toString()
       const balanceEth = formatUnits(BigInt(balanceWei), 18)
 
       // Fetch ETH price in USD from CoinGecko (real-time)
@@ -151,7 +164,7 @@ export function useCreditBalance(userAddress: string | null, options?: { enabled
         balanceWei,
         balanceEth,
         balanceUsd,
-        lastUpdated: data?.last_updated || null,
+        lastUpdated: mainCreditData?.last_updated || null,
       }
     },
     enabled: enabled,

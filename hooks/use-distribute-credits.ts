@@ -122,6 +122,39 @@ export function useDistributeCredits() {
 
       if (receipt.status === "success") {
         setIsSuccess(true)
+        setStatus("Recording distribution in database...")
+        
+        // Record distribution in database
+        try {
+          const distributions = botWallets.map((wallet) => ({
+            botWalletAddress: wallet.smartWalletAddress,
+            amountWei: amountPerBot.toString(),
+          }))
+
+          const recordResponse = await fetch("/api/bot/record-distribution", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              userAddress: userAddress,
+              distributions: distributions,
+              txHash: txHash,
+            }),
+          })
+
+          if (!recordResponse.ok) {
+            const errorData = await recordResponse.json()
+            console.error("⚠️ Failed to record distribution in database:", errorData)
+            // Don't throw - transaction succeeded, just log the warning
+          } else {
+            console.log("✅ Distribution recorded in database")
+          }
+        } catch (recordError: any) {
+          console.error("⚠️ Error recording distribution in database:", recordError)
+          // Don't throw - transaction succeeded, just log the warning
+        }
+
         setStatus("Distribution completed!")
         
         toast.success(`Successfully distributed credit to 5 bot wallets!`, {

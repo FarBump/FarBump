@@ -26,7 +26,7 @@ const publicClient = createPublicClient({
  * CDP V2 Smart Account Flow:
  * 1. Fetch Smart Account address and Owner address from database
  * 2. Check Smart Account balance (must be >= MIN_AMOUNT_USD)
- * 3. Get swap quote from 0x API
+ * 3. Get swap quote from 0x API v2 (with Universal Router support)
  * 4. Use CDP SDK to sign and execute transaction via Smart Account
  * 5. Native gas sponsorship (no Paymaster needed!)
  * 6. Update wallet rotation index
@@ -38,6 +38,11 @@ const publicClient = createPublicClient({
  * - Secure signing by CDP (no private key exposure)
  * - Multi-sig capabilities
  * - Simpler and more reliable than User Operations
+ * 
+ * Universal Router Support:
+ * - Uses 0x API v2 which automatically leverages Universal Router
+ * - Enables dynamic token swaps without requiring allowlist for each token
+ * - Works gaslessly with CDP server wallets v2
  */
 export async function POST(request: NextRequest) {
   try {
@@ -220,8 +225,10 @@ export async function POST(request: NextRequest) {
     console.log(`   Amount: ${formatEther(amountWei)} ETH`)
     console.log(`   Target Token: ${token_address}`)
 
-    // Step 8: Get swap quote from 0x API
-    console.log(`📊 Fetching swap quote from 0x API...`)
+    // Step 8: Get swap quote from 0x API v2 (with Universal Router support)
+    // 0x API v2 automatically uses Universal Router when appropriate
+    // This enables dynamic token swaps without requiring allowlist for each token
+    console.log(`📊 Fetching swap quote from 0x API v2 (Universal Router)...`)
     
     const zeroXApiKey = process.env.ZEROX_API_KEY
     if (!zeroXApiKey) {
@@ -239,10 +246,12 @@ export async function POST(request: NextRequest) {
       sellAmount: amountWei.toString(),
       taker: smartAccountAddress, // Smart Account is the taker
       slippagePercentage: "0.01", // 1% slippage
+      // Enable Universal Router for dynamic token support
+      // v2 API automatically uses Universal Router when beneficial
     })
 
     const quoteResponse = await fetch(
-      `https://api.0x.org/swap/v1/quote?${quoteParams.toString()}`,
+      `https://api.0x.org/swap/v2/quote?${quoteParams.toString()}`,
       {
         headers: {
           "0x-api-key": zeroXApiKey,

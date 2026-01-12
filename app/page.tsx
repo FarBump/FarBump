@@ -21,7 +21,7 @@ import { usePrivy, useWallets } from "@privy-io/react-auth"
 import { useSmartWallets } from "@privy-io/react-auth/smart-wallets"
 import { useAccount, usePublicClient, useWalletClient } from "wagmi"
 import { base } from "wagmi/chains"
-import { isAddress, createWalletClient, http, custom } from "viem"
+import { isAddress, createWalletClient, http, custom, formatEther } from "viem"
 import { useCreditBalance } from "@/hooks/use-credit-balance"
 import { useBotSession } from "@/hooks/use-bot-session"
 import { useDistributeCredits } from "@/hooks/use-distribute-credits"
@@ -727,37 +727,84 @@ export default function BumpBotDashboard() {
           return
         }
         
-        // STEP 1: Auto-distribute credits evenly to 5 bot wallets
-        setBumpLoadingState("Distributing credits to bot wallets...")
-        console.log("💰 Auto-distributing credits to 5 bot wallets...")
-        
-        if (!creditData?.balanceWei) {
-          throw new Error("Credit balance not found")
-        }
-        
         if (!existingBotWallets || existingBotWallets.length !== 5) {
           throw new Error("Bot wallets not found. Please generate bot wallets first.")
         }
         
-        try {
-          // Distribute credits using hook
-          await distributeCredits({
-            userAddress: privySmartWalletAddress as `0x${string}`,
-            botWallets: existingBotWallets,
-            creditBalanceWei: BigInt(creditData.balanceWei),
-          })
-          
-          console.log("✅ Credits distributed successfully!")
-        } catch (distributeError: any) {
-          console.error("❌ Distribution failed:", distributeError)
-          setBumpLoadingState(null)
-          throw new Error(`Failed to distribute credits: ${distributeError.message}`)
+        // STEP 1: Check bot wallet balances first
+        setBumpLoadingState("Checking bot wallet balances...")
+        console.log("💰 Checking bot wallet balances...")
+        
+        // Fetch ETH price for balance calculation
+        const priceResponse = await fetch("/api/eth-price")
+        const priceData = await priceResponse.json()
+        if (!priceData.success || !priceData.price) {
+          throw new Error("Failed to fetch ETH price")
+        }
+        const ethPriceUsd = priceData.price
+        
+        // Calculate required amount in ETH and wei
+        const requiredAmountEth = amountUsdValue / ethPriceUsd
+        const requiredAmountWei = BigInt(Math.floor(requiredAmountEth * 1e18))
+        const MIN_AMOUNT_USD = 0.01
+        const minAmountEth = MIN_AMOUNT_USD / ethPriceUsd
+        const minAmountWei = BigInt(Math.floor(minAmountEth * 1e18))
+        
+        // Check balances of all bot wallets
+        let totalBotBalanceWei = BigInt(0)
+        let sufficientWallets = 0
+        
+        for (const botWallet of existingBotWallets) {
+          try {
+            const balance = await publicClient.getBalance({
+              address: botWallet.smartWalletAddress as `0x${string}`,
+            })
+            totalBotBalanceWei += balance
+            
+            // Check if this wallet has sufficient balance for at least one swap
+            if (balance >= minAmountWei) {
+              sufficientWallets++
+            }
+          } catch (error) {
+            console.error(`⚠️ Error checking balance for bot wallet ${botWallet.smartWalletAddress}:`, error)
+          }
         }
         
-        // Wait a bit for balances to update
-        await new Promise(resolve => setTimeout(resolve, 2000))
+        const totalBotBalanceUsd = Number(formatEther(totalBotBalanceWei)) * ethPriceUsd
+        console.log(`💰 Total bot wallet balance: ${formatEther(totalBotBalanceWei)} ETH ($${totalBotBalanceUsd.toFixed(2)})`)
+        console.log(`💰 Wallets with sufficient balance: ${sufficientWallets}/5`)
         
-        // STEP 2: Start Bot Session
+        // STEP 2: Only distribute if bot wallets don't have sufficient balance
+        if (sufficientWallets === 0 || totalBotBalanceWei < requiredAmountWei) {
+          console.log("💰 Bot wallets need funding. Distributing credits...")
+          setBumpLoadingState("Distributing credits to bot wallets...")
+          
+          if (!creditData?.balanceWei) {
+            throw new Error("Credit balance not found")
+          }
+          
+          try {
+            // Distribute credits using hook
+            await distributeCredits({
+              userAddress: privySmartWalletAddress as `0x${string}`,
+              botWallets: existingBotWallets,
+              creditBalanceWei: BigInt(creditData.balanceWei),
+            })
+            
+            console.log("✅ Credits distributed successfully!")
+            
+            // Wait a bit for balances to update
+            await new Promise(resolve => setTimeout(resolve, 2000))
+          } catch (distributeError: any) {
+            console.error("❌ Distribution failed:", distributeError)
+            setBumpLoadingState(null)
+            throw new Error(`Failed to distribute credits: ${distributeError.message}`)
+          }
+        } else {
+          console.log("✅ Bot wallets have sufficient balance. Skipping distribution.")
+        }
+        
+        // STEP 3: Start Bot Session
         setBumpLoadingState("Starting Session...")
         console.log("🔄 Starting bot session...")
         
@@ -770,7 +817,7 @@ export default function BumpBotDashboard() {
         
         console.log("✅ Bot session started")
         
-        // STEP 3: Trigger Continuous Swap Loop (Server-Side)
+        // STEP 4: Trigger Continuous Swap Loop (Server-Side)
         // This will run perpetually until all wallets are depleted or session is stopped
         setBumpLoadingState("Starting Continuous Swap Loop...")
         console.log("🔄 Triggering continuous swap loop (server-side)...")
