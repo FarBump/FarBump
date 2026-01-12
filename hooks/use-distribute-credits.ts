@@ -80,35 +80,8 @@ export function useDistributeCredits() {
       }
 
       console.log("💰 Starting Gasless Credit Distribution...")
+      console.log(`   → Distributing ALL credit from main wallet to 5 bot wallets`)
       
-      setStatus("Fetching ETH price...")
-
-      const amountPerBot = creditBalanceWei / BigInt(5)
-      
-      const MIN_AMOUNT_USD = 0.01
-      let ethPriceUsd = 0
-      try {
-        const priceResponse = await fetch("/api/eth-price")
-        const priceData = await priceResponse.json()
-        if (priceData.success && priceData.price) {
-          ethPriceUsd = priceData.price
-        } else {
-          throw new Error("Failed to get ETH price")
-        }
-      } catch (priceError) {
-        console.error("Error fetching ETH price:", priceError)
-        throw new Error("Failed to fetch ETH price for validation")
-      }
-      
-      const minAmountPerBotEth = MIN_AMOUNT_USD / ethPriceUsd
-      const minAmountPerBotWei = parseEther(minAmountPerBotEth.toString())
-      
-      if (amountPerBot < minAmountPerBotWei) {
-        throw new Error(
-          `Insufficient credit. Minimum $${MIN_AMOUNT_USD} per bot required.`
-        )
-      }
-
       setStatus("Checking credit balance...")
       // CRITICAL: Use credit balance from database, not ETH balance from blockchain
       // Credit balance = Main wallet credit (from Convert $BUMP) + Bot wallet credits (from Distribute)
@@ -140,64 +113,57 @@ export function useDistributeCredits() {
       console.log(`   → Database credit balance: ${formatEther(dbCreditBalanceWei)} ETH`)
       console.log(`   → Main wallet credit: ${formatEther(BigInt(creditData.mainWalletCreditWei || "0"))} ETH`)
       console.log(`   → Bot wallet credits: ${formatEther(BigInt(creditData.botWalletCreditsWei || "0"))} ETH`)
-      console.log(`   → Requested distribution: ${formatEther(creditBalanceWei)} ETH`)
       
-      // Check if database credit balance is sufficient
-      if (dbCreditBalanceWei < creditBalanceWei) {
-        throw new Error(
-          `Insufficient credit balance. Available: ${formatEther(dbCreditBalanceWei)} ETH, Required: ${formatEther(creditBalanceWei)} ETH. Please convert more $BUMP to credit first.`
-        )
-      }
-      
-      // Additional check: Verify main wallet has enough credit to distribute
+      // CRITICAL: Use ALL main wallet credit for distribution
+      // Distribute ALL credit from main wallet (ETH hasil Convert $BUMP to credit) to bot wallets
       // We can only distribute from main wallet credit, not from bot wallet credits
       const mainWalletCreditWei = BigInt(creditData.mainWalletCreditWei || "0")
-      if (mainWalletCreditWei < creditBalanceWei) {
+      
+      if (mainWalletCreditWei <= BigInt(0)) {
         throw new Error(
-          `Insufficient main wallet credit. Main wallet credit: ${formatEther(mainWalletCreditWei)} ETH, Required: ${formatEther(creditBalanceWei)} ETH. Bot wallet credits cannot be redistributed. Please convert more $BUMP to credit first.`
+          `No credit available in main wallet. Please convert $BUMP to credit first.`
         )
       }
 
-      setStatus("Validating ETH balance...")
-      
       // Validate ETH balance in Privy Smart Wallet
-      // Check if balance is sufficient for total distribution + gas estimate
+      // Check if balance is sufficient for distribution (no gas cost calculation)
       const walletBalance = await publicClient.getBalance({
         address: smartWalletAddress,
       })
       
-      // Estimate gas for batch transaction (approximate: 21000 gas per transfer * 5 + overhead)
-      // Base gas: 21000 per transfer, batch overhead: ~50000
-      const estimatedGasPerTransfer = BigInt(21000)
-      const batchOverhead = BigInt(50000)
-      const estimatedTotalGas = estimatedGasPerTransfer * BigInt(5) + batchOverhead
-      
-      // Get current gas price
-      const gasPrice = await publicClient.getGasPrice()
-      const estimatedGasCost = estimatedTotalGas * gasPrice
-      
-      // Total required: distribution amount + gas cost
-      const totalRequired = creditBalanceWei + estimatedGasCost
-      
       console.log(`   → Wallet balance: ${formatEther(walletBalance)} ETH`)
-      console.log(`   → Distribution amount: ${formatEther(creditBalanceWei)} ETH`)
-      console.log(`   → Estimated gas cost: ${formatEther(estimatedGasCost)} ETH`)
-      console.log(`   → Total required: ${formatEther(totalRequired)} ETH`)
+      console.log(`   → Main wallet credit: ${formatEther(mainWalletCreditWei)} ETH`)
       
-      if (walletBalance < totalRequired) {
+      // Check if wallet has enough ETH for distribution
+      // Note: Gas will be sponsored by Paymaster, so we don't need to add gas cost
+      if (walletBalance < mainWalletCreditWei) {
         throw new Error(
-          `Insufficient ETH balance. Required: ${formatEther(totalRequired)} ETH (${formatEther(creditBalanceWei)} ETH for distribution + ${formatEther(estimatedGasCost)} ETH for gas), Available: ${formatEther(walletBalance)} ETH`
+          `Insufficient ETH balance. Required: ${formatEther(mainWalletCreditWei)} ETH, Available: ${formatEther(walletBalance)} ETH. Please ensure your wallet has enough ETH from Convert $BUMP to credit.`
         )
+      }
+
+      // Calculate amount per bot: Distribute ALL main wallet credit equally to 5 bot wallets
+      const amountPerBot = mainWalletCreditWei / BigInt(5)
+      const remainder = mainWalletCreditWei % BigInt(5)
+      
+      // If there's a remainder, add it to the first bot wallet
+      const amountForFirstBot = amountPerBot + remainder
+      
+      console.log(`   → Distributing ALL main wallet credit: ${formatEther(mainWalletCreditWei)} ETH`)
+      console.log(`   → Amount per bot: ${formatEther(amountPerBot)} ETH`)
+      if (remainder > BigInt(0)) {
+        console.log(`   → First bot gets extra: ${formatEther(remainder)} ETH (total: ${formatEther(amountForFirstBot)} ETH)`)
       }
 
       setStatus("Preparing multi-call transfers...")
       
       // Prepare calls array for batch transaction
       // Privy Smart Wallet supports batch transactions via calls array
-      const calls = botWallets.map((wallet) => ({
+      // First bot gets amountPerBot + remainder, others get amountPerBot
+      const calls = botWallets.map((wallet, index) => ({
         to: wallet.smartWalletAddress as Address,
         data: "0x" as Hex,
-        value: amountPerBot,
+        value: index === 0 ? amountForFirstBot : amountPerBot,
       }))
 
       console.log(`📤 Sending batch transaction to ${calls.length} bot wallets...`)
@@ -290,9 +256,9 @@ export function useDistributeCredits() {
         
         // Record distribution in database
         try {
-          const distributions = botWallets.map((wallet) => ({
+          const distributions = botWallets.map((wallet, index) => ({
             botWalletAddress: wallet.smartWalletAddress,
-            amountWei: amountPerBot.toString(),
+            amountWei: (index === 0 ? amountForFirstBot : amountPerBot).toString(),
           }))
 
           const recordResponse = await fetch("/api/bot/record-distribution", {
@@ -333,7 +299,7 @@ export function useDistributeCredits() {
           success: true,
           txHash,
           amountPerBot: formatEther(amountPerBot),
-          totalDistributed: formatEther(creditBalanceWei),
+          totalDistributed: formatEther(mainWalletCreditWei),
           gasless: true,
         }
       } else {
