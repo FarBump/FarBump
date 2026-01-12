@@ -86,7 +86,7 @@ export async function POST(request: NextRequest) {
             "Content-Type": "application/json",
           },
           body: JSON.stringify({
-            userAddress: normalizedUserAddress,
+            sessionId: session.id,
             walletIndex: currentRotationIndex,
           }),
         })

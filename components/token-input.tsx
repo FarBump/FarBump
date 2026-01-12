@@ -41,16 +41,84 @@ interface TokenMetadata {
 }
 
 interface TokenInputProps {
+  initialAddress?: string | null // Initial address to load (from localStorage)
   onAddressChange?: (address: string | null) => void
   onVerifiedChange?: (isVerified: boolean, metadata?: TokenMetadata) => void
 }
 
-export function TokenInput({ onAddressChange, onVerifiedChange }: TokenInputProps) {
-  const [address, setAddress] = useState("")
+export function TokenInput({ initialAddress, onAddressChange, onVerifiedChange }: TokenInputProps) {
+  // Use initialAddress if provided, otherwise start empty
+  const [address, setAddress] = useState(initialAddress || "")
   const [status, setStatus] = useState<"idle" | "loading" | "verified" | "error">("idle")
   const [tokenMetadata, setTokenMetadata] = useState<TokenMetadata | null>(null)
   const [errorMessage, setErrorMessage] = useState<string>("")
   const publicClient = usePublicClient({ chainId: base.id })
+  
+  // Update address when initialAddress changes (from parent)
+  useEffect(() => {
+    if (initialAddress !== undefined) {
+      setAddress(initialAddress || "")
+      if (!initialAddress) {
+        setStatus("idle")
+        setTokenMetadata(null)
+        setErrorMessage("")
+      }
+    }
+  }, [initialAddress])
+  
+  // Auto-verify persisted address on mount if initialAddress is provided
+  useEffect(() => {
+    if (initialAddress && isAddress(initialAddress) && publicClient && status === "idle") {
+      // Auto-verify if address is already set (from localStorage)
+      // Use a small delay to ensure publicClient is ready
+      const timer = setTimeout(async () => {
+        if (!publicClient) return
+        
+        const tokenAddress = initialAddress as Address
+        setStatus("loading")
+        setErrorMessage("")
+        setTokenMetadata(null)
+
+        try {
+          const [name, symbol, decimals] = await Promise.all([
+            publicClient.readContract({
+              address: tokenAddress,
+              abi: ERC20_METADATA_ABI,
+              functionName: "name",
+              chainId: base.id,
+            }) as Promise<string>,
+            publicClient.readContract({
+              address: tokenAddress,
+              abi: ERC20_METADATA_ABI,
+              functionName: "symbol",
+              chainId: base.id,
+            }) as Promise<string>,
+            publicClient.readContract({
+              address: tokenAddress,
+              abi: ERC20_METADATA_ABI,
+              functionName: "decimals",
+              chainId: base.id,
+            }) as Promise<number>,
+          ])
+
+          const metadata: TokenMetadata = {
+            name: name || "Unknown Token",
+            symbol: symbol || "UNKNOWN",
+            decimals: decimals || 18,
+          }
+
+          setTokenMetadata(metadata)
+          setStatus("verified")
+        } catch (error: any) {
+          console.error("Error auto-verifying token:", error)
+          setStatus("error")
+          setErrorMessage("Failed to verify token")
+          setTokenMetadata(null)
+        }
+      }, 500)
+      return () => clearTimeout(timer)
+    }
+  }, []) // Only run on mount
 
   // Reset status when address is cleared
   useEffect(() => {

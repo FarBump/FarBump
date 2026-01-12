@@ -65,7 +65,7 @@ export async function POST(request: NextRequest) {
       .from("bot_sessions")
       .select("*")
       .eq("id", sessionId)
-      .eq("status", "active")
+      .eq("status", "running")
       .single()
 
     if (sessionError || !session) {
@@ -159,10 +159,13 @@ export async function POST(request: NextRequest) {
       // Log insufficient balance
       await supabase.from("bot_logs").insert({
         user_address: user_address.toLowerCase(),
+        wallet_address: smartAccountAddress,
+        token_address: token_address,
+        amount_wei: "0",
         action: "swap_skipped",
         message: `[System] Saldo Bot #${walletIndex + 1} tidak cukup ($${balanceInUsd.toFixed(2)} < $${MIN_AMOUNT_USD}). Bumping dihentikan.`,
         status: "warning",
-        timestamp: new Date().toISOString(),
+        created_at: new Date().toISOString(),
       })
 
       // Check if all wallets are depleted
@@ -189,10 +192,13 @@ export async function POST(request: NextRequest) {
 
         await supabase.from("bot_logs").insert({
           user_address: user_address.toLowerCase(),
+          wallet_address: smartAccountAddress,
+          token_address: token_address,
+          amount_wei: "0",
           action: "session_stopped",
           message: `[System] All bot balances below $${MIN_AMOUNT_USD}. Bumping session completed.`,
           status: "info",
-          timestamp: new Date().toISOString(),
+          created_at: new Date().toISOString(),
         })
 
         return NextResponse.json({
@@ -279,10 +285,13 @@ export async function POST(request: NextRequest) {
       .from("bot_logs")
       .insert({
         user_address: user_address.toLowerCase(),
+        wallet_address: smartAccountAddress,
+        token_address: token_address,
+        amount_wei: amountWei.toString(),
         action: "swap_executing",
         message: `[Bot #${walletIndex + 1}] Melakukan swap senilai $${amountUsdValue.toFixed(2)} ke Target Token...`,
         status: "pending",
-        timestamp: new Date().toISOString(),
+        created_at: new Date().toISOString(),
       })
       .select()
       .single()
@@ -292,39 +301,48 @@ export async function POST(request: NextRequest) {
     }
 
     // Step 10: Execute swap using CDP Smart Account
-    // For CDP Smart Accounts, we need to use the account.sendTransaction method
-    // Reference: https://docs.cdp.coinbase.com/server-wallets/v2/using-the-wallet-api/managing-accounts
+    // Use CDP Smart Account directly to execute swap transaction
+    // Reference: https://docs.cdp.coinbase.com/server-wallets/v2/evm-features/sending-transactions
     console.log(`🚀 Executing swap with CDP Smart Account (gasless)...`)
     
     try {
-      // Get the owner account to sign the transaction
-      // CDP Smart Accounts use the owner to sign on behalf of the Smart Account
-      console.log(`   → Getting owner account for signing...`)
+      // Get the Smart Account directly (not owner account)
+      // CDP Smart Accounts can execute transactions directly with gas sponsorship
+      console.log(`   → Getting Smart Account...`)
       
-      const ownerAccount = await cdp.evm.getAccount({ address: ownerAddress })
+      const smartAccount = await cdp.evm.getSmartAccount({ address: smartAccountAddress })
       
-      if (!ownerAccount) {
-        throw new Error("Failed to get owner account from CDP")
+      if (!smartAccount) {
+        throw new Error("Failed to get Smart Account from CDP")
       }
       
-      console.log(`   ✅ Owner account retrieved`)
-      console.log(`   → Preparing transaction...`)
+      console.log(`   ✅ Smart Account retrieved`)
+      console.log(`   → Preparing swap transaction...`)
+      console.log(`   → To: ${quote.to}`)
+      console.log(`   → Value: ${formatEther(BigInt(quote.value))} ETH`)
+      console.log(`   → Data length: ${quote.data.length} bytes`)
       
-      // Send transaction from Smart Account using owner signature
-      // CDP will handle the Smart Account execution automatically
-      const tx = await ownerAccount.sendTransaction({
+      // Execute swap transaction from Smart Account
+      // CDP will handle gas sponsorship automatically
+      const userOpHash = await smartAccount.sendTransaction({
         to: quote.to as Address,
         data: quote.data as Hex,
         value: BigInt(quote.value),
       })
       
-      console.log(`   ✅ Transaction submitted`)
+      console.log(`   ✅ User Operation submitted: ${userOpHash}`)
       console.log(`   → Waiting for confirmation...`)
       
-      // Wait for transaction to be mined
-      await tx.wait()
+      // Wait for user operation to be confirmed
+      const userOpReceipt = await smartAccount.waitForUserOperation({
+        userOpHash,
+      })
       
-      const txHash = tx.hash
+      if (!userOpReceipt || !userOpReceipt.transactionHash) {
+        throw new Error("User operation completed but no transaction hash received")
+      }
+      
+      const txHash = userOpReceipt.transactionHash as `0x${string}`
       
       console.log(`✅ Swap executed successfully!`)
       console.log(`   Transaction: ${txHash}`)
@@ -348,10 +366,13 @@ export async function POST(request: NextRequest) {
 
       await supabase.from("bot_logs").insert({
         user_address: user_address.toLowerCase(),
+        wallet_address: smartAccountAddress,
+        token_address: token_address,
+        amount_wei: newBalance.toString(),
         action: "balance_check",
         message: `[System] Remaining balance in Bot #${walletIndex + 1}: ${formatEther(newBalance)} ETH ($${newBalanceUsd.toFixed(2)})`,
         status: "info",
-        timestamp: new Date().toISOString(),
+        created_at: new Date().toISOString(),
       })
 
       // Step 11: Update wallet rotation index

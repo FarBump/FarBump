@@ -81,9 +81,38 @@ export default function BumpBotDashboard() {
   const [isCreatingSmartWallet, setIsCreatingSmartWallet] = useState(false)
   
   // State for target token address (from TokenInput)
-  const [targetTokenAddress, setTargetTokenAddress] = useState<string | null>(null)
+  // CRITICAL: Persist targetTokenAddress in localStorage so it doesn't reset when switching tabs
+  // Only clear when user stops bumping or explicitly clears it
+  const [targetTokenAddress, setTargetTokenAddress] = useState<string | null>(() => {
+    if (typeof window !== "undefined") {
+      const stored = localStorage.getItem(`targetTokenAddress_${privySmartWalletAddress || 'default'}`)
+      return stored || null
+    }
+    return null
+  })
   const [isTokenVerified, setIsTokenVerified] = useState(false)
   const [tokenMetadata, setTokenMetadata] = useState<{ name: string; symbol: string; decimals: number } | null>(null)
+  
+  // Persist targetTokenAddress to localStorage whenever it changes
+  useEffect(() => {
+    if (typeof window !== "undefined" && privySmartWalletAddress) {
+      if (targetTokenAddress) {
+        localStorage.setItem(`targetTokenAddress_${privySmartWalletAddress}`, targetTokenAddress)
+      } else {
+        // Only clear if user explicitly stops bumping (handled in stopSession)
+        // Don't clear on tab switch or other actions
+      }
+    }
+  }, [targetTokenAddress, privySmartWalletAddress])
+  
+  // Load persisted token metadata when component mounts
+  useEffect(() => {
+    if (typeof window !== "undefined" && privySmartWalletAddress && targetTokenAddress) {
+      // Token address is persisted, but we need to re-verify it
+      // This will be handled by TokenInput component when it mounts
+      setIsTokenVerified(true) // Assume verified if persisted
+    }
+  }, [privySmartWalletAddress])
   
   // Farcaster Embed Wallet address (hanya untuk informasi, TIDAK digunakan untuk verifikasi atau transaksi)
   // Ini adalah wallet yang dibuat oleh Farcaster untuk user (custody address)
@@ -859,6 +888,16 @@ export default function BumpBotDashboard() {
         await stopSession()
         // Don't clear botWallets on stop - they should persist
         // setBotWallets(null) // Removed - wallets should persist after stopping
+        
+        // CRITICAL: Only clear targetTokenAddress when user explicitly stops bumping
+        // This ensures it persists when switching tabs or doing other actions
+        if (typeof window !== "undefined" && privySmartWalletAddress) {
+          localStorage.removeItem(`targetTokenAddress_${privySmartWalletAddress}`)
+        }
+        setTargetTokenAddress(null)
+        setIsTokenVerified(false)
+        setTokenMetadata(null)
+        
         setBumpLoadingState(null)
         // Don't set isActive here - let useEffect sync it from session status
         toast.success("Bot session stopped")
@@ -1025,6 +1064,7 @@ export default function BumpBotDashboard() {
               isSmartAccountActive={!!privySmartWalletAddress}
             />
             <TokenInput 
+              initialAddress={targetTokenAddress}
               onAddressChange={(address) => {
                 setTargetTokenAddress(address)
                 // Reset verification if address changes
