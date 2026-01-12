@@ -561,8 +561,9 @@ export async function POST(request: NextRequest) {
       let userOpReceipt: any
       
       // CDP SDK v2 requires "network" property in transaction requests
-      // Network should be "base-mainnet" for Base mainnet
-      const network = "base-mainnet"
+      // Network values: "base", "base-sepolia", "ethereum", "ethereum-sepolia", "avalanche", "polygon", "optimism", "arbitrum"
+      // For Base mainnet, use "base" (not "base-mainnet")
+      const network = "base"
       
       // Try different method patterns based on CDP SDK v2 structure
       // Method 1: Try sendTransaction with calls array (most common pattern)
