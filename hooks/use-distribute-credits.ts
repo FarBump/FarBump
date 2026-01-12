@@ -1,7 +1,7 @@
 "use client"
 
 import { useState } from "react"
-import { useWallets } from "@privy-io/react-auth"
+import { useSmartWallets } from "@privy-io/react-auth/smart-wallets"
 import { usePublicClient } from "wagmi"
 import { formatEther, parseEther, createWalletClient, custom, type Address, type Hex } from "viem"
 import { base } from "viem/chains"
@@ -20,14 +20,13 @@ interface DistributeCreditsParams {
 }
 
 export function useDistributeCredits() {
-  const { wallets } = useWallets()
+  const { client: smartWalletClient } = useSmartWallets()
   const publicClient = usePublicClient()
   
-  // Get Privy Smart Wallet (Coinbase Smart Wallet)
-  // Privy Smart Wallet is the first wallet in the wallets array
-  const privySmartWallet = wallets.find(
-    (wallet) => wallet.walletClientType === "privy" && wallet.chainId === base.id.toString()
-  ) || wallets[0]
+  // Get Privy Smart Wallet address from smartWalletClient
+  // CRITICAL: smartWalletClient.account.address is the Smart Wallet contract address
+  // This is different from Embedded Wallet address (which is EOA)
+  const privySmartWalletAddress = smartWalletClient?.account?.address as Address | undefined
   
   const [hash, setHash] = useState<`0x${string}` | null>(null)
   const [isPending, setIsPending] = useState(false)
@@ -49,25 +48,28 @@ export function useDistributeCredits() {
 
     try {
       // Validate Privy Smart Wallet
-      if (!privySmartWallet) {
-        throw new Error("Privy Smart Wallet not found. Please login again.")
+      if (!smartWalletClient) {
+        throw new Error("Privy Smart Wallet client not found. Please login again.")
       }
 
-      // Get Ethereum provider from Privy wallet
-      const ethereumProvider = await privySmartWallet.getEthereumProvider()
-      if (!ethereumProvider) {
-        throw new Error("Failed to get Ethereum provider from Privy wallet")
+      if (!privySmartWalletAddress) {
+        throw new Error("Privy Smart Wallet address not found. Please login again.")
       }
 
-      // Create viem walletClient with Privy provider
-      const walletClient = createWalletClient({
-        chain: base, // Base Mainnet (chain ID: 8453)
-        transport: custom(ethereumProvider),
-        account: privySmartWallet.address as Address,
-      })
+      // CRITICAL: Use userAddress parameter as the source of truth for Smart Wallet address
+      // This ensures we're using the correct Smart Wallet address passed from the parent component
+      // userAddress should be the Smart Wallet contract address (not EOA)
+      const smartWalletAddress = userAddress.toLowerCase() === privySmartWalletAddress.toLowerCase()
+        ? privySmartWalletAddress
+        : (userAddress as Address)
 
-      console.log(`✅ Privy Smart Wallet connected: ${privySmartWallet.address}`)
+      console.log(`✅ Privy Smart Wallet connected: ${smartWalletAddress}`)
       console.log(`   Chain: Base Mainnet (${base.id})`)
+      console.log(`   Using Smart Wallet address from parameter: ${userAddress}`)
+
+      // Use Privy Smart Wallet client directly for transactions
+      // Privy Smart Wallet client already has the correct provider and account configured
+      // We'll use smartWalletClient.sendTransaction which supports batch calls
 
       if (!botWallets || botWallets.length !== 5) {
         throw new Error(`Expected 5 bot wallets, but found ${botWallets?.length || 0}`)
@@ -161,7 +163,7 @@ export function useDistributeCredits() {
       // Validate ETH balance in Privy Smart Wallet
       // Check if balance is sufficient for total distribution + gas estimate
       const walletBalance = await publicClient.getBalance({
-        address: privySmartWallet.address as Address,
+        address: smartWalletAddress,
       })
       
       // Estimate gas for batch transaction (approximate: 21000 gas per transfer * 5 + overhead)
@@ -205,67 +207,27 @@ export function useDistributeCredits() {
 
       setStatus("Distributing credits (gasless via Privy Smart Wallet)...")
 
-      // Send batch transaction using Privy Smart Wallet via viem walletClient
-      // Privy Smart Wallet supports batch transactions via calls array
-      // However, viem walletClient doesn't support batch calls directly
-      // So we'll use Privy's Smart Wallet client if available, otherwise send individual transactions
+      // Send batch transaction using Privy Smart Wallet client
+      // Privy Smart Wallet client supports batch transactions via calls array
+      // This is the recommended way to send batch transactions with Privy Smart Wallet
       let txHash: `0x${string}`
       
       try {
-        // Check if Privy Smart Wallet has sendBatch or supports calls array
-        // Privy Smart Wallet from useSmartWallets() supports batch calls
-        // But we're using useWallets() here, so we need to use viem walletClient
+        // Use Privy Smart Wallet client's sendTransaction with calls array
+        // This supports batch transactions and Paymaster sponsorship if configured
+        console.log(`📤 Sending batch transaction via Privy Smart Wallet client...`)
+        console.log(`   Using Smart Wallet address: ${smartWalletAddress}`)
         
-        // Option 1: Try to use Privy Smart Wallet's native batch support if available
-        // Privy wallet may have a method to send batch transactions
-        if (privySmartWallet && 'sendBatch' in privySmartWallet && typeof privySmartWallet.sendBatch === 'function') {
-          // Use Privy's sendBatch if available
-          console.log(`📤 Using Privy's sendBatch for batch transaction...`)
-          txHash = await privySmartWallet.sendBatch(calls) as `0x${string}`
-          console.log(`✅ Batch transaction sent: ${txHash}`)
-        } else {
-          // Option 2: Send individual transactions sequentially via viem walletClient
-          // This ensures compatibility with Privy Smart Wallet
-          console.log(`📤 Sending ${calls.length} individual transactions via viem walletClient...`)
-          const txHashes: `0x${string}`[] = []
-          
-          for (let i = 0; i < calls.length; i++) {
-            setStatus(`Distributing to bot wallet ${i + 1}/${calls.length}...`)
-            
-            if (i > 0) {
-              // Wait 1 second between transactions to avoid nonce conflicts
-              await new Promise(resolve => setTimeout(resolve, 1000))
-            }
-            
-            try {
-              const individualTxHash = await walletClient.sendTransaction({
-                to: calls[i].to,
-                value: calls[i].value,
-                data: calls[i].data,
-                account: privySmartWallet.address as Address,
-              })
-              
-              txHashes.push(individualTxHash)
-              console.log(`   ✅ Transaction ${i + 1}/${calls.length} sent: ${individualTxHash}`)
-            } catch (individualError: any) {
-              console.error(`   ❌ Transaction ${i + 1}/${calls.length} failed:`, individualError.message)
-              // Continue with next transaction, but log the error
-              // We'll use the last successful transaction hash
-            }
+        txHash = await smartWalletClient.sendTransaction(
+          {
+            calls: calls as any,
+          },
+          {
+            isSponsored: true, // Enable Paymaster sponsorship if configured
           }
-          
-          if (txHashes.length === 0) {
-            throw new Error("All transactions failed. Please check your wallet balance and try again.")
-          }
-          
-          // Use the last transaction hash as the main hash
-          txHash = txHashes[txHashes.length - 1]
-          console.log(`✅ Sent ${txHashes.length}/${calls.length} transactions successfully`)
-          
-          if (txHashes.length < calls.length) {
-            console.warn(`⚠️ ${calls.length - txHashes.length} transaction(s) failed. Some bot wallets may not have received credit.`)
-          }
-        }
+        ) as `0x${string}`
+        
+        console.log(`✅ Batch transaction sent: ${txHash}`)
       } catch (txError: any) {
         // Handle UserOperationExecutionError and other errors
         const errorName = txError.name || txError.constructor?.name || ""
