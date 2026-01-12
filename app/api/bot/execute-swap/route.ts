@@ -550,7 +550,7 @@ export async function POST(request: NextRequest) {
       console.log(`   → Attempting to execute transaction via Smart Account...`)
       console.log(`   → Available Smart Account methods:`, Object.keys(smartAccount || {}).slice(0, 10).join(", "))
       
-      // Prepare transaction call
+      // Prepare transaction call for Smart Account (uses calls array format)
       const transactionCall = {
         to: transaction.to as Address,
         data: transaction.data as Hex,
@@ -565,73 +565,64 @@ export async function POST(request: NextRequest) {
       // For Base mainnet, use "base" (not "base-mainnet")
       const network = "base"
       
-      // Try different method patterns based on CDP SDK v2 structure
-      // Method 1: Try sendTransaction with calls array (most common pattern)
+      // CDP SDK v2 Smart Account transaction execution
+      // Smart Account uses calls array format, not direct transaction object
+      // Owner Account cannot send transactions directly - must use Smart Account
+      // Reference: https://docs.cdp.coinbase.com/server-wallets/v2/evm-features/sending-transactions
+      
+      // Method 1: Try Smart Account sendTransaction with calls array (correct format)
       if (typeof (smartAccount as any).sendTransaction === 'function') {
-        console.log(`   → Method: sendTransaction with calls array`)
+        console.log(`   → Method: Smart Account sendTransaction with calls array`)
         try {
           userOpHash = await (smartAccount as any).sendTransaction({
             network: network, // Required by CDP SDK v2
+            calls: [transactionCall], // Smart Account uses calls array format
+            isSponsored: true, // Enable gas sponsorship
+          })
+        } catch (err: any) {
+          console.error(`   ❌ Smart Account sendTransaction (calls array) failed:`, err.message)
+          throw err
+        }
+      }
+      // Method 2: Try Smart Account send method
+      else if (typeof (smartAccount as any).send === 'function') {
+        console.log(`   → Method: Smart Account send`)
+        try {
+          userOpHash = await (smartAccount as any).send({
+            network: network,
+            calls: [transactionCall], // Use calls array format
+            isSponsored: true,
+          })
+        } catch (err: any) {
+          console.error(`   ❌ Smart Account send failed:`, err.message)
+          throw err
+        }
+      }
+      // Method 3: Try Smart Account execute method
+      else if (typeof (smartAccount as any).execute === 'function') {
+        console.log(`   → Method: Smart Account execute`)
+        try {
+          userOpHash = await (smartAccount as any).execute({
+            network: network,
+            calls: [transactionCall], // Use calls array format
+            isSponsored: true,
+          })
+        } catch (err: any) {
+          console.error(`   ❌ Smart Account execute failed:`, err.message)
+          throw err
+        }
+      }
+      // Method 4: Try Smart Account sendBatch (for batch transactions)
+      else if (typeof (smartAccount as any).sendBatch === 'function') {
+        console.log(`   → Method: Smart Account sendBatch`)
+        try {
+          userOpHash = await (smartAccount as any).sendBatch({
+            network: network,
             calls: [transactionCall],
             isSponsored: true,
           })
         } catch (err: any) {
-          console.error(`   ❌ sendTransaction (calls array) failed:`, err.message)
-          // Try direct transaction object as fallback
-          console.log(`   → Trying sendTransaction with direct transaction object...`)
-          try {
-            userOpHash = await (smartAccount as any).sendTransaction({
-              network: network, // Required by CDP SDK v2
-              ...transactionCall,
-            })
-          } catch (err2: any) {
-            console.error(`   ❌ sendTransaction (direct) also failed:`, err2.message)
-            throw err // Throw original error
-          }
-        }
-      }
-      // Method 2: Try send method
-      else if (typeof (smartAccount as any).send === 'function') {
-        console.log(`   → Method: send`)
-        try {
-          userOpHash = await (smartAccount as any).send({
-            network: network, // Required by CDP SDK v2
-            ...transactionCall,
-          })
-        } catch (err: any) {
-          console.error(`   ❌ send failed:`, err.message)
-          throw err
-        }
-      }
-      // Method 3: Try execute method
-      else if (typeof (smartAccount as any).execute === 'function') {
-        console.log(`   → Method: execute`)
-        try {
-          userOpHash = await (smartAccount as any).execute({
-            network: network, // Required by CDP SDK v2
-            ...transactionCall,
-          })
-        } catch (err: any) {
-          console.error(`   ❌ execute failed:`, err.message)
-          throw err
-        }
-      }
-      // Method 4: Try using Owner Account to send transaction directly to target
-      // Owner Account may have sendTransaction method that can execute via Smart Account
-      else if (typeof (ownerAccount as any).sendTransaction === 'function') {
-        console.log(`   → Method: Owner Account sendTransaction (executes via Smart Account)`)
-        try {
-          // Owner Account sends transaction directly to target contract
-          // CDP SDK should handle Smart Account execution automatically
-          // CRITICAL: CDP SDK v2 requires "network" property
-          userOpHash = await (ownerAccount as any).sendTransaction({
-            network: network, // Required by CDP SDK v2
-            to: transaction.to as Address, // Send directly to target contract
-            data: transaction.data as Hex,
-            value: BigInt(transactionValue),
-          })
-        } catch (err: any) {
-          console.error(`   ❌ Owner Account sendTransaction failed:`, err.message)
+          console.error(`   ❌ Smart Account sendBatch failed:`, err.message)
           throw err
         }
       }
