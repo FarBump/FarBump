@@ -566,73 +566,38 @@ export async function POST(request: NextRequest) {
       const network = "base"
       
       // CDP SDK v2 Smart Account transaction execution
-      // Smart Account uses calls array format, not direct transaction object
-      // Owner Account cannot send transactions directly - must use Smart Account
+      // Smart Account uses sendUserOperation method (not sendTransaction)
       // Reference: https://docs.cdp.coinbase.com/server-wallets/v2/evm-features/sending-transactions
+      // 
+      // Available Smart Account methods from error log:
+      // - sendUserOperation: Main method to send transactions
+      // - waitForUserOperation: Wait for transaction confirmation
+      // - getUserOperation: Get transaction status
       
-      // Method 1: Try Smart Account sendTransaction with calls array (correct format)
-      if (typeof (smartAccount as any).sendTransaction === 'function') {
-        console.log(`   → Method: Smart Account sendTransaction with calls array`)
+      // Method 1: Use Smart Account sendUserOperation (CORRECT METHOD for CDP SDK v2)
+      if (typeof (smartAccount as any).sendUserOperation === 'function') {
+        console.log(`   → Method: Smart Account sendUserOperation (CDP SDK v2)`)
         try {
-          userOpHash = await (smartAccount as any).sendTransaction({
+          userOpHash = await (smartAccount as any).sendUserOperation({
             network: network, // Required by CDP SDK v2
             calls: [transactionCall], // Smart Account uses calls array format
             isSponsored: true, // Enable gas sponsorship
           })
+          console.log(`   ✅ User Operation submitted via sendUserOperation`)
         } catch (err: any) {
-          console.error(`   ❌ Smart Account sendTransaction (calls array) failed:`, err.message)
+          console.error(`   ❌ Smart Account sendUserOperation failed:`, err.message)
+          if (err.response) {
+            console.error(`   → API Response:`, JSON.stringify(err.response.data || err.response, null, 2))
+          }
           throw err
         }
       }
-      // Method 2: Try Smart Account send method
-      else if (typeof (smartAccount as any).send === 'function') {
-        console.log(`   → Method: Smart Account send`)
-        try {
-          userOpHash = await (smartAccount as any).send({
-            network: network,
-            calls: [transactionCall], // Use calls array format
-            isSponsored: true,
-          })
-        } catch (err: any) {
-          console.error(`   ❌ Smart Account send failed:`, err.message)
-          throw err
-        }
-      }
-      // Method 3: Try Smart Account execute method
-      else if (typeof (smartAccount as any).execute === 'function') {
-        console.log(`   → Method: Smart Account execute`)
-        try {
-          userOpHash = await (smartAccount as any).execute({
-            network: network,
-            calls: [transactionCall], // Use calls array format
-            isSponsored: true,
-          })
-        } catch (err: any) {
-          console.error(`   ❌ Smart Account execute failed:`, err.message)
-          throw err
-        }
-      }
-      // Method 4: Try Smart Account sendBatch (for batch transactions)
-      else if (typeof (smartAccount as any).sendBatch === 'function') {
-        console.log(`   → Method: Smart Account sendBatch`)
-        try {
-          userOpHash = await (smartAccount as any).sendBatch({
-            network: network,
-            calls: [transactionCall],
-            isSponsored: true,
-          })
-        } catch (err: any) {
-          console.error(`   ❌ Smart Account sendBatch failed:`, err.message)
-          throw err
-        }
-      }
-      // If none work, throw error with available methods
+      // Fallback: If sendUserOperation is not available (should not happen)
       else {
         const availableMethods = Object.keys(smartAccount || {}).filter(key => typeof (smartAccount as any)[key] === 'function')
-        console.error(`   ❌ No suitable method found`)
+        console.error(`   ❌ sendUserOperation method not found on Smart Account`)
         console.error(`   → Smart Account available methods:`, availableMethods.join(", "))
-        console.error(`   → Owner Account available methods:`, Object.keys(ownerAccount || {}).filter(key => typeof (ownerAccount as any)[key] === 'function').join(", "))
-        throw new Error(`Smart Account does not have sendTransaction, send, or execute method. Available Smart Account methods: ${availableMethods.join(", ")}`)
+        throw new Error(`Smart Account does not have sendUserOperation method. Available methods: ${availableMethods.join(", ")}`)
       }
       
       // Extract userOpHash (may be string or object)
@@ -643,29 +608,72 @@ export async function POST(request: NextRequest) {
       console.log(`   ✅ User Operation submitted: ${userOpHashStr}`)
       console.log(`   → Waiting for confirmation...`)
       
-      // Wait for user operation to be confirmed
-      // Try different wait methods based on what's available
+      // Wait for user operation to be confirmed using waitForUserOperation (CDP SDK v2)
       if (typeof (smartAccount as any).waitForUserOperation === 'function') {
-        userOpReceipt = await (smartAccount as any).waitForUserOperation({
-          userOpHash: userOpHashStr,
-        }) as any
-      } else if (typeof (smartAccount as any).wait === 'function') {
-        userOpReceipt = await (smartAccount as any).wait({
-          hash: userOpHashStr,
-        }) as any
-      } else if (typeof (ownerAccount as any).waitForTransaction === 'function') {
-        userOpReceipt = await (ownerAccount as any).waitForTransaction({
-          hash: userOpHashStr,
-        }) as any
+        console.log(`   → Using Smart Account waitForUserOperation`)
+        try {
+          userOpReceipt = await (smartAccount as any).waitForUserOperation({
+            userOpHash: userOpHashStr,
+            network: network, // Required by CDP SDK v2
+          }) as any
+          console.log(`   ✅ User Operation confirmed`)
+        } catch (waitErr: any) {
+          console.error(`   ❌ waitForUserOperation failed:`, waitErr.message)
+          // Try to get user operation status as fallback
+          if (typeof (smartAccount as any).getUserOperation === 'function') {
+            console.log(`   → Trying getUserOperation as fallback...`)
+            try {
+              const userOpStatus = await (smartAccount as any).getUserOperation({
+                userOpHash: userOpHashStr,
+                network: network,
+              })
+              userOpReceipt = userOpStatus
+              console.log(`   ✅ Retrieved User Operation status`)
+            } catch (getErr: any) {
+              console.error(`   ❌ getUserOperation also failed:`, getErr.message)
+              // If both fail, try using public client to wait for transaction
+              console.log(`   → Trying public client waitForTransactionReceipt as last resort...`)
+              try {
+                const receipt = await publicClient.waitForTransactionReceipt({
+                  hash: userOpHashStr as `0x${string}`,
+                  confirmations: 1,
+                  timeout: 60000, // 60 second timeout
+                })
+                userOpReceipt = { transactionHash: receipt.transactionHash }
+                console.log(`   ✅ Transaction confirmed via public client`)
+              } catch (publicErr: any) {
+                console.error(`   ❌ Public client wait also failed:`, publicErr.message)
+                throw waitErr // Throw original waitForUserOperation error
+              }
+            }
+          } else {
+            // If getUserOperation is not available, try public client
+            console.log(`   → getUserOperation not available, trying public client...`)
+            try {
+              const receipt = await publicClient.waitForTransactionReceipt({
+                hash: userOpHashStr as `0x${string}`,
+                confirmations: 1,
+                timeout: 60000,
+              })
+              userOpReceipt = { transactionHash: receipt.transactionHash }
+              console.log(`   ✅ Transaction confirmed via public client`)
+            } catch (publicErr: any) {
+              console.error(`   ❌ Public client wait failed:`, publicErr.message)
+              throw waitErr // Throw original waitForUserOperation error
+            }
+          }
+        }
       } else {
-        // If no wait method, use public client to wait for transaction
-        console.log(`   ⚠️ No wait method found, using public client to wait for transaction`)
+        // If waitForUserOperation is not available, use public client
+        console.log(`   ⚠️ waitForUserOperation not found, using public client to wait for transaction`)
         try {
           const receipt = await publicClient.waitForTransactionReceipt({
             hash: userOpHashStr as `0x${string}`,
             confirmations: 1,
+            timeout: 60000,
           })
           userOpReceipt = { transactionHash: receipt.transactionHash }
+          console.log(`   ✅ Transaction confirmed via public client`)
         } catch (waitErr: any) {
           console.warn(`   ⚠️ Could not wait for transaction:`, waitErr.message)
           // Use userOpHash as transaction hash if we can't wait
