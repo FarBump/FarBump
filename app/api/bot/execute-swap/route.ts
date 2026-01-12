@@ -165,7 +165,7 @@ export async function POST(request: NextRequest) {
         action: "swap_skipped",
         message: `[System] Saldo Bot #${walletIndex + 1} tidak cukup ($${balanceInUsd.toFixed(2)} < $${MIN_AMOUNT_USD}). Bumping dihentikan.`,
         status: "warning",
-        timestamp: new Date().toISOString(),
+        created_at: new Date().toISOString(),
       })
 
       // Check if all wallets are depleted
@@ -198,7 +198,7 @@ export async function POST(request: NextRequest) {
           action: "session_stopped",
           message: `[System] All bot balances below $${MIN_AMOUNT_USD}. Bumping session completed.`,
           status: "info",
-          timestamp: new Date().toISOString(),
+          created_at: new Date().toISOString(),
         })
 
         return NextResponse.json({
@@ -223,8 +223,8 @@ export async function POST(request: NextRequest) {
 
     // Step 7: Calculate swap amount in ETH
     const amountUsdValue = parseFloat(amount_usd)
-    const amountEth = amountUsdValue / ethPriceUsd
-    const amountWei = BigInt(Math.floor(amountEth * 1e18))
+    const amountEthValue = amountUsdValue / ethPriceUsd
+    const amountWei = BigInt(Math.floor(amountEthValue * 1e18))
 
     console.log(`💱 Swap Parameters:`)
     console.log(`   Amount: $${amountUsdValue} USD`)
@@ -277,9 +277,9 @@ export async function POST(request: NextRequest) {
     
     // If amount is very small (< 0.001 ETH), try using buyAmount instead
     // This can help with tokens that have very high prices
-    const amountEth = Number(formatEther(amountWei))
-    if (amountEth < 0.001) {
-      console.log(`⚠️ Very small swap amount (${amountEth} ETH), trying alternative approach...`)
+    const amountEthFormatted = Number(formatEther(amountWei))
+    if (amountEthFormatted < 0.001) {
+      console.log(`⚠️ Very small swap amount (${amountEthFormatted} ETH), trying alternative approach...`)
       // For very small amounts, we might need to specify buyAmount instead
       // But first, let's try the standard approach
     }
@@ -383,7 +383,7 @@ export async function POST(request: NextRequest) {
         message: `[Bot #${walletIndex + 1}] Swap quote failed: ${errorMessage}`,
         status: "error",
         error_details: errorData,
-        timestamp: new Date().toISOString(),
+        created_at: new Date().toISOString(),
       })
       
       return NextResponse.json(
@@ -413,7 +413,7 @@ export async function POST(request: NextRequest) {
         action: "swap_executing",
         message: `[Bot #${walletIndex + 1}] Melakukan swap senilai $${amountUsdValue.toFixed(2)} ke Target Token...`,
         status: "pending",
-        timestamp: new Date().toISOString(),
+        created_at: new Date().toISOString(),
       })
       .select()
       .single()
@@ -494,7 +494,7 @@ export async function POST(request: NextRequest) {
         action: "balance_check",
         message: `[System] Remaining balance in Bot #${walletIndex + 1}: ${formatEther(newBalance)} ETH ($${newBalanceUsd.toFixed(2)})`,
         status: "info",
-        timestamp: new Date().toISOString(),
+        created_at: new Date().toISOString(),
       })
 
       // Step 11: Update wallet rotation index
