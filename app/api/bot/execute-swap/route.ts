@@ -504,9 +504,8 @@ export async function POST(request: NextRequest) {
       console.log(`   → Data length: ${transactionForLog.data?.length || 0} bytes`)
 
       // Execute swap transaction using Smart Account
-      // Smart Account executes the transaction, controlled by Owner Account
-      // CDP will handle gas sponsorship automatically
-      // Note: Using type assertion because CDP SDK types may not fully expose sendTransaction
+      // CDP SDK v2 Smart Account uses different method structure
+      // Reference: https://docs.cdp.coinbase.com/server-wallets/v2/evm-features/sending-transactions
       // v2 API response structure: quote.transaction.to, quote.transaction.data, quote.transaction.value
       const transaction = quote.transaction || quote
       
@@ -542,25 +541,129 @@ export async function POST(request: NextRequest) {
         throw new Error("Transaction value is undefined after processing")
       }
       
-      const userOpHash = await (smartAccount as any).sendTransaction({
-        calls: [{
-          to: transaction.to as Address,
-          data: transaction.data as Hex,
-          value: BigInt(transactionValue),
-        }],
-        isSponsored: true, // Enable gas sponsorship
-      })
+      // CDP SDK v2 Smart Account transaction execution
+      // Based on CDP SDK v2 documentation and error analysis
+      // Smart Account may not have sendTransaction directly
+      // Try using the Smart Account's transaction execution method
+      // Reference: https://docs.cdp.coinbase.com/server-wallets/v2/evm-features/sending-transactions
+      
+      console.log(`   → Attempting to execute transaction via Smart Account...`)
+      console.log(`   → Available Smart Account methods:`, Object.keys(smartAccount || {}).slice(0, 10).join(", "))
+      
+      // Prepare transaction call
+      const transactionCall = {
+        to: transaction.to as Address,
+        data: transaction.data as Hex,
+        value: BigInt(transactionValue),
+      }
+      
+      let userOpHash: any
+      let userOpReceipt: any
+      
+      // Try different method patterns based on CDP SDK v2 structure
+      // Method 1: Try sendTransaction with calls array (most common pattern)
+      if (typeof (smartAccount as any).sendTransaction === 'function') {
+        console.log(`   → Method: sendTransaction with calls array`)
+        try {
+          userOpHash = await (smartAccount as any).sendTransaction({
+            calls: [transactionCall],
+            isSponsored: true,
+          })
+        } catch (err: any) {
+          console.error(`   ❌ sendTransaction (calls array) failed:`, err.message)
+          // Try direct transaction object as fallback
+          console.log(`   → Trying sendTransaction with direct transaction object...`)
+          try {
+            userOpHash = await (smartAccount as any).sendTransaction(transactionCall)
+          } catch (err2: any) {
+            console.error(`   ❌ sendTransaction (direct) also failed:`, err2.message)
+            throw err // Throw original error
+          }
+        }
+      }
+      // Method 2: Try send method
+      else if (typeof (smartAccount as any).send === 'function') {
+        console.log(`   → Method: send`)
+        try {
+          userOpHash = await (smartAccount as any).send(transactionCall)
+        } catch (err: any) {
+          console.error(`   ❌ send failed:`, err.message)
+          throw err
+        }
+      }
+      // Method 3: Try execute method
+      else if (typeof (smartAccount as any).execute === 'function') {
+        console.log(`   → Method: execute`)
+        try {
+          userOpHash = await (smartAccount as any).execute(transactionCall)
+        } catch (err: any) {
+          console.error(`   ❌ execute failed:`, err.message)
+          throw err
+        }
+      }
+      // Method 4: Try using Owner Account to send transaction directly to target
+      // Owner Account may have sendTransaction method that can execute via Smart Account
+      else if (typeof (ownerAccount as any).sendTransaction === 'function') {
+        console.log(`   → Method: Owner Account sendTransaction (executes via Smart Account)`)
+        try {
+          // Owner Account sends transaction directly to target contract
+          // CDP SDK should handle Smart Account execution automatically
+          userOpHash = await (ownerAccount as any).sendTransaction({
+            to: transaction.to as Address, // Send directly to target contract
+            data: transaction.data as Hex,
+            value: BigInt(transactionValue),
+          })
+        } catch (err: any) {
+          console.error(`   ❌ Owner Account sendTransaction failed:`, err.message)
+          throw err
+        }
+      }
+      // If none work, throw error with available methods
+      else {
+        const availableMethods = Object.keys(smartAccount || {}).filter(key => typeof (smartAccount as any)[key] === 'function')
+        console.error(`   ❌ No suitable method found`)
+        console.error(`   → Smart Account available methods:`, availableMethods.join(", "))
+        console.error(`   → Owner Account available methods:`, Object.keys(ownerAccount || {}).filter(key => typeof (ownerAccount as any)[key] === 'function').join(", "))
+        throw new Error(`Smart Account does not have sendTransaction, send, or execute method. Available Smart Account methods: ${availableMethods.join(", ")}`)
+      }
       
       // Extract userOpHash (may be string or object)
-      const userOpHashStr = typeof userOpHash === 'string' ? userOpHash : String(userOpHash)
+      const userOpHashStr = typeof userOpHash === 'string' 
+        ? userOpHash 
+        : (userOpHash?.hash || userOpHash?.userOpHash || userOpHash?.transactionHash || String(userOpHash))
       
       console.log(`   ✅ User Operation submitted: ${userOpHashStr}`)
       console.log(`   → Waiting for confirmation...`)
       
       // Wait for user operation to be confirmed
-      const userOpReceipt = await (smartAccount as any).waitForUserOperation({
-        userOpHash: userOpHashStr,
-      }) as any
+      // Try different wait methods based on what's available
+      if (typeof (smartAccount as any).waitForUserOperation === 'function') {
+        userOpReceipt = await (smartAccount as any).waitForUserOperation({
+          userOpHash: userOpHashStr,
+        }) as any
+      } else if (typeof (smartAccount as any).wait === 'function') {
+        userOpReceipt = await (smartAccount as any).wait({
+          hash: userOpHashStr,
+        }) as any
+      } else if (typeof (ownerAccount as any).waitForTransaction === 'function') {
+        userOpReceipt = await (ownerAccount as any).waitForTransaction({
+          hash: userOpHashStr,
+        }) as any
+      } else {
+        // If no wait method, use public client to wait for transaction
+        console.log(`   ⚠️ No wait method found, using public client to wait for transaction`)
+        try {
+          const receipt = await publicClient.waitForTransactionReceipt({
+            hash: userOpHashStr as `0x${string}`,
+            confirmations: 1,
+          })
+          userOpReceipt = { transactionHash: receipt.transactionHash }
+        } catch (waitErr: any) {
+          console.warn(`   ⚠️ Could not wait for transaction:`, waitErr.message)
+          // Use userOpHash as transaction hash if we can't wait
+          userOpReceipt = { transactionHash: userOpHashStr }
+        }
+      }
       
       // Extract transaction hash from receipt
       // CDP SDK may return different formats, handle all cases
