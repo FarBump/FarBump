@@ -348,7 +348,11 @@ export async function POST(request: NextRequest) {
         const transaction = quote.transaction || quote
         console.log(`   To: ${transaction.to}`)
         console.log(`   Data: ${transaction.data?.slice(0, 66) || 'N/A'}...`)
-        console.log(`   Value: ${formatEther(BigInt(transaction.value || "0"))} ETH`)
+        // Safely handle value (may be undefined in v2 API)
+        const logValue = transaction.value 
+          ? (typeof transaction.value === 'string' ? transaction.value : String(transaction.value))
+          : "0"
+        console.log(`   Value: ${formatEther(BigInt(logValue))} ETH`)
         console.log(`   Buy Amount: ${quote.buyAmount || 'N/A'}`)
         console.log(`   Price: ${quote.price || 'N/A'}`)
         break
@@ -489,9 +493,15 @@ export async function POST(request: NextRequest) {
 
       console.log(`   ✅ Owner Account and Smart Account retrieved`)
       console.log(`   → Preparing swap transaction...`)
-      console.log(`   → To: ${quote.to}`)
-      console.log(`   → Value: ${formatEther(BigInt(quote.value))} ETH`)
-      console.log(`   → Data length: ${quote.data.length} bytes`)
+      // v2 API response structure: quote.transaction.to, quote.transaction.data, quote.transaction.value
+      const transactionForLog = quote.transaction || quote
+      console.log(`   → To: ${transactionForLog.to}`)
+      // Safely handle value (may be undefined in v2 API)
+      const logValue = transactionForLog.value 
+        ? (typeof transactionForLog.value === 'string' ? transactionForLog.value : String(transactionForLog.value))
+        : "0"
+      console.log(`   → Value: ${formatEther(BigInt(logValue))} ETH`)
+      console.log(`   → Data length: ${transactionForLog.data?.length || 0} bytes`)
 
       // Execute swap transaction using Smart Account
       // Smart Account executes the transaction, controlled by Owner Account
@@ -506,9 +516,31 @@ export async function POST(request: NextRequest) {
       }
       
       // Safely convert value to BigInt (handle undefined, null, or empty string)
-      const transactionValue = transaction.value 
-        ? (typeof transaction.value === 'string' ? transaction.value : String(transaction.value))
-        : "0"
+      // CRITICAL: Ensure we never pass undefined to BigInt
+      let transactionValue: string = "0"
+      if (transaction.value !== undefined && transaction.value !== null) {
+        if (typeof transaction.value === 'string') {
+          transactionValue = transaction.value || "0"
+        } else if (typeof transaction.value === 'number') {
+          transactionValue = String(transaction.value)
+        } else {
+          transactionValue = String(transaction.value) || "0"
+        }
+      }
+      
+      // Additional validation: ensure transactionValue is a valid string
+      if (!transactionValue || transactionValue.trim() === "") {
+        transactionValue = "0"
+      }
+      
+      // Log for debugging
+      console.log(`   → Transaction Value (raw): ${JSON.stringify(transaction.value)}`)
+      console.log(`   → Transaction Value (processed): ${transactionValue}`)
+      
+      // Final validation before BigInt conversion
+      if (transactionValue === undefined || transactionValue === null) {
+        throw new Error("Transaction value is undefined after processing")
+      }
       
       const userOpHash = await (smartAccount as any).sendTransaction({
         calls: [{
