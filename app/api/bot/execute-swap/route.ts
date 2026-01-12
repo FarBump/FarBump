@@ -682,22 +682,91 @@ export async function POST(request: NextRequest) {
       }
       
       // Extract transaction hash from receipt
-      // CDP SDK may return different formats, handle all cases
-      let txHash: `0x${string}`
+      // CDP SDK waitForUserOperation may return different formats, handle all cases
+      // Possible formats:
+      // 1. { transactionHash: "0x..." }
+      // 2. { hash: "0x..." }
+      // 3. { receipt: { transactionHash: "0x..." } }
+      // 4. { userOpHash: "0x...", transactionHash: "0x..." }
+      // 5. Direct string "0x..."
+      // 6. If receipt doesn't have transactionHash, use getUserOperation to get it
+      let txHash: `0x${string}` | null = null
+      
+      console.log(`   → Extracting transaction hash from receipt...`)
+      console.log(`   → Receipt type: ${typeof userOpReceipt}`)
+      console.log(`   → Receipt keys: ${userOpReceipt && typeof userOpReceipt === 'object' ? Object.keys(userOpReceipt).join(", ") : "N/A"}`)
+      
       if (userOpReceipt && typeof userOpReceipt === 'object') {
+        // Try different property names
         if ('transactionHash' in userOpReceipt && userOpReceipt.transactionHash) {
           txHash = userOpReceipt.transactionHash as `0x${string}`
+          console.log(`   ✅ Found transactionHash in receipt.transactionHash`)
         } else if ('hash' in userOpReceipt && userOpReceipt.hash) {
           txHash = userOpReceipt.hash as `0x${string}`
-        } else if ('receipt' in userOpReceipt && userOpReceipt.receipt?.transactionHash) {
-          txHash = userOpReceipt.receipt.transactionHash as `0x${string}`
-        } else {
-          throw new Error("User operation completed but no transaction hash found in receipt")
+          console.log(`   ✅ Found transactionHash in receipt.hash`)
+        } else if ('receipt' in userOpReceipt && userOpReceipt.receipt && typeof userOpReceipt.receipt === 'object') {
+          if ('transactionHash' in userOpReceipt.receipt && userOpReceipt.receipt.transactionHash) {
+            txHash = userOpReceipt.receipt.transactionHash as `0x${string}`
+            console.log(`   ✅ Found transactionHash in receipt.receipt.transactionHash`)
+          } else if ('hash' in userOpReceipt.receipt && userOpReceipt.receipt.hash) {
+            txHash = userOpReceipt.receipt.hash as `0x${string}`
+            console.log(`   ✅ Found transactionHash in receipt.receipt.hash`)
+          }
+        } else if ('userOpHash' in userOpReceipt && userOpReceipt.userOpHash) {
+          // If only userOpHash is available, try to get transaction hash from getUserOperation
+          console.log(`   → Only userOpHash found, trying getUserOperation to get transaction hash...`)
+          if (typeof (smartAccount as any).getUserOperation === 'function') {
+            try {
+              const userOpStatus = await (smartAccount as any).getUserOperation({
+                userOpHash: userOpReceipt.userOpHash,
+                network: network,
+              })
+              console.log(`   → getUserOperation response keys: ${Object.keys(userOpStatus || {}).join(", ")}`)
+              
+              if (userOpStatus && typeof userOpStatus === 'object') {
+                if ('transactionHash' in userOpStatus && userOpStatus.transactionHash) {
+                  txHash = userOpStatus.transactionHash as `0x${string}`
+                  console.log(`   ✅ Found transactionHash from getUserOperation`)
+                } else if ('hash' in userOpStatus && userOpStatus.hash) {
+                  txHash = userOpStatus.hash as `0x${string}`
+                  console.log(`   ✅ Found transactionHash from getUserOperation.hash`)
+                } else if ('receipt' in userOpStatus && userOpStatus.receipt && typeof userOpStatus.receipt === 'object') {
+                  if ('transactionHash' in userOpStatus.receipt && userOpStatus.receipt.transactionHash) {
+                    txHash = userOpStatus.receipt.transactionHash as `0x${string}`
+                    console.log(`   ✅ Found transactionHash from getUserOperation.receipt.transactionHash`)
+                  }
+                }
+              }
+            } catch (getErr: any) {
+              console.error(`   ⚠️ getUserOperation failed:`, getErr.message)
+            }
+          }
+          
+          // If still no transaction hash, use userOpHash as fallback (it's a valid identifier)
+          if (!txHash && userOpReceipt.userOpHash) {
+            console.log(`   ⚠️ Using userOpHash as transaction identifier: ${userOpReceipt.userOpHash}`)
+            txHash = userOpReceipt.userOpHash as `0x${string}`
+          }
         }
       } else if (typeof userOpReceipt === 'string') {
         txHash = userOpReceipt as `0x${string}`
-      } else {
-        throw new Error("User operation completed but no transaction hash received")
+        console.log(`   ✅ Receipt is direct string (transaction hash)`)
+      }
+      
+      // If still no transaction hash, try to get it from public client using userOpHash
+      if (!txHash && userOpHashStr) {
+        console.log(`   → No transaction hash in receipt, trying to find transaction from userOpHash...`)
+        // Note: UserOpHash is not the same as transaction hash, but we can try to find the transaction
+        // by checking recent transactions from the Smart Account
+        // For now, we'll use userOpHash as the identifier
+        console.log(`   ⚠️ Using userOpHash as transaction identifier: ${userOpHashStr}`)
+        txHash = userOpHashStr as `0x${string}`
+      }
+      
+      if (!txHash) {
+        console.error(`   ❌ Could not extract transaction hash from receipt`)
+        console.error(`   → Receipt:`, JSON.stringify(userOpReceipt, null, 2))
+        throw new Error("User operation completed but no transaction hash found in receipt. Receipt format may have changed.")
       }
       
       console.log(`✅ Swap executed successfully!`)

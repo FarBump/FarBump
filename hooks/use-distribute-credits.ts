@@ -83,11 +83,53 @@ export function useDistributeCredits() {
         )
       }
 
-      setStatus("Checking wallet balance...")
-      const userBalance = await publicClient.getBalance({ address: userAddress })
-
-      if (userBalance < creditBalanceWei) {
-        throw new Error(`Insufficient balance in Smart Wallet.`)
+      setStatus("Checking credit balance...")
+      // CRITICAL: Use credit balance from database, not ETH balance from blockchain
+      // Credit balance = Main wallet credit (from Convert $BUMP) + Bot wallet credits (from Distribute)
+      // ETH balance on blockchain may be different because:
+      // 1. Bot wallets may have consumed some credit (ETH spent on swaps)
+      // 2. Credit balance is tracked in database, not blockchain
+      // 3. We only count valid credits from Convert and Distribute functions
+      
+      // Fetch current credit balance from database
+      const creditResponse = await fetch("/api/credit-balance", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userAddress }),
+      })
+      
+      if (!creditResponse.ok) {
+        const errorData = await creditResponse.json().catch(() => ({}))
+        throw new Error(
+          `Failed to fetch credit balance from database: ${errorData.error || creditResponse.statusText}. Please try again.`
+        )
+      }
+      
+      const creditData = await creditResponse.json()
+      if (!creditData.success || !creditData.balanceWei) {
+        throw new Error("Invalid credit balance response from database")
+      }
+      
+      const dbCreditBalanceWei = BigInt(creditData.balanceWei)
+      console.log(`   → Database credit balance: ${formatEther(dbCreditBalanceWei)} ETH`)
+      console.log(`   → Main wallet credit: ${formatEther(BigInt(creditData.mainWalletCreditWei || "0"))} ETH`)
+      console.log(`   → Bot wallet credits: ${formatEther(BigInt(creditData.botWalletCreditsWei || "0"))} ETH`)
+      console.log(`   → Requested distribution: ${formatEther(creditBalanceWei)} ETH`)
+      
+      // Check if database credit balance is sufficient
+      if (dbCreditBalanceWei < creditBalanceWei) {
+        throw new Error(
+          `Insufficient credit balance. Available: ${formatEther(dbCreditBalanceWei)} ETH, Required: ${formatEther(creditBalanceWei)} ETH. Please convert more $BUMP to credit first.`
+        )
+      }
+      
+      // Additional check: Verify main wallet has enough credit to distribute
+      // We can only distribute from main wallet credit, not from bot wallet credits
+      const mainWalletCreditWei = BigInt(creditData.mainWalletCreditWei || "0")
+      if (mainWalletCreditWei < creditBalanceWei) {
+        throw new Error(
+          `Insufficient main wallet credit. Main wallet credit: ${formatEther(mainWalletCreditWei)} ETH, Required: ${formatEther(creditBalanceWei)} ETH. Bot wallet credits cannot be redistributed. Please convert more $BUMP to credit first.`
+        )
       }
 
       setStatus("Preparing gasless transfers...")
