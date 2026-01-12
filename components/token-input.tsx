@@ -72,7 +72,7 @@ export function TokenInput({ initialAddress, onAddressChange, onVerifiedChange }
       // Auto-verify if address is already set (from localStorage)
       // Use a small delay to ensure publicClient is ready
       const timer = setTimeout(async () => {
-        if (!publicClient) return
+        if (!publicClient || !initialAddress) return
         
         const tokenAddress = initialAddress as Address
         setStatus("loading")
@@ -118,6 +118,7 @@ export function TokenInput({ initialAddress, onAddressChange, onVerifiedChange }
       }, 500)
       return () => clearTimeout(timer)
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []) // Only run on mount
 
   // Reset status when address is cleared
