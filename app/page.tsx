@@ -856,7 +856,10 @@ export default function BumpBotDashboard() {
         // 1. No wallets have sufficient balance, OR
         // 2. Total balance is less than required amount (can't even do one swap)
         const needsDistribution = sufficientWallets === 0 || totalBotBalanceWei < requiredAmountWei
+        
+        if (needsDistribution) {
           console.log("💰 Bot wallets need funding. Distributing credits...")
+          console.log(`   → Reason: ${sufficientWallets === 0 ? "No wallets have sufficient balance" : "Total balance insufficient for one swap"}`)
           setBumpLoadingState("Distributing credits to bot wallets...")
           
           if (!creditData?.balanceWei) {
