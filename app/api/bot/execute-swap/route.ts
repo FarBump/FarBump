@@ -269,17 +269,18 @@ export async function POST(request: NextRequest) {
     }
 
     /**
-     * 0x API Quote with Retry Logic for Clanker v4 (Uniswap v4) with thin liquidity
+     * 0x API v2 Quote with Retry Logic for Clanker v4 (Uniswap v4) with thin liquidity
      * 
-     * Attempt 1: 5% slippage, standard validation
-     * Attempt 2: 10% slippage, skipValidation: true, enableSlippageProtection: false
+     * Based on: https://docs.0x.org/0x-api-swap/api-references/get-swap-v2-quote
      * 
-     * Parameters optimized for Uniswap v4 hooks and dynamic fees:
-     * - slippagePercentage: Higher tolerance for thin liquidity
-     * - enableSlippageProtection: false (prevents failure due to tax/fees from Uniswap v4 hooks)
-     * - skipValidation: true (returns route even if simulation seems unprofitable)
-     * - includePrices: true (for better route selection)
-     * - intent: "buy" (for better routing)
+     * Key Changes in v2:
+     * - Endpoint: /swap/allowance-holder/quote (for native ETH, simpler than Permit2)
+     * - Parameter: slippagePercentage → slippageBps (basis points: 5% = 500, 10% = 1000)
+     * - Response: quote.to → quote.transaction.to, quote.data → quote.transaction.data, etc.
+     * - Removed: skipValidation (always validates in v2)
+     * 
+     * Attempt 1: 5% slippage (500 bps)
+     * Attempt 2: 10% slippage (1000 bps) for thin liquidity tokens
      */
     let quote: any = null
     let quoteError: any = null
@@ -288,44 +289,38 @@ export async function POST(request: NextRequest) {
     const maxAttempts = 2
 
     while (attempt <= maxAttempts && !quote) {
-      console.log(`\n🔄 Attempt ${attempt}/${maxAttempts} - Getting 0x API quote...`)
+      console.log(`\n🔄 Attempt ${attempt}/${maxAttempts} - Getting 0x API v2 quote...`)
       
       // Build quote parameters based on attempt
+      // Using allowance-holder endpoint for native ETH (simpler, no Permit2 needed)
       const quoteParams = new URLSearchParams({
         chainId: "8453", // Base Mainnet
         sellToken: "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE", // Native ETH placeholder
         buyToken: token_address.toLowerCase(), // Target token (ensure lowercase)
         sellAmount: amountWei.toString(), // Amount in wei
         taker: smartAccountAddress.toLowerCase(), // Smart Account holds the ETH (allowance holder)
-        slippagePercentage: attempt === 1 ? "5.0" : "10.0", // 5% first attempt, 10% retry
-        includePrices: "true", // Include prices for better route selection
-        intent: "buy", // Intent to buy target token
+        slippageBps: attempt === 1 ? "500" : "1000", // 5% = 500 bps, 10% = 1000 bps
       })
 
-      // For retry (attempt 2), add parameters to handle Uniswap v4 hooks
-      if (attempt === 2) {
-        quoteParams.append("enableSlippageProtection", "false") // Disable slippage protection for Uniswap v4 hooks
-        quoteParams.append("skipValidation", "true") // Skip validation to return route even if simulation seems risky
-      }
-
-      const quoteUrl = `https://api.0x.org/swap/v2/quote?${quoteParams.toString()}`
+      // Use allowance-holder endpoint for native ETH swaps (simpler than Permit2)
+      // Reference: https://docs.0x.org/0x-api-swap/api-references/get-swap-v2-quote
+      const quoteUrl = `https://api.0x.org/swap/allowance-holder/quote?${quoteParams.toString()}`
+      console.log(`   Endpoint: /swap/allowance-holder/quote (v2)`)
       console.log(`   URL: ${quoteUrl}`)
-      console.log(`   Slippage: ${attempt === 1 ? "5%" : "10%"}`)
-      if (attempt === 2) {
-        console.log(`   enableSlippageProtection: false`)
-        console.log(`   skipValidation: true`)
-      }
+      console.log(`   Slippage: ${attempt === 1 ? "5%" : "10%"} (${attempt === 1 ? "500" : "1000"} bps)`)
 
       const quoteResponse = await fetch(quoteUrl, {
         headers: {
           "0x-api-key": zeroXApiKey,
+          "0x-version": "v2", // Explicitly specify v2
+          "Accept": "application/json",
         },
       })
 
       if (!quoteResponse.ok) {
         try {
           quoteError = await quoteResponse.json()
-          requestId = quoteError.request_id || null
+          requestId = quoteError.request_id || quoteError.requestId || null
         } catch (e) {
           quoteError = { message: quoteResponse.statusText }
         }
@@ -335,9 +330,10 @@ export async function POST(request: NextRequest) {
         // If "no Route matched" and we have more attempts, continue to retry
         if (quoteError.message && 
             (quoteError.message.includes("no Route matched") || 
-             quoteError.message.includes("No route found")) &&
+             quoteError.message.includes("No route found") ||
+             quoteError.message.includes("INSUFFICIENT_ASSET_LIQUIDITY")) &&
             attempt < maxAttempts) {
-          console.log(`   → Retrying with higher slippage and relaxed validation...`)
+          console.log(`   → Retrying with higher slippage (10% = 1000 bps)...`)
           attempt++
           continue
         } else {
@@ -348,9 +344,13 @@ export async function POST(request: NextRequest) {
         // Success!
         quote = await quoteResponse.json()
         console.log(`✅ Got swap quote on attempt ${attempt}:`)
-        console.log(`   To: ${quote.to}`)
-        console.log(`   Data: ${quote.data.slice(0, 66)}...`)
-        console.log(`   Value: ${formatEther(BigInt(quote.value))} ETH`)
+        // v2 API response structure: transaction.to, transaction.data, transaction.value
+        const transaction = quote.transaction || quote
+        console.log(`   To: ${transaction.to}`)
+        console.log(`   Data: ${transaction.data?.slice(0, 66) || 'N/A'}...`)
+        console.log(`   Value: ${formatEther(BigInt(transaction.value || "0"))} ETH`)
+        console.log(`   Buy Amount: ${quote.buyAmount || 'N/A'}`)
+        console.log(`   Price: ${quote.price || 'N/A'}`)
         break
       }
     }
@@ -497,11 +497,13 @@ export async function POST(request: NextRequest) {
       // Smart Account executes the transaction, controlled by Owner Account
       // CDP will handle gas sponsorship automatically
       // Note: Using type assertion because CDP SDK types may not fully expose sendTransaction
+      // v2 API response structure: quote.transaction.to, quote.transaction.data, quote.transaction.value
+      const transaction = quote.transaction || quote
       const userOpHash = await (smartAccount as any).sendTransaction({
         calls: [{
-          to: quote.to as Address,
-          data: quote.data as Hex,
-          value: BigInt(quote.value),
+          to: transaction.to as Address,
+          data: transaction.data as Hex,
+          value: BigInt(transaction.value || "0"),
         }],
         isSponsored: true, // Enable gas sponsorship
       })
