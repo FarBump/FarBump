@@ -3,7 +3,7 @@
 import { useState } from "react"
 import { useSmartWallets } from "@privy-io/react-auth/smart-wallets"
 import { usePublicClient } from "wagmi"
-import { formatEther, parseEther, createWalletClient, custom, type Address, type Hex } from "viem"
+import { formatEther, parseEther, createWalletClient, custom, getAddress, type Address, type Hex } from "viem"
 import { base } from "viem/chains"
 import { toast } from "sonner"
 
@@ -154,88 +154,86 @@ export function useDistributeCredits() {
       const creditToDistribute = availableCreditWei
       console.log(`   → Credit to distribute: ${formatEther(creditToDistribute)} ETH`)
 
-      // Calculate amount per bot: Distribute ALL main wallet credit equally to 5 bot wallets
-      const amountPerBot = mainWalletCreditWei / BigInt(5)
-      const remainder = mainWalletCreditWei % BigInt(5)
-      
-      // If there's a remainder, add it to the first bot wallet
+      // Calculate amount per bot: Distribute ALL available credit equally to 5 bot wallets
+      // CRITICAL: Use creditToDistribute (not mainWalletCreditWei) to ensure we don't over-distribute
+      const amountPerBot = creditToDistribute / BigInt(5)
+      const remainder = creditToDistribute % BigInt(5)
       const amountForFirstBot = amountPerBot + remainder
       
-      console.log(`   → Distributing ALL main wallet credit: ${formatEther(mainWalletCreditWei)} ETH`)
+      console.log(`   → Distributing ALL available credit: ${formatEther(creditToDistribute)} ETH`)
       console.log(`   → Amount per bot: ${formatEther(amountPerBot)} ETH`)
       if (remainder > BigInt(0)) {
         console.log(`   → First bot gets extra: ${formatEther(remainder)} ETH (total: ${formatEther(amountForFirstBot)} ETH)`)
       }
 
-      setStatus("Preparing individual transfers...")
+      setStatus("Preparing batch transaction...")
       
-      // CRITICAL: Use individual transactions instead of batch to avoid Paymaster allowlist issues
-      // Individual transactions with Privy Paymaster only sponsor the sender (main wallet),
-      // not the recipients (bot wallets), avoiding allowlist requirements
-      // This approach is gasless for the user while avoiding allowlist complexity
+      // CRITICAL: Use batch transaction with EIP-5792 Paymaster capabilities
+      // This approach:
+      // 1. Collects all transfers into a single array of calls
+      // 2. Sends ONE batch transaction (not multiple individual transactions)
+      // 3. Uses EIP-5792 capabilities with explicit paymasterService URL
+      // 4. Uses checksum addresses to ensure correct format
+      // 5. Avoids allowlist issues by using direct CDP Paymaster URL
       
-      console.log(`📤 Sending individual transactions to ${botWallets.length} bot wallets...`)
-      botWallets.forEach((wallet, index) => {
+      console.log(`📤 Preparing batch transaction for ${botWallets.length} bot wallets...`)
+      
+      // Get CDP API Key from environment (client-side accessible)
+      // Try NEXT_PUBLIC_CDP_API_KEY first, then extract from NEXT_PUBLIC_COINBASE_CDP_BUNDLER_URL
+      const cdpApiKey = process.env.NEXT_PUBLIC_CDP_API_KEY || 
+        (process.env.NEXT_PUBLIC_COINBASE_CDP_BUNDLER_URL?.split('/').pop())
+      
+      if (!cdpApiKey) {
+        throw new Error("CDP API Key not found. Please set NEXT_PUBLIC_CDP_API_KEY or NEXT_PUBLIC_COINBASE_CDP_BUNDLER_URL environment variable.")
+      }
+      
+      const paymasterServiceUrl = `https://api.developer.coinbase.com/rpc/v1/base/${cdpApiKey}`
+      
+      // Prepare batch calls array with checksum addresses
+      const calls = botWallets.map((wallet, index) => {
         const amount = index === 0 ? amountForFirstBot : amountPerBot
-        console.log(`   Bot #${index + 1}: ${wallet.smartWalletAddress} - ${formatEther(amount)} ETH`)
+        const checksumAddress = getAddress(wallet.smartWalletAddress) // Ensure checksum format
+        
+        console.log(`   Bot #${index + 1}: ${checksumAddress} - ${formatEther(amount)} ETH`)
+        
+        return {
+          to: checksumAddress as Address,
+          value: amount,
+          data: "0x" as Hex,
+        }
       })
 
-      setStatus("Distributing credits (gasless via CDP Paymaster - Sender-based)...")
+      setStatus("Distributing credits (gasless via CDP Paymaster with EIP-5792)...")
 
-      // Execute individual transactions sequentially
-      // This approach:
-      // 1. Uses CDP Paymaster with Sender-based sponsorship (only checks sender, not recipients)
-      // 2. Privy Smart Wallet client uses CDP Paymaster configured in Privy Dashboard
-      // 3. No allowlist needed for bot wallet addresses (Sender-based policy)
-      // 4. Maintains gasless experience for users
-      const transferTxHashes: `0x${string}`[] = []
+      let primaryTxHash: `0x${string}`
       
       try {
-        console.log(`📤 Sending individual transactions via Privy Smart Wallet with CDP Paymaster...`)
+        console.log(`📤 Sending batch transaction via Privy Smart Wallet with EIP-5792 Paymaster...`)
         console.log(`   Using Smart Wallet address: ${smartWalletAddress}`)
-        console.log(`   Paymaster: CDP Paymaster (Sender-based sponsorship)`)
-        console.log(`   Strategy: Individual transactions - only sender is checked, recipients are not`)
+        console.log(`   Paymaster Service URL: ${paymasterServiceUrl}`)
+        console.log(`   Strategy: Batch transaction with EIP-5792 capabilities`)
+        console.log(`   Total calls: ${calls.length}`)
         
-        // Send individual transactions sequentially
-        for (let i = 0; i < botWallets.length; i++) {
-          const wallet = botWallets[i]
-          const amount = i === 0 ? amountForFirstBot : amountPerBot
-          
-          setStatus(`Distributing to bot ${i + 1}/5...`)
-          
-          console.log(`   📤 Transferring ${formatEther(amount)} ETH to Bot #${i + 1} (${wallet.smartWalletAddress})...`)
-          
-          // Use individual sendTransaction with CDP Paymaster (Sender-based sponsorship)
-          // CDP Paymaster with Sender-based policy only checks the sender (Privy Smart Wallet)
-          // Recipients (bot wallets) are NOT checked, so no allowlist needed
-          const txHash = await smartWalletClient.sendTransaction({
-            to: wallet.smartWalletAddress as Address,
-            value: amount,
-            data: "0x" as Hex,
-          }, {
-            isSponsored: true, // CDP Paymaster sponsors sender (main wallet) - GASLESS
-            // Note: CDP Paymaster URL must be configured in Privy Dashboard
-            // Sponsorship policy must be set to "Sender-based" in CDP Paymaster Dashboard
-          }) as `0x${string}`
-          
-          transferTxHashes.push(txHash)
-          console.log(`   ✅ Transfer ${i + 1}/5 sent: ${txHash}`)
-          
-          // Wait 1 second between transfers to avoid nonce conflicts
-          if (i < botWallets.length - 1) {
-            await new Promise(resolve => setTimeout(resolve, 1000))
+        // Send batch transaction with EIP-5792 Paymaster capabilities
+        // This uses explicit paymasterService URL to avoid allowlist restrictions
+        primaryTxHash = await smartWalletClient.sendTransaction(
+          {
+            calls: calls, // Batch all transfers in one transaction
+          },
+          {
+            isSponsored: true, // Enable gas sponsorship
+            // EIP-5792 Capabilities: Explicit paymasterService URL
+            capabilities: {
+              paymasterService: {
+                url: paymasterServiceUrl,
+              },
+            },
           }
-        }
+        ) as `0x${string}`
         
-        // Use first transaction hash as primary hash for UI/notification
-        const txHash = transferTxHashes[0]
-        
-        // Use first transaction hash as primary hash for UI/notification
-        const primaryTxHash = transferTxHashes[0]
-        
-        console.log(`✅ All ${transferTxHashes.length} transactions sent successfully!`)
-        console.log(`   Primary transaction: ${primaryTxHash}`)
-        console.log(`   All transaction hashes:`, transferTxHashes)
+        console.log(`✅ Batch transaction sent successfully!`)
+        console.log(`   Transaction hash: ${primaryTxHash}`)
+        console.log(`   Total transfers: ${calls.length}`)
       } catch (txError: any) {
         // Handle UserOperationExecutionError and other errors
         const errorName = txError.name || txError.constructor?.name || ""
@@ -265,6 +263,17 @@ export function useDistributeCredits() {
           )
         }
         
+        // Handle allowlist errors
+        if (
+          errorMessage.includes("address not in allowlist") ||
+          errorMessage.includes("not in allowlist") ||
+          errorMessage.includes("allowlist")
+        ) {
+          throw new Error(
+            `Paymaster allowlist error: ${errorMessage}. Please ensure CDP Paymaster is configured with Sender-based sponsorship policy.`
+          )
+        }
+        
         // Handle insufficient balance errors
         if (
           errorMessage.includes("insufficient balance") ||
@@ -282,39 +291,19 @@ export function useDistributeCredits() {
         )
       }
 
-      // Use first transaction hash as primary hash for UI/notification
-      const primaryTxHash = transferTxHashes[0]
-      
-      console.log(`✅ All gasless transactions sent! Primary hash: ${primaryTxHash}`)
+      console.log(`✅ Batch transaction sent! Hash: ${primaryTxHash}`)
       setHash(primaryTxHash)
 
-      setStatus("Waiting for confirmations...")
+      setStatus("Waiting for confirmation...")
 
-      // Wait for all transactions to be confirmed
-      // We'll wait for the first transaction as primary confirmation
-      // Other transactions will confirm in parallel
+      // Wait for batch transaction confirmation
+      // Since we're using batch transaction, there's only one transaction hash to wait for
       const receipt = await publicClient.waitForTransactionReceipt({
         hash: primaryTxHash,
         confirmations: 1,
       })
       
-      // Optionally wait for other transactions (non-blocking)
-      // This ensures all transfers are confirmed before proceeding
-      console.log(`⏳ Waiting for all ${transferTxHashes.length} transactions to confirm...`)
-      const allReceipts = await Promise.all(
-        transferTxHashes.map((hash: `0x${string}`) => 
-          publicClient.waitForTransactionReceipt({
-            hash,
-            confirmations: 1,
-          }).catch((err: any) => {
-            console.warn(`⚠️ Transaction ${hash} confirmation warning:`, err)
-            return null // Don't fail if one transaction has issues
-          })
-        )
-      )
-      
-      const successfulReceipts = allReceipts.filter((r: any) => r !== null && r.status === "success")
-      console.log(`✅ ${successfulReceipts.length}/${transferTxHashes.length} transactions confirmed successfully`)
+      console.log(`✅ Batch transaction confirmed successfully!`)
 
       if (receipt.status === "success") {
         setIsSuccess(true)
@@ -335,8 +324,7 @@ export function useDistributeCredits() {
             body: JSON.stringify({
               userAddress: userAddress,
               distributions: distributions,
-              txHash: primaryTxHash, // Primary transaction hash
-              allTxHashes: transferTxHashes, // All transaction hashes for reference
+              txHash: primaryTxHash, // Batch transaction hash
             }),
           })
 
@@ -355,7 +343,7 @@ export function useDistributeCredits() {
         setStatus("Distribution completed!")
         
         toast.success(`Successfully distributed credit to 5 bot wallets!`, {
-          description: `100% Gasless via CDP Paymaster (${transferTxHashes.length} transactions)`,
+          description: `100% Gasless via CDP Paymaster (Batch Transaction)`,
           action: {
             label: "View",
             onClick: () => window.open(`https://basescan.org/tx/${primaryTxHash}`, "_blank"),
