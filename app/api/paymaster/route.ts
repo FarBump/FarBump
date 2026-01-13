@@ -9,12 +9,13 @@ export const maxDuration = 30
  * Paymaster Proxy API Route
  * 
  * This endpoint acts as a proxy between the frontend and Coinbase CDP Paymaster.
- * It forwards JSON-RPC requests to the CDP Paymaster service and returns responses.
+ * It forwards JSON-RPC 2.0 requests to the CDP Paymaster service to bypass
+ * client-side allowlist restrictions.
  * 
- * Security:
- * - Validates request structure (must be JSON-RPC format)
- * - Validates User Operation structure
- * - Only forwards to configured CDP_PAYMASTER_URL
+ * Security Pass-through:
+ * - Only allows Paymaster methods: pm_getPaymasterStubData, pm_getPaymasterData
+ * - Validates JSON-RPC 2.0 structure
+ * - Forwards requests to CDP_PAYMASTER_URL from environment
  * 
  * Environment Variables Required:
  * - CDP_PAYMASTER_URL: Full URL to CDP Paymaster service
@@ -22,8 +23,8 @@ export const maxDuration = 30
  */
 export async function POST(request: NextRequest) {
   try {
-    // Get CDP Paymaster URL from environment
-    const cdpPaymasterUrl = process.env.CDP_PAYMASTER_URL || process.env.NEXT_PUBLIC_CDP_PAYMASTER_URL
+    // Get CDP Paymaster URL from environment (secret API key)
+    const cdpPaymasterUrl = process.env.CDP_PAYMASTER_URL
 
     if (!cdpPaymasterUrl) {
       console.error("❌ CDP_PAYMASTER_URL not configured in environment variables")
@@ -50,7 +51,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         {
           jsonrpc: "2.0",
-          id: requestBody?.id || null,
+          id: null,
           error: {
             code: -32700,
             message: "Parse error",
@@ -62,7 +63,7 @@ export async function POST(request: NextRequest) {
     }
 
     // =============================================
-    // Security Validation: JSON-RPC Structure
+    // Security Pass-through: Validate JSON-RPC Structure
     // =============================================
     if (!requestBody || typeof requestBody !== "object") {
       console.error("❌ Invalid request body structure")
@@ -82,24 +83,30 @@ export async function POST(request: NextRequest) {
 
     // Validate JSON-RPC version
     if (requestBody.jsonrpc !== "2.0") {
-      console.warn("⚠️ Invalid JSON-RPC version:", requestBody.jsonrpc)
+      return NextResponse.json(
+        {
+          jsonrpc: "2.0",
+          id: requestBody.id || null,
+          error: {
+            code: -32600,
+            message: "Invalid Request",
+            data: "Only JSON-RPC 2.0 is supported",
+          },
+        },
+        { status: 400 }
+      )
     }
 
     // =============================================
-    // Security Validation: User Operation Structure
+    // Security Pass-through: Only Allow Paymaster Methods
     // =============================================
-    // Check if this is a paymaster-related method
     const method = requestBody.method
-    const params = requestBody.params || []
-
-    // Only allow specific paymaster methods
     const allowedMethods = [
       "pm_getPaymasterStubData",
       "pm_getPaymasterData",
-      "pm_getPaymasterAndData",
     ]
 
-    if (!allowedMethods.includes(method)) {
+    if (!method || !allowedMethods.includes(method)) {
       console.warn(`⚠️ Unauthorized method: ${method}`)
       return NextResponse.json(
         {
@@ -108,51 +115,22 @@ export async function POST(request: NextRequest) {
           error: {
             code: -32601,
             message: "Method not found",
-            data: `Method '${method}' is not allowed through this proxy`,
+            data: `Method '${method}' is not allowed through this proxy. Only Paymaster methods are allowed.`,
           },
         },
         { status: 400 }
       )
     }
 
-    // Validate User Operation structure (first param should be an object)
-    if (params.length > 0 && typeof params[0] === "object") {
-      const userOp = params[0]
-
-      // Basic validation: User Operation should have required fields
-      const requiredFields = ["sender", "nonce", "callData"]
-      const missingFields = requiredFields.filter((field) => !userOp[field])
-
-      if (missingFields.length > 0) {
-        console.error(`❌ Invalid User Operation: missing fields ${missingFields.join(", ")}`)
-        return NextResponse.json(
-          {
-            jsonrpc: "2.0",
-            id: requestBody.id || null,
-            error: {
-              code: -32602,
-              message: "Invalid params",
-              data: `User Operation missing required fields: ${missingFields.join(", ")}`,
-            },
-          },
-          { status: 400 }
-        )
-      }
-
-      // Log User Operation details (without sensitive data)
-      console.log(`\n📤 Paymaster Request:`)
-      console.log(`   → Method: ${method}`)
-      console.log(`   → Sender: ${userOp.sender?.substring(0, 10)}...`)
-      console.log(`   → Nonce: ${userOp.nonce}`)
-      console.log(`   → Call Data length: ${userOp.callData?.length || 0} chars`)
-    } else {
-      console.warn("⚠️ User Operation structure not found in params")
-    }
+    // Log request (without sensitive data)
+    console.log(`\n📤 Paymaster Proxy Request:`)
+    console.log(`   → Method: ${method}`)
+    console.log(`   → Request ID: ${requestBody.id || "N/A"}`)
 
     // =============================================
     // Forward Request to CDP Paymaster
     // =============================================
-    console.log(`\n🔄 Forwarding to CDP Paymaster: ${cdpPaymasterUrl.replace(/\/rpc\/v1\/base\/[^/]+/, "/rpc/v1/base/***")}`)
+    console.log(`   → Forwarding to CDP Paymaster...`)
 
     try {
       const paymasterResponse = await fetch(cdpPaymasterUrl, {
@@ -168,13 +146,19 @@ export async function POST(request: NextRequest) {
 
       // Log response status
       if (paymasterResponse.ok && !responseData.error) {
-        console.log(`✅ Paymaster response: SUCCESS`)
+        console.log(`   ✅ Paymaster response: SUCCESS`)
       } else {
-        console.error(`❌ Paymaster response: ERROR`)
-        console.error(`   → Error: ${JSON.stringify(responseData.error)}`)
+        console.error(`   ❌ Paymaster response: ERROR`)
+        if (responseData.error) {
+          console.error(`      → Error Code: ${responseData.error.code}`)
+          console.error(`      → Error Message: ${responseData.error.message}`)
+          if (responseData.error.data) {
+            console.error(`      → Error Data: ${responseData.error.data}`)
+          }
+        }
       }
 
-      // Return the response from CDP Paymaster
+      // Return the response from CDP Paymaster with appropriate status code
       return NextResponse.json(responseData, {
         status: paymasterResponse.status,
         headers: {
@@ -212,4 +196,3 @@ export async function POST(request: NextRequest) {
     )
   }
 }
-
