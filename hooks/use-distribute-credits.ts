@@ -163,18 +163,84 @@ export function useDistributeCredits() {
       console.log(`📤 Sending batch transaction (NORMAL - NO PAYMASTER - user pays gas)...`)
       console.log(`   Using Smart Wallet address: ${smartWalletAddress}`)
       console.log(`   Total calls: ${calls.length}`)
-      console.log(`   isSponsored: false (explicitly disabled)`)
       
-      // Send normal batch transaction WITHOUT Paymaster (user pays gas)
-      // CRITICAL: Set isSponsored: false to explicitly disable Paymaster
-      primaryTxHash = await smartWalletClient.sendTransaction(
-        {
-          calls: calls,
-        },
-        {
-          isSponsored: false, // EXPLICITLY DISABLE PAYMASTER
+      // CRITICAL: Send transaction WITHOUT Paymaster
+      // Try multiple approaches to completely disable Paymaster
+      try {
+        // Approach 1: Try with explicit isSponsored: false and empty capabilities
+        console.log(`   Attempting with isSponsored: false and empty capabilities...`)
+        primaryTxHash = await smartWalletClient.sendTransaction(
+          {
+            calls: calls,
+          },
+          {
+            isSponsored: false,
+            // Explicitly set empty capabilities to prevent Paymaster
+            capabilities: {} as any,
+          }
+        ) as `0x${string}`
+      } catch (approach1Error: any) {
+        console.log(`   Approach 1 failed: ${approach1Error.message}`)
+        
+        // Check if it's a Paymaster error
+        if (approach1Error.message?.includes("Paymaster") || 
+            approach1Error.message?.includes("pm_") ||
+            approach1Error.message?.includes("allowlist") ||
+            approach1Error.message?.includes("not available")) {
+          
+          console.log(`   Trying Approach 2: Send individual transactions...`)
+          
+          // Approach 2: Send transactions one by one
+          const txHashes: `0x${string}`[] = []
+          
+          for (let i = 0; i < calls.length; i++) {
+            const call = calls[i]
+            console.log(`   Sending transfer ${i + 1}/${calls.length} to ${call.to}...`)
+            
+            try {
+              const singleTxHash = await smartWalletClient.sendTransaction(
+                {
+                  to: call.to,
+                  value: call.value,
+                  data: call.data,
+                },
+                {
+                  isSponsored: false,
+                }
+              ) as `0x${string}`
+              
+              txHashes.push(singleTxHash)
+              console.log(`   ✅ Transfer ${i + 1} sent: ${singleTxHash}`)
+              
+              // Wait a bit between transactions to avoid nonce issues
+              if (i < calls.length - 1) {
+                await new Promise(resolve => setTimeout(resolve, 2000))
+              }
+            } catch (singleTxError: any) {
+              console.error(`   ❌ Transfer ${i + 1} failed:`, singleTxError.message)
+              
+              // If single transaction also fails with Paymaster error, throw
+              if (singleTxError.message?.includes("Paymaster") || 
+                  singleTxError.message?.includes("pm_") ||
+                  singleTxError.message?.includes("allowlist")) {
+                throw new Error(
+                  `Paymaster error persists. The Smart Wallet bundler requires Paymaster. ` +
+                  `Please ensure your Coinbase CDP Paymaster policy allows these addresses, ` +
+                  `or contact support. Error: ${singleTxError.message}`
+                )
+              }
+              throw singleTxError
+            }
+          }
+          
+          // Use first transaction hash as primary
+          primaryTxHash = txHashes[0]
+          console.log(`   ✅ All ${txHashes.length} transfers sent individually`)
+        } else {
+          // Not a Paymaster error, re-throw
+          throw approach1Error
         }
-      ) as `0x${string}`
+      }
       
       console.log(`✅ Batch transaction sent successfully!`)
       console.log(`   Transaction hash: ${primaryTxHash}`)
