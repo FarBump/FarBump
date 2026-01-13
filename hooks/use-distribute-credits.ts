@@ -134,62 +134,171 @@ export function useDistributeCredits() {
       })
 
       // =============================================
-      // IMPORTANT: Privy SDK does NOT support custom Paymaster URL
-      // Privy always uses Paymaster from Dashboard configuration
-      // So we MUST use backend API for distribution
+      // Try Backend API First (if relayer is configured)
       // =============================================
       setStatus("Distributing via backend API...")
       
-      console.log(`\n📤 Using BACKEND API for distribution...`)
-      console.log(`   → Reason: Privy SDK doesn't support custom Paymaster URL`)
-      console.log(`   → Backend will use Paymaster Proxy: https://farbump.vercel.app/api/paymaster`)
-      console.log(`   → Total calls: ${calls.length}`)
+      console.log(`\n📤 Attempting BACKEND API for distribution...`)
+      console.log(`   → Backend uses relayer wallet (bypasses Paymaster allowlist)`)
 
-      // Call backend API which uses Paymaster Proxy
-      const backendResponse = await fetch("/api/bot/distribute-credits", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          userAddress: userAddress,
-          botWallets: botWallets.map(w => ({ smartWalletAddress: w.smartWalletAddress })),
-        }),
-      })
-
-      const backendData = await backendResponse.json()
-
-      if (backendResponse.ok && backendData.success) {
-        console.log(`✅ Backend distribution successful!`)
-        console.log(`   → Transaction hash: ${backendData.txHash}`)
-        
-        setHash(backendData.txHash as `0x${string}`)
-        setIsSuccess(true)
-        setStatus("Distribution completed!")
-        
-        toast.success("Successfully distributed credit to 5 bot wallets!", {
-          description: `Total: ${backendData.totalDistributed} ETH`,
-          action: backendData.txHash ? {
-            label: "View",
-            onClick: () => window.open(`https://basescan.org/tx/${backendData.txHash}`, "_blank"),
-          } : undefined,
+      let useBackend = false
+      try {
+        // Call backend API which uses relayer wallet
+        const backendResponse = await fetch("/api/bot/distribute-credits", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            userAddress: userAddress,
+            botWallets: botWallets.map(w => ({ smartWalletAddress: w.smartWalletAddress })),
+          }),
         })
 
-        return {
-          success: true,
-          txHash: backendData.txHash,
-          amountPerBot: backendData.amountPerBot,
-          totalDistributed: backendData.totalDistributed,
-          method: "backend_api_paymaster_proxy",
-          gasless: true,
+        const backendData = await backendResponse.json()
+
+        if (backendResponse.ok && backendData.success) {
+          console.log(`✅ Backend distribution successful!`)
+          console.log(`   → Transaction hash: ${backendData.txHash}`)
+          
+          setHash(backendData.txHash as `0x${string}`)
+          setIsSuccess(true)
+          setStatus("Distribution completed!")
+          
+          toast.success("Successfully distributed credit to 5 bot wallets!", {
+            description: `Total: ${backendData.totalDistributed} ETH`,
+            action: backendData.txHash ? {
+              label: "View",
+              onClick: () => window.open(`https://basescan.org/tx/${backendData.txHash}`, "_blank"),
+            } : undefined,
+          })
+
+          return {
+            success: true,
+            txHash: backendData.txHash,
+            amountPerBot: backendData.amountPerBot,
+            totalDistributed: backendData.totalDistributed,
+            method: "backend_api_relayer",
+            gasless: true,
+          }
         }
+
+        // If backend says to fallback, continue to frontend
+        if (backendData.fallback) {
+          console.log(`⚠️ Backend API not available: ${backendData.error || "Relayer not configured"}`)
+          console.log(`🔄 Falling back to frontend Smart Wallet (user pays gas)...`)
+          useBackend = false
+        } else {
+          // Backend returned an error (not a fallback request)
+          throw new Error(backendData.error || "Backend distribution failed")
+        }
+      } catch (backendError: any) {
+        console.warn(`⚠️ Backend API failed: ${backendError.message}`)
+        console.log(`🔄 Falling back to frontend Smart Wallet (user pays gas)...`)
+        useBackend = false
       }
 
-      // If backend says to fallback, throw error to trigger frontend fallback
-      if (backendData.fallback) {
-        throw new Error("FALLBACK_TO_FRONTEND")
+    // =============================================
+    // FALLBACK: Use Frontend Smart Wallet
+    // User pays gas (isSponsored: false)
+    // Only executed if backend API is not available
+    // =============================================
+    if (!useBackend) {
+      console.log(`\n💰 FALLBACK: Using frontend Smart Wallet (user pays gas)...`)
+      
+      if (!smartWalletClient || !privySmartWalletAddress) {
+        throw new Error("Smart Wallet client not found and backend API unavailable. Please login again.")
       }
 
-      // Backend returned an error
-      throw new Error(backendData.error || "Backend distribution failed")
+    setStatus("Preparing batch transaction (user pays gas)...")
+    
+    // Prepare batch calls array
+    const calls: Array<{ to: Address; value: bigint; data: Hex }> = botWallets.map((wallet, index) => {
+      const amount: bigint = index === 0 ? amountForFirstBot : amountPerBot
+      const checksumAddress = getAddress(wallet.smartWalletAddress)
+      
+      console.log(`   Call #${index + 1}: ${checksumAddress} → ${formatEther(amount)} ETH`)
+      
+      return {
+        to: checksumAddress as Address,
+        value: amount,
+        data: "0x" as Hex,
+      }
+    })
+
+    console.log(`\n📤 Sending BATCH transaction (USER PAYS GAS - NO PAYMASTER)...`)
+    console.log(`   → Total calls: ${calls.length}`)
+    console.log(`   → User pays gas: YES`)
+    console.log(`   → Paymaster: DISABLED`)
+
+    // Execute batch transaction WITHOUT Paymaster
+    // User pays gas from their own ETH balance
+    const txHash = await smartWalletClient.sendTransaction(
+      {
+        calls: calls,
+      },
+      {
+        // CRITICAL: Disable Paymaster - user pays gas
+        isSponsored: false,
+        // DO NOT include paymasterService or capabilities
+        // This forces the transaction to use native ETH for gas
+      }
+    ) as `0x${string}`
+
+    console.log(`\n✅ Transaction submitted!`)
+    console.log(`   → Hash: ${txHash}`)
+
+    setHash(txHash)
+    setStatus("Confirming on blockchain...")
+
+    const receipt = await publicClient.waitForTransactionReceipt({
+      hash: txHash,
+      confirmations: 1,
+    })
+
+    if (receipt.status !== "success") {
+      throw new Error("Transaction failed on-chain")
+    }
+
+    // Record to DB
+    setStatus("Recording distribution...")
+    const distributions = botWallets.map((wallet, index) => {
+      const distAmount: bigint = index === 0 ? amountForFirstBot : amountPerBot
+      return {
+        botWalletAddress: wallet.smartWalletAddress,
+        amountWei: distAmount.toString(),
+      }
+    })
+
+    await fetch("/api/bot/record-distribution", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        userAddress,
+        distributions,
+        txHash,
+      }),
+    })
+
+    setIsSuccess(true)
+    setStatus("Success!")
+    
+    toast.success("Successfully distributed credit to 5 bot wallets!", {
+      description: `Total: ${formatEther(creditToDistribute)} ETH (user paid gas)`,
+      action: {
+        label: "View",
+        onClick: () => window.open(`https://basescan.org/tx/${txHash}`, "_blank"),
+      },
+    })
+
+      return {
+        success: true,
+        txHash: txHash,
+        amountPerBot: formatEther(amountPerBot),
+        totalDistributed: formatEther(creditToDistribute),
+        gasUsed: receipt.gasUsed.toString(),
+        method: "frontend_smart_wallet_user_pays_gas",
+        gasless: false,
+      }
+    }
 
     } catch (err: any) {
       console.error("❌ Distribution failed:", err)
@@ -200,13 +309,13 @@ export function useDistributeCredits() {
       let errorMessage = err.message || "Failed to distribute credits"
 
       if (errorMessage.includes("insufficient") || errorMessage.includes("Insufficient")) {
-        errorMessage = "Insufficient ETH balance for distribution. Please add more ETH to your wallet."
+        errorMessage = "Insufficient ETH balance for distribution and gas. Please add more ETH to your wallet."
       } else if (errorMessage.includes("rejected") || errorMessage.includes("denied") || errorMessage.includes("User rejected")) {
         errorMessage = "Transaction was rejected by user."
       } else if (errorMessage.includes("Paymaster") || errorMessage.includes("pm_") || errorMessage.includes("allowlist") || errorMessage.includes("not allowlisted")) {
-        errorMessage = "Paymaster Proxy error. Please check CDP_PAYMASTER_URL configuration or try again."
-      } else if (errorMessage.includes("not configured") || errorMessage.includes("CDP_PAYMASTER_URL")) {
-        errorMessage = "Paymaster service not configured. Please contact support."
+        errorMessage = "Paymaster error. Using fallback method (user pays gas)."
+      } else if (errorMessage.includes("FALLBACK_TO_FRONTEND")) {
+        errorMessage = "Backend not available. Please ensure you have enough ETH for gas fees."
       }
 
       toast.error("Distribution failed", { description: errorMessage })
