@@ -3,8 +3,7 @@
 import { useState, useCallback } from "react"
 import { useSmartWallets } from "@privy-io/react-auth/smart-wallets"
 import { usePublicClient } from "wagmi"
-import { formatEther, getAddress, parseEther, type Address, type Hex } from "viem"
-import { base } from "viem/chains"
+import { formatEther, getAddress, type Address, type Hex } from "viem"
 import { toast } from "sonner"
 
 interface BotWallet {
@@ -18,9 +17,6 @@ interface DistributeCreditsParams {
   botWallets: BotWallet[]
   creditBalanceWei: bigint
 }
-
-const ESTIMATED_GAS_PER_TRANSFER = BigInt(35000)
-const SMART_ACCOUNT_DEPLOYMENT_GAS = BigInt(300000)
 
 export function useDistributeCredits() {
   const { client: smartWalletClient } = useSmartWallets()
@@ -41,34 +37,6 @@ export function useDistributeCredits() {
     setError(null)
     setStatus(null)
   }, [])
-
-  const checkSmartAccountDeployed = useCallback(async (address: Address): Promise<boolean> => {
-    try {
-      const code = await publicClient.getCode({ address })
-      return code !== undefined && code !== "0x" && code.length > 2
-    } catch {
-      return false
-    }
-  }, [publicClient])
-
-  const estimateGasCost = useCallback(async (
-    numTransfers: number,
-    isDeployed: boolean
-  ): Promise<bigint> => {
-    try {
-      const gasPrice = await publicClient.getGasPrice()
-      let totalGasUnits = ESTIMATED_GAS_PER_TRANSFER * BigInt(numTransfers)
-      
-      if (!isDeployed) {
-        totalGasUnits += SMART_ACCOUNT_DEPLOYMENT_GAS
-      }
-      
-      const gasWithBuffer = (totalGasUnits * BigInt(150)) / BigInt(100)
-      return gasWithBuffer * gasPrice
-    } catch (err) {
-      return parseEther("0.001")
-    }
-  }, [publicClient])
 
   const distribute = useCallback(async ({ 
     userAddress, 
@@ -92,7 +60,6 @@ export function useDistributeCredits() {
       }
 
       setStatus("Checking balance & status...")
-      const isDeployed = await checkSmartAccountDeployed(smartWalletAddress)
       const walletBalance = await publicClient.getBalance({ address: smartWalletAddress })
 
       // Fetch Credit from DB
@@ -109,47 +76,99 @@ export function useDistributeCredits() {
         throw new Error("No credit available in main wallet.")
       }
 
-      const estimatedGasCost = await estimateGasCost(5, isDeployed)
-      const availableForDistribution = walletBalance > estimatedGasCost 
-        ? walletBalance - estimatedGasCost
-        : BigInt(0)
+      // =============================================
+      // Calculate Distribution Amount
+      // With Paymaster Proxy, gas is sponsored (gasless)
+      // So we can use full wallet balance for distribution
+      // =============================================
+      setStatus("Calculating distribution amount...")
+      
+      console.log(`\n📊 Distribution Calculation (Gasless via Paymaster):`)
+      console.log(`   → Wallet balance: ${formatEther(walletBalance)} ETH`)
+      console.log(`   → Gas cost: 0 ETH (sponsored by Paymaster)`)
+      console.log(`   → Available for distribution: ${formatEther(walletBalance)} ETH`)
+      console.log(`   → Credit in database: ${formatEther(mainWalletCreditWei)} ETH`)
 
-      if (availableForDistribution <= BigInt(0)) {
-        throw new Error(`Insufficient ETH for gas. Need ~${formatEther(estimatedGasCost)} ETH.`)
-      }
-
-      const creditToDistribute = availableForDistribution < mainWalletCreditWei
-        ? availableForDistribution
+      // With Paymaster, we don't need to reserve gas
+      // Use minimum of wallet balance and credit balance
+      const creditToDistribute: bigint = walletBalance < mainWalletCreditWei
+        ? walletBalance
         : mainWalletCreditWei
 
-      const amountPerBot = creditToDistribute / BigInt(5)
-      const remainder = creditToDistribute % BigInt(5)
-      const amountForFirstBot = amountPerBot + remainder
+      if (creditToDistribute <= BigInt(0)) {
+        throw new Error(
+          `Insufficient ETH balance for distribution. ` +
+          `Balance: ${formatEther(walletBalance)} ETH, ` +
+          `Credit in DB: ${formatEther(mainWalletCreditWei)} ETH. ` +
+          `Please add more ETH to your wallet.`
+        )
+      }
 
-      // Prepare Calls
-      const calls = botWallets.map((wallet, index) => ({
-        to: getAddress(wallet.smartWalletAddress) as Address,
-        value: index === 0 ? amountForFirstBot : amountPerBot,
-        data: "0x" as Hex,
-      }))
+      // Calculate amount per bot
+      const amountPerBot: bigint = creditToDistribute / BigInt(5)
+      const remainder: bigint = creditToDistribute % BigInt(5)
+      const amountForFirstBot: bigint = amountPerBot + remainder
+
+      console.log(`\n📦 Distribution per bot:`)
+      console.log(`   → Amount per bot: ${formatEther(amountPerBot)} ETH`)
+      if (remainder > BigInt(0)) {
+        console.log(`   → First bot gets remainder: +${formatEther(remainder)} ETH`)
+      }
 
       // =============================================
-      // STEP 10: Execute Batch Transaction (FIXED)
+      // Prepare Batch Calls Array
       // =============================================
-      setStatus("Awaiting signature...")
+      setStatus("Preparing batch transaction...")
       
-      /**
-       * UNTUK MENGHINDARI ResourceUnavailableRpcError:
-       * 1. Hapus parameter 'isSponsored' karena ini memicu call ke Paymaster.
-       * 2. Gunakan 'capabilities: {}' untuk memberi tahu SDK agar tidak menggunakan Paymaster.
-       * 3. Kirim sebagai transaksi batch native.
-       */
-      const txHash = await smartWalletClient.sendTransaction({
-        account: smartWalletClient.account,
-        calls: calls,
-        chain: base,
-        capabilities: {}, // Explicitly bypass paymaster capabilities
-      }) as `0x${string}`
+      const calls: Array<{ to: Address; value: bigint; data: Hex }> = botWallets.map((wallet, index) => {
+        const amount: bigint = index === 0 ? amountForFirstBot : amountPerBot
+        const checksumAddress = getAddress(wallet.smartWalletAddress)
+        
+        console.log(`   Call #${index + 1}: ${checksumAddress} → ${formatEther(amount)} ETH`)
+        
+        return {
+          to: checksumAddress as Address,
+          value: amount,
+          data: "0x" as Hex, // Empty data for simple ETH transfer
+        }
+      })
+
+      // =============================================
+      // Execute Batch Transaction
+      // WITH PAYMASTER PROXY - Gasless transaction
+      // =============================================
+      setStatus("Awaiting signature... (1 approval for 5 transfers)")
+      
+      // Build Paymaster Proxy URL
+      const paymasterProxyUrl = typeof window !== "undefined" 
+        ? `${window.location.origin}/api/paymaster`
+        : "/api/paymaster"
+      
+      console.log(`\n📤 Sending BATCH transaction (WITH PAYMASTER PROXY)...`)
+      console.log(`   → Total calls: ${calls.length}`)
+      console.log(`   → User pays gas: NO (Gasless via Paymaster)`)
+      console.log(`   → Paymaster Proxy: ${paymasterProxyUrl}`)
+
+      // Execute batch transaction with Paymaster Proxy
+      // Using paymasterService to route through our proxy endpoint
+      const txHash = await smartWalletClient.sendTransaction(
+        {
+          calls: calls, // Array of 5 calls - batched into single tx
+        },
+        {
+          // Enable Paymaster sponsorship via proxy
+          isSponsored: true,
+          // Use Paymaster Proxy to bypass allowlist restrictions
+          capabilities: {
+            paymasterService: {
+              url: paymasterProxyUrl,
+            },
+          },
+        }
+      ) as `0x${string}`
+
+      console.log(`\n✅ Transaction submitted!`)
+      console.log(`   → Hash: ${txHash}`)
 
       setHash(txHash)
       setStatus("Confirming on blockchain...")
@@ -159,14 +178,19 @@ export function useDistributeCredits() {
         confirmations: 1,
       })
 
-      if (receipt.status !== "success") throw new Error("Transaction failed on-chain")
+      if (receipt.status !== "success") {
+        throw new Error("Transaction failed on-chain")
+      }
 
       // Record to DB
       setStatus("Recording distribution...")
-      const distributions = botWallets.map((wallet, index) => ({
-        botWalletAddress: wallet.smartWalletAddress,
-        amountWei: (index === 0 ? amountForFirstBot : amountPerBot).toString(),
-      }))
+      const distributions = botWallets.map((wallet, index) => {
+        const distAmount: bigint = index === 0 ? amountForFirstBot : amountPerBot
+        return {
+          botWalletAddress: wallet.smartWalletAddress,
+          amountWei: distAmount.toString(),
+        }
+      })
 
       await fetch("/api/bot/record-distribution", {
         method: "POST",
@@ -180,25 +204,49 @@ export function useDistributeCredits() {
 
       setIsSuccess(true)
       setStatus("Success!")
-      toast.success("Distributed successfully!")
+      
+      toast.success("Successfully distributed credit to 5 bot wallets!", {
+        description: `Total: ${formatEther(creditToDistribute)} ETH`,
+        action: {
+          label: "View",
+          onClick: () => window.open(`https://basescan.org/tx/${txHash}`, "_blank"),
+        },
+      })
 
-      return { success: true, txHash }
+      return {
+        success: true,
+        txHash: txHash,
+        amountPerBot: formatEther(amountPerBot),
+        totalDistributed: formatEther(creditToDistribute),
+        gasUsed: receipt.gasUsed.toString(),
+        method: "smart_wallet_batch_paymaster_proxy",
+        gasless: true,
+      }
 
     } catch (err: any) {
       console.error("❌ Distribution failed:", err)
       setError(err)
-      
-      let msg = err.message || "Distribution failed"
-      if (msg.includes("ResourceUnavailable") || msg.includes("allowlist")) {
-        msg = "Wallet RPC error. Ensure you have ETH in your Smart Account to pay for gas."
+      setStatus(null)
+
+      // User-friendly error messages
+      let errorMessage = err.message || "Failed to distribute credits"
+
+      if (errorMessage.includes("insufficient") || errorMessage.includes("Insufficient")) {
+        errorMessage = "Insufficient ETH balance for distribution. Please add more ETH to your wallet."
+      } else if (errorMessage.includes("rejected") || errorMessage.includes("denied") || errorMessage.includes("User rejected")) {
+        errorMessage = "Transaction was rejected by user."
+      } else if (errorMessage.includes("Paymaster") || errorMessage.includes("pm_") || errorMessage.includes("allowlist") || errorMessage.includes("not allowlisted")) {
+        errorMessage = "Paymaster Proxy error. Please check CDP_PAYMASTER_URL configuration or try again."
+      } else if (errorMessage.includes("not configured") || errorMessage.includes("CDP_PAYMASTER_URL")) {
+        errorMessage = "Paymaster service not configured. Please contact support."
       }
 
-      toast.error("Failed", { description: msg })
+      toast.error("Distribution failed", { description: errorMessage })
       throw err
     } finally {
       setIsPending(false)
     }
-  }, [smartWalletClient, privySmartWalletAddress, publicClient, checkSmartAccountDeployed, estimateGasCost, reset])
+  }, [smartWalletClient, privySmartWalletAddress, publicClient, reset])
 
   return { distribute, hash, isPending, isSuccess, error, status, reset }
 }
