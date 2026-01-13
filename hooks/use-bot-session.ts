@@ -94,6 +94,16 @@ export function useBotSession(userAddress: string | null) {
         method: "DELETE",
       })
 
+      // Handle 404 gracefully - if no active session found, consider it already stopped
+      if (response.status === 404) {
+        console.log("ℹ️ No active session found - session may already be stopped")
+        return {
+          success: true,
+          message: "Session already stopped or not found",
+          session: null,
+        }
+      }
+
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}))
         throw new Error(errorData.error || "Failed to stop bot session")

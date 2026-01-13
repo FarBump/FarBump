@@ -84,12 +84,15 @@ export function ManageBot({ userAddress, botWallets }: ManageBotProps) {
   // Uses API endpoint for faster batch fetching
   useEffect(() => {
     if (!botWallets || botWallets.length === 0 || !userAddress) {
+      setTokens([])
       return
     }
 
     const fetchTokenBalances = async () => {
       setIsLoadingTokens(true)
       try {
+        console.log(`📊 Fetching token balances for ${botWallets.length} bot wallets...`)
+        
         // Use API endpoint for faster batch token balance fetching
         const response = await fetch("/api/bot/token-balances", {
           method: "POST",
@@ -100,28 +103,38 @@ export function ManageBot({ userAddress, botWallets }: ManageBotProps) {
         })
 
         if (!response.ok) {
-          throw new Error("Failed to fetch token balances")
+          const errorData = await response.json().catch(() => ({}))
+          console.error("❌ Failed to fetch token balances:", errorData)
+          throw new Error(errorData.error || "Failed to fetch token balances")
         }
 
         const data = await response.json()
+        console.log(`✅ Token balances response:`, data)
         
-        if (data.success && data.tokens) {
+        if (data.success && data.tokens && Array.isArray(data.tokens)) {
           // Convert to TokenInfo format
-          const tokenBalances: TokenInfo[] = data.tokens.map((token: any) => ({
-            address: token.address,
-            symbol: token.symbol,
-            decimals: token.decimals,
-            balance: BigInt(token.totalBalance),
-            balanceFormatted: formatUnits(BigInt(token.totalBalance), token.decimals),
-          }))
+          const tokenBalances: TokenInfo[] = data.tokens.map((token: any) => {
+            const totalBalance = BigInt(token.totalBalance || "0")
+            return {
+              address: token.address,
+              symbol: token.symbol,
+              decimals: token.decimals,
+              balance: totalBalance,
+              balanceFormatted: formatUnits(totalBalance, token.decimals),
+            }
+          })
           
+          console.log(`✅ Found ${tokenBalances.length} tokens with balances:`, tokenBalances.map(t => `${t.symbol}: ${t.balanceFormatted}`))
           setTokens(tokenBalances)
         } else {
+          console.log("ℹ️ No tokens found or invalid response format")
           setTokens([])
         }
-      } catch (error) {
-        console.error("Error fetching token balances:", error)
-        toast.error("Failed to load token balances")
+      } catch (error: any) {
+        console.error("❌ Error fetching token balances:", error)
+        toast.error("Failed to load token balances", {
+          description: error.message || "Please try again",
+        })
         setTokens([])
       } finally {
         setIsLoadingTokens(false)
