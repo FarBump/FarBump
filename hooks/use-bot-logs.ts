@@ -69,6 +69,7 @@ export function useBotLogs({ userAddress, enabled = true, limit = 20 }: UseBotLo
   })
 
   // Set initial logs - only update if logs actually changed
+  // Ensure logs are sorted by created_at descending (newest first)
   useEffect(() => {
     if (initialLogs && initialLogs !== prevInitialLogsRef.current) {
       // Check if logs are actually different (by comparing IDs)
@@ -76,8 +77,14 @@ export function useBotLogs({ userAddress, enabled = true, limit = 20 }: UseBotLo
       const prevIds = prevInitialLogsRef.current?.map(log => log.id).join(',') || ''
       
       if (currentIds !== prevIds) {
-        prevInitialLogsRef.current = initialLogs
-        setLogs(initialLogs)
+        // Sort logs by created_at descending to ensure newest first
+        const sortedLogs = [...initialLogs].sort((a, b) => {
+          const dateA = new Date(a.created_at).getTime()
+          const dateB = new Date(b.created_at).getTime()
+          return dateB - dateA // Descending order (newest first)
+        })
+        prevInitialLogsRef.current = sortedLogs
+        setLogs(sortedLogs)
       }
     } else if (!initialLogs && prevInitialLogsRef.current) {
       // Clear logs if initialLogs becomes null/undefined
@@ -121,13 +128,20 @@ export function useBotLogs({ userAddress, enabled = true, limit = 20 }: UseBotLo
           console.log("🆕 New bot log received:", payload.new)
           const newLog = payload.new as BotLog
           
-          // Add new log to the beginning of the list
+          // Add new log to the beginning of the list (newest first)
           setLogs((prevLogs) => {
             // Check if log already exists (prevent duplicates)
             if (prevLogs.some((log) => log.id === newLog.id)) {
               return prevLogs
             }
-            return [newLog, ...prevLogs]
+            // Ensure newest logs are at the beginning
+            const updatedLogs = [newLog, ...prevLogs]
+            // Sort by created_at descending to ensure newest first
+            return updatedLogs.sort((a, b) => {
+              const dateA = new Date(a.created_at).getTime()
+              const dateB = new Date(b.created_at).getTime()
+              return dateB - dateA // Descending order (newest first)
+            })
           })
         }
       )

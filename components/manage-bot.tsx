@@ -81,70 +81,55 @@ export function ManageBot({ userAddress, botWallets }: ManageBotProps) {
   const [tokens, setTokens] = useState<TokenInfo[]>([])
 
   // Fetch token balances for all bot wallets
+  // Uses API endpoint for faster batch fetching
   useEffect(() => {
-    if (!botWallets || botWallets.length === 0 || !publicClient || !userAddress) {
+    if (!botWallets || botWallets.length === 0 || !userAddress) {
       return
     }
 
     const fetchTokenBalances = async () => {
       setIsLoadingTokens(true)
       try {
-        // Get all unique token addresses from bot wallet balances
-        // For now, we'll check common tokens or fetch from a token list
-        // In production, you might want to fetch from a token registry or scan contracts
-        
-        // Common Base tokens to check
-        const commonTokens: Array<{ address: string; symbol: string; decimals: number }> = [
-          { address: "0x4200000000000000000000000000000000000006", symbol: "WETH", decimals: 18 },
-          { address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", symbol: "USDC", decimals: 6 },
-          { address: "0x50c5725949A6F0c72E6C4a641F24049A917DB0Cb", symbol: "DAI", decimals: 18 },
-        ]
+        // Use API endpoint for faster batch token balance fetching
+        const response = await fetch("/api/bot/token-balances", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            botWallets: botWallets.map(w => w.smartWalletAddress),
+          }),
+        })
 
-        const tokenBalances: TokenInfo[] = []
-
-        // Check balances for each token across all bot wallets
-        for (const token of commonTokens) {
-          let totalBalance = BigInt(0)
-
-          for (const botWallet of botWallets) {
-            try {
-              const balance = await publicClient.readContract({
-                address: token.address as Address,
-                abi: ERC20_ABI,
-                functionName: "balanceOf",
-                args: [botWallet.smartWalletAddress as Address],
-              })
-
-              totalBalance += BigInt(balance.toString())
-            } catch (error) {
-              // Token might not exist or contract might not support balanceOf
-              console.warn(`Failed to fetch balance for ${token.symbol} in ${botWallet.smartWalletAddress}:`, error)
-            }
-          }
-
-          // Only include tokens with non-zero balance
-          if (totalBalance > BigInt(0)) {
-            tokenBalances.push({
-              address: token.address,
-              symbol: token.symbol,
-              decimals: token.decimals,
-              balance: totalBalance,
-              balanceFormatted: formatUnits(totalBalance, token.decimals),
-            })
-          }
+        if (!response.ok) {
+          throw new Error("Failed to fetch token balances")
         }
 
-        setTokens(tokenBalances)
+        const data = await response.json()
+        
+        if (data.success && data.tokens) {
+          // Convert to TokenInfo format
+          const tokenBalances: TokenInfo[] = data.tokens.map((token: any) => ({
+            address: token.address,
+            symbol: token.symbol,
+            decimals: token.decimals,
+            balance: BigInt(token.totalBalance),
+            balanceFormatted: formatUnits(BigInt(token.totalBalance), token.decimals),
+          }))
+          
+          setTokens(tokenBalances)
+        } else {
+          setTokens([])
+        }
       } catch (error) {
         console.error("Error fetching token balances:", error)
         toast.error("Failed to load token balances")
+        setTokens([])
       } finally {
         setIsLoadingTokens(false)
       }
     }
 
     fetchTokenBalances()
-  }, [botWallets, publicClient, userAddress])
+  }, [botWallets, userAddress])
 
   // Get selected token info
   const selectedTokenInfo = useMemo(() => {
@@ -277,22 +262,18 @@ export function ManageBot({ userAddress, botWallets }: ManageBotProps) {
 
   return (
     <Card className="glass-card border-border p-4">
-      <h3 className="mb-4 text-sm font-semibold text-foreground">Manage Bot</h3>
+      <h3 className="mb-4 text-sm font-semibold text-foreground">Send Token</h3>
 
       <div className="space-y-4">
-        {/* Send Token Section */}
-        <div className="space-y-3">
-          <h4 className="text-xs font-medium text-muted-foreground">Send Token</h4>
-
-          {/* Token Selection */}
-          <div className="space-y-2">
-            <Label htmlFor="token-select" className="text-xs text-muted-foreground">
-              Select Token
-            </Label>
-            <Select value={selectedToken} onValueChange={setSelectedToken} disabled={isLoadingTokens}>
-              <SelectTrigger id="token-select" className="w-full">
-                <SelectValue placeholder={isLoadingTokens ? "Loading tokens..." : "Select a token"} />
-              </SelectTrigger>
+        {/* Token Selection */}
+        <div className="space-y-2">
+          <Label htmlFor="token-select" className="text-xs text-muted-foreground">
+            Select Token
+          </Label>
+          <Select value={selectedToken} onValueChange={setSelectedToken} disabled={isLoadingTokens}>
+            <SelectTrigger id="token-select" className="w-full">
+              <SelectValue placeholder={isLoadingTokens ? "Loading tokens..." : "Select Token"} />
+            </SelectTrigger>
               <SelectContent>
                 {tokens.length === 0 ? (
                   <SelectItem value="no-tokens" disabled>
@@ -319,80 +300,79 @@ export function ManageBot({ userAddress, botWallets }: ManageBotProps) {
             )}
           </div>
 
-          {/* Recipient Address */}
-          <div className="space-y-2">
-            <Label htmlFor="recipient-address" className="text-xs text-muted-foreground">
-              Recipient Address
-            </Label>
-            <Input
-              id="recipient-address"
-              type="text"
-              placeholder="0x..."
-              value={recipientAddress}
-              onChange={(e) => setRecipientAddress(e.target.value)}
-              disabled={isSending}
-              className="font-mono text-xs"
-            />
-          </div>
-
-          {/* Amount */}
-          <div className="space-y-2">
-            <Label htmlFor="amount" className="text-xs text-muted-foreground">
-              Amount
-            </Label>
-            <div className="relative">
-              <Input
-                id="amount"
-                type="text"
-                placeholder="0.0"
-                value={amount}
-                onChange={(e) => {
-                  // Allow only numbers and decimal point
-                  const value = e.target.value.replace(/[^0-9.]/g, "")
-                  setAmount(value)
-                }}
-                disabled={isSending || !selectedToken}
-                className="pr-12 font-mono text-xs"
-              />
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="absolute right-1 top-1/2 h-6 -translate-y-1/2 px-2 text-xs"
-                onClick={handleMax}
-                disabled={isSending || !selectedTokenInfo}
-              >
-                <Maximize2 className="h-3 w-3 mr-1" />
-                Max
-              </Button>
-            </div>
-            {selectedTokenInfo && amount && (
-              <p className="text-xs text-muted-foreground">
-                ≈ {amount} {selectedTokenInfo.symbol}
-              </p>
-            )}
-          </div>
-
-          {/* Send Button */}
-          <Button
-            onClick={handleSend}
-            disabled={isSending || !selectedToken || !recipientAddress || !amount || !selectedTokenInfo}
-            className="w-full"
-            size="sm"
-          >
-            {isSending ? (
-              <>
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                Sending...
-              </>
-            ) : (
-              <>
-                <Send className="mr-2 h-4 w-4" />
-                Send
-              </>
-            )}
-          </Button>
+        {/* Recipient Address */}
+        <div className="space-y-2">
+          <Label htmlFor="recipient-address" className="text-xs text-muted-foreground">
+            Recipient Address
+          </Label>
+          <Input
+            id="recipient-address"
+            type="text"
+            placeholder="0x..."
+            value={recipientAddress}
+            onChange={(e) => setRecipientAddress(e.target.value)}
+            disabled={isSending}
+            className="font-mono text-xs"
+          />
         </div>
+
+        {/* Amount */}
+        <div className="space-y-2">
+          <Label htmlFor="amount" className="text-xs text-muted-foreground">
+            Amount
+          </Label>
+          <div className="relative">
+            <Input
+              id="amount"
+              type="text"
+              placeholder="0.0"
+              value={amount}
+              onChange={(e) => {
+                // Allow only numbers and decimal point
+                const value = e.target.value.replace(/[^0-9.]/g, "")
+                setAmount(value)
+              }}
+              disabled={isSending || !selectedToken}
+              className="pr-12 font-mono text-xs"
+            />
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="absolute right-1 top-1/2 h-6 -translate-y-1/2 px-2 text-xs"
+              onClick={handleMax}
+              disabled={isSending || !selectedTokenInfo}
+            >
+              <Maximize2 className="h-3 w-3 mr-1" />
+              Max
+            </Button>
+          </div>
+          {selectedTokenInfo && amount && (
+            <p className="text-xs text-muted-foreground">
+              ≈ {amount} {selectedTokenInfo.symbol}
+            </p>
+          )}
+        </div>
+
+        {/* Send Button */}
+        <Button
+          onClick={handleSend}
+          disabled={isSending || !selectedToken || !recipientAddress || !amount || !selectedTokenInfo}
+          className="w-full"
+          size="sm"
+        >
+          {isSending ? (
+            <>
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              Sending...
+            </>
+          ) : (
+            <>
+              <Send className="mr-2 h-4 w-4" />
+              Send
+            </>
+          )}
+        </Button>
       </div>
     </Card>
   )
