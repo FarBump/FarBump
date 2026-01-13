@@ -160,14 +160,21 @@ export function useDistributeCredits() {
 
       let primaryTxHash: `0x${string}`
       
-      console.log(`📤 Sending batch transaction (normal - user pays gas)...`)
+      console.log(`📤 Sending batch transaction (NORMAL - NO PAYMASTER - user pays gas)...`)
       console.log(`   Using Smart Wallet address: ${smartWalletAddress}`)
       console.log(`   Total calls: ${calls.length}`)
+      console.log(`   isSponsored: false (explicitly disabled)`)
       
-      // Send normal batch transaction (user pays gas)
-      primaryTxHash = await smartWalletClient.sendTransaction({
-        calls: calls,
-      }) as `0x${string}`
+      // Send normal batch transaction WITHOUT Paymaster (user pays gas)
+      // CRITICAL: Set isSponsored: false to explicitly disable Paymaster
+      primaryTxHash = await smartWalletClient.sendTransaction(
+        {
+          calls: calls,
+        },
+        {
+          isSponsored: false, // EXPLICITLY DISABLE PAYMASTER
+        }
+      ) as `0x${string}`
       
       console.log(`✅ Batch transaction sent successfully!`)
       console.log(`   Transaction hash: ${primaryTxHash}`)
