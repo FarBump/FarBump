@@ -87,6 +87,10 @@ export default function BumpBotDashboard() {
   const [isTokenVerified, setIsTokenVerified] = useState(false)
   const [tokenMetadata, setTokenMetadata] = useState<{ name: string; symbol: string; decimals: number } | null>(null)
   
+  // CRITICAL: Use a ref to track if we've already restored state to prevent multiple restorations
+  // Must be declared early at component level, before any useEffect that uses it
+  const hasRestoredStateRef = useRef(false)
+  
   // CRITICAL: Persist isBumping state to localStorage
   // This ensures state persists across tab switches and page refreshes
   useEffect(() => {
@@ -112,25 +116,28 @@ export default function BumpBotDashboard() {
     }
   }, [targetTokenAddress, privySmartWalletAddress])
   
-  // CRITICAL: Restore sticky state from localStorage on mount
+  // CRITICAL: Restore sticky state from localStorage after privySmartWalletAddress is available
   // This ensures state persists across tab switches and page refreshes
+  // Use try-catch to prevent any initialization errors
   useEffect(() => {
-    if (typeof window !== "undefined" && privySmartWalletAddress) {
+    if (typeof window === "undefined") return
+    if (!privySmartWalletAddress) return
+    if (hasRestoredStateRef.current) return
+    
+    try {
       // Restore isBumping state
-      const storedIsBumping = localStorage.getItem(`isBumping_${privySmartWalletAddress}`)
-      if (storedIsBumping === "true" && !isActive) {
+      const storedIsBumping = window.localStorage.getItem(`isBumping_${privySmartWalletAddress}`)
+      if (storedIsBumping === "true") {
         setIsActive(true)
       }
       
-      // First, restore targetTokenAddress from localStorage
-      const storedAddress = localStorage.getItem(`targetTokenAddress_${privySmartWalletAddress}`)
-      if (storedAddress && storedAddress !== targetTokenAddress) {
-        setTargetTokenAddress(storedAddress)
-      }
-      
-      // Then, restore metadata and verified status
+      // Restore targetTokenAddress from localStorage
+      const storedAddress = window.localStorage.getItem(`targetTokenAddress_${privySmartWalletAddress}`)
       if (storedAddress) {
-        const storedMetadata = localStorage.getItem(`targetTokenMetadata_${privySmartWalletAddress}`)
+        setTargetTokenAddress(storedAddress)
+        
+        // Restore metadata and verified status
+        const storedMetadata = window.localStorage.getItem(`targetTokenMetadata_${privySmartWalletAddress}`)
         if (storedMetadata) {
           try {
             const metadata = JSON.parse(storedMetadata)
@@ -141,8 +148,15 @@ export default function BumpBotDashboard() {
           }
         }
       }
+      
+      // Mark as restored to prevent re-restoration
+      hasRestoredStateRef.current = true
+    } catch (error) {
+      console.error("Error restoring state from localStorage:", error)
+      // Mark as restored even on error to prevent infinite retries
+      hasRestoredStateRef.current = true
     }
-  }, [privySmartWalletAddress]) // Only depend on privySmartWalletAddress, not targetTokenAddress or isActive
+  }, [privySmartWalletAddress]) // Only depend on privySmartWalletAddress
   
   // Persist token metadata when it changes
   useEffect(() => {
