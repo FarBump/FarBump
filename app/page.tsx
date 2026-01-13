@@ -81,15 +81,9 @@ export default function BumpBotDashboard() {
   const [isCreatingSmartWallet, setIsCreatingSmartWallet] = useState(false)
   
   // State for target token address (from TokenInput)
-  // CRITICAL: Persist targetTokenAddress in localStorage so it doesn't reset when switching tabs
-  // Only clear when user stops bumping or explicitly clears it
-  const [targetTokenAddress, setTargetTokenAddress] = useState<string | null>(() => {
-    if (typeof window !== "undefined") {
-      const stored = localStorage.getItem(`targetTokenAddress_${privySmartWalletAddress || 'default'}`)
-      return stored || null
-    }
-    return null
-  })
+  // CRITICAL: Don't access privySmartWalletAddress in initializer - it's not initialized yet
+  // Will be restored from localStorage in useEffect after privySmartWalletAddress is available
+  const [targetTokenAddress, setTargetTokenAddress] = useState<string | null>(null)
   const [isTokenVerified, setIsTokenVerified] = useState(false)
   const [tokenMetadata, setTokenMetadata] = useState<{ name: string; symbol: string; decimals: number } | null>(null)
   
@@ -327,15 +321,9 @@ export default function BumpBotDashboard() {
   }, [privyReady, authenticated, wallets, smartWalletClientAddress, user?.id, embeddedWalletAddress, wagmiAddress, smartWallets.length, verifySmartWalletContract])
   
   const [isConnecting, setIsConnecting] = useState(false)
-  // CRITICAL: Sticky state for isBumping - persist to localStorage
-  // Restore from localStorage on mount to maintain state across tab switches and page refreshes
-  const [isActive, setIsActive] = useState<boolean>(() => {
-    if (typeof window !== "undefined" && privySmartWalletAddress) {
-      const stored = localStorage.getItem(`isBumping_${privySmartWalletAddress}`)
-      return stored === "true"
-    }
-    return false
-  })
+  // CRITICAL: Sticky state for isBumping - don't access privySmartWalletAddress in initializer
+  // Will be restored from localStorage in useEffect after privySmartWalletAddress is available
+  const [isActive, setIsActive] = useState<boolean>(false)
   const [fuelBalance] = useState(1250.5)
   const [buyAmountUsd, setBuyAmountUsd] = useState("0.01") // Default: 0.01 USD (micro transaction support)
   const [intervalSeconds, setIntervalSeconds] = useState(60) // Default: 60 seconds (1 minute)
