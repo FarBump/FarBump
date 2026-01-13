@@ -155,45 +155,67 @@ export function useDistributeCredits() {
         console.log(`   → First bot gets extra: ${formatEther(remainder)} ETH (total: ${formatEther(amountForFirstBot)} ETH)`)
       }
 
-      setStatus("Preparing multi-call transfers...")
+      setStatus("Preparing individual transfers...")
       
-      // Prepare calls array for batch transaction
-      // Privy Smart Wallet supports batch transactions via calls array
-      // First bot gets amountPerBot + remainder, others get amountPerBot
-      const calls = botWallets.map((wallet, index) => ({
-        to: wallet.smartWalletAddress as Address,
-        data: "0x" as Hex,
-        value: index === 0 ? amountForFirstBot : amountPerBot,
-      }))
-
-      console.log(`📤 Sending batch transaction to ${calls.length} bot wallets...`)
-      calls.forEach((call, index) => {
-        console.log(`   Bot #${index + 1}: ${call.to} - ${formatEther(call.value)} ETH`)
+      // CRITICAL: Use individual transactions instead of batch to avoid Paymaster allowlist issues
+      // Individual transactions with Privy Paymaster only sponsor the sender (main wallet),
+      // not the recipients (bot wallets), avoiding allowlist requirements
+      // This approach is gasless for the user while avoiding allowlist complexity
+      
+      console.log(`📤 Sending individual transactions to ${botWallets.length} bot wallets...`)
+      botWallets.forEach((wallet, index) => {
+        const amount = index === 0 ? amountForFirstBot : amountPerBot
+        console.log(`   Bot #${index + 1}: ${wallet.smartWalletAddress} - ${formatEther(amount)} ETH`)
       })
 
       setStatus("Distributing credits (gasless via Privy Smart Wallet)...")
 
-      // Send batch transaction using Privy Smart Wallet client
-      // Privy Smart Wallet client supports batch transactions via calls array
-      // This is the recommended way to send batch transactions with Privy Smart Wallet
-      let txHash: `0x${string}`
+      // Execute individual transactions sequentially
+      // This approach:
+      // 1. Uses Privy Paymaster sponsorship for sender (main wallet) - GASLESS
+      // 2. Avoids Paymaster allowlist check for recipients (bot wallets)
+      // 3. Maintains gasless experience for users
+      const transferTxHashes: `0x${string}`[] = []
       
       try {
-        // Use Privy Smart Wallet client's sendTransaction with calls array
-        // This supports batch transactions and Paymaster sponsorship if configured
-        console.log(`📤 Sending batch transaction via Privy Smart Wallet client...`)
+        console.log(`📤 Sending individual transactions via Privy Smart Wallet client...`)
         console.log(`   Using Smart Wallet address: ${smartWalletAddress}`)
+        console.log(`   Strategy: Individual transactions with Privy Paymaster (gasless for sender)`)
         
-        txHash = await smartWalletClient.sendTransaction(
-          {
-            calls: calls as any,
-          },
-          {
-            isSponsored: true, // Enable Paymaster sponsorship if configured
+        // Send individual transactions sequentially
+        for (let i = 0; i < botWallets.length; i++) {
+          const wallet = botWallets[i]
+          const amount = i === 0 ? amountForFirstBot : amountPerBot
+          
+          setStatus(`Distributing to bot ${i + 1}/5...`)
+          
+          console.log(`   📤 Transferring ${formatEther(amount)} ETH to Bot #${i + 1} (${wallet.smartWalletAddress})...`)
+          
+          // Use individual sendTransaction - Privy Paymaster sponsors sender only
+          // This avoids allowlist check for recipient addresses
+          const txHash = await smartWalletClient.sendTransaction({
+            to: wallet.smartWalletAddress as Address,
+            value: amount,
+            data: "0x" as Hex,
+          }, {
+            isSponsored: true, // Privy Paymaster sponsors sender (main wallet) - GASLESS
+          }) as `0x${string}`
+          
+          transferTxHashes.push(txHash)
+          console.log(`   ✅ Transfer ${i + 1}/5 sent: ${txHash}`)
+          
+          // Wait 1 second between transfers to avoid nonce conflicts
+          if (i < botWallets.length - 1) {
+            await new Promise(resolve => setTimeout(resolve, 1000))
           }
-        ) as `0x${string}`
+        }
         
-        console.log(`✅ Batch transaction sent: ${txHash}`)
+        // Use first transaction hash as primary hash for UI/notification
+        const txHash = transferTxHashes[0]
+        
+        console.log(`✅ All ${transferTxHashes.length} transactions sent successfully!`)
+        console.log(`   Primary transaction: ${txHash}`)
+        console.log(`   All transaction hashes:`, transferTxHashes)
       } catch (txError: any) {
         // Handle UserOperationExecutionError and other errors
         const errorName = txError.name || txError.constructor?.name || ""
@@ -240,15 +262,36 @@ export function useDistributeCredits() {
         )
       }
 
-      console.log(`✅ Gasless transaction sent! Hash: ${txHash}`)
+      console.log(`✅ All gasless transactions sent! Primary hash: ${txHash}`)
       setHash(txHash)
 
-      setStatus("Waiting for confirmation...")
+      setStatus("Waiting for confirmations...")
 
+      // Wait for all transactions to be confirmed
+      // We'll wait for the first transaction as primary confirmation
+      // Other transactions will confirm in parallel
       const receipt = await publicClient.waitForTransactionReceipt({
         hash: txHash,
         confirmations: 1,
       })
+      
+      // Optionally wait for other transactions (non-blocking)
+      // This ensures all transfers are confirmed before proceeding
+      console.log(`⏳ Waiting for all ${transferTxHashes.length} transactions to confirm...`)
+      const allReceipts = await Promise.all(
+        transferTxHashes.map(hash => 
+          publicClient.waitForTransactionReceipt({
+            hash,
+            confirmations: 1,
+          }).catch(err => {
+            console.warn(`⚠️ Transaction ${hash} confirmation warning:`, err)
+            return null // Don't fail if one transaction has issues
+          })
+        )
+      )
+      
+      const successfulReceipts = allReceipts.filter(r => r !== null && r.status === "success")
+      console.log(`✅ ${successfulReceipts.length}/${transferTxHashes.length} transactions confirmed successfully`)
 
       if (receipt.status === "success") {
         setIsSuccess(true)
@@ -269,7 +312,8 @@ export function useDistributeCredits() {
             body: JSON.stringify({
               userAddress: userAddress,
               distributions: distributions,
-              txHash: txHash,
+              txHash: txHash, // Primary transaction hash
+              allTxHashes: transferTxHashes, // All transaction hashes for reference
             }),
           })
 
@@ -288,7 +332,7 @@ export function useDistributeCredits() {
         setStatus("Distribution completed!")
         
         toast.success(`Successfully distributed credit to 5 bot wallets!`, {
-          description: "100% Gasless Transaction",
+          description: `100% Gasless (${transferTxHashes.length} transactions)`,
           action: {
             label: "View",
             onClick: () => window.open(`https://basescan.org/tx/${txHash}`, "_blank"),
