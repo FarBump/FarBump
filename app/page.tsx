@@ -87,10 +87,6 @@ export default function BumpBotDashboard() {
   const [isTokenVerified, setIsTokenVerified] = useState(false)
   const [tokenMetadata, setTokenMetadata] = useState<{ name: string; symbol: string; decimals: number } | null>(null)
   
-  // CRITICAL: Sticky state for isBumping - must be declared before useEffect that uses it
-  // Don't access privySmartWalletAddress in initializer - will be restored in useEffect
-  const [isActive, setIsActive] = useState<boolean>(false)
-  
   // CRITICAL: Use a ref to track if we've already restored state to prevent multiple restorations
   // Must be declared early at component level, before any useEffect that uses it
   const hasRestoredStateRef = useRef(false)
