@@ -168,19 +168,21 @@ export function useDistributeCredits() {
         console.log(`   Bot #${index + 1}: ${wallet.smartWalletAddress} - ${formatEther(amount)} ETH`)
       })
 
-      setStatus("Distributing credits (gasless via Privy Smart Wallet)...")
+      setStatus("Distributing credits (gasless via CDP Paymaster - Sender-based)...")
 
       // Execute individual transactions sequentially
       // This approach:
-      // 1. Uses Privy Paymaster sponsorship for sender (main wallet) - GASLESS
-      // 2. Avoids Paymaster allowlist check for recipients (bot wallets)
-      // 3. Maintains gasless experience for users
+      // 1. Uses CDP Paymaster with Sender-based sponsorship (only checks sender, not recipients)
+      // 2. Privy Smart Wallet client uses CDP Paymaster configured in Privy Dashboard
+      // 3. No allowlist needed for bot wallet addresses (Sender-based policy)
+      // 4. Maintains gasless experience for users
       const transferTxHashes: `0x${string}`[] = []
       
       try {
-        console.log(`📤 Sending individual transactions via Privy Smart Wallet client...`)
+        console.log(`📤 Sending individual transactions via Privy Smart Wallet with CDP Paymaster...`)
         console.log(`   Using Smart Wallet address: ${smartWalletAddress}`)
-        console.log(`   Strategy: Individual transactions with Privy Paymaster (gasless for sender)`)
+        console.log(`   Paymaster: CDP Paymaster (Sender-based sponsorship)`)
+        console.log(`   Strategy: Individual transactions - only sender is checked, recipients are not`)
         
         // Send individual transactions sequentially
         for (let i = 0; i < botWallets.length; i++) {
@@ -191,14 +193,17 @@ export function useDistributeCredits() {
           
           console.log(`   📤 Transferring ${formatEther(amount)} ETH to Bot #${i + 1} (${wallet.smartWalletAddress})...`)
           
-          // Use individual sendTransaction - Privy Paymaster sponsors sender only
-          // This avoids allowlist check for recipient addresses
+          // Use individual sendTransaction with CDP Paymaster (Sender-based sponsorship)
+          // CDP Paymaster with Sender-based policy only checks the sender (Privy Smart Wallet)
+          // Recipients (bot wallets) are NOT checked, so no allowlist needed
           const txHash = await smartWalletClient.sendTransaction({
             to: wallet.smartWalletAddress as Address,
             value: amount,
             data: "0x" as Hex,
           }, {
-            isSponsored: true, // Privy Paymaster sponsors sender (main wallet) - GASLESS
+            isSponsored: true, // CDP Paymaster sponsors sender (main wallet) - GASLESS
+            // Note: CDP Paymaster URL must be configured in Privy Dashboard
+            // Sponsorship policy must be set to "Sender-based" in CDP Paymaster Dashboard
           }) as `0x${string}`
           
           transferTxHashes.push(txHash)
@@ -332,7 +337,7 @@ export function useDistributeCredits() {
         setStatus("Distribution completed!")
         
         toast.success(`Successfully distributed credit to 5 bot wallets!`, {
-          description: `100% Gasless (${transferTxHashes.length} transactions)`,
+          description: `100% Gasless via CDP Paymaster (${transferTxHashes.length} transactions)`,
           action: {
             label: "View",
             onClick: () => window.open(`https://basescan.org/tx/${txHash}`, "_blank"),
