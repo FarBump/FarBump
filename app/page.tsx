@@ -339,9 +339,7 @@ export default function BumpBotDashboard() {
   }, [privyReady, authenticated, wallets, smartWalletClientAddress, user?.id, embeddedWalletAddress, wagmiAddress, smartWallets.length, verifySmartWalletContract])
   
   const [isConnecting, setIsConnecting] = useState(false)
-  // CRITICAL: Sticky state for isBumping - don't access privySmartWalletAddress in initializer
-  // Will be restored from localStorage in useEffect after privySmartWalletAddress is available
-  const [isActive, setIsActive] = useState<boolean>(false)
+  // Note: isActive is declared earlier (line 92) before useEffect that uses it
   const [fuelBalance] = useState(1250.5)
   const [buyAmountUsd, setBuyAmountUsd] = useState("0.01") // Default: 0.01 USD (micro transaction support)
   const [intervalSeconds, setIntervalSeconds] = useState(60) // Default: 60 seconds (1 minute)
