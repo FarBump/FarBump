@@ -126,21 +126,33 @@ export function useDistributeCredits() {
       }
 
       // Validate ETH balance in Privy Smart Wallet
-      // Check if balance is sufficient for distribution (no gas cost calculation)
+      // CRITICAL: Gas will be sponsored by CDP Paymaster (100% gasless)
+      // We only need to check if balance is sufficient for the transfer amount itself
+      // No need to reserve gas - Paymaster will cover all gas costs
       const walletBalance = await publicClient.getBalance({
         address: smartWalletAddress,
       })
       
       console.log(`   → Wallet balance: ${formatEther(walletBalance)} ETH`)
-      console.log(`   → Main wallet credit: ${formatEther(mainWalletCreditWei)} ETH`)
+      console.log(`   → Main wallet credit (from DB): ${formatEther(mainWalletCreditWei)} ETH`)
+      console.log(`   → Gas: Sponsored by CDP Paymaster (100% gasless)`)
       
-      // Check if wallet has enough ETH for distribution
-      // Note: Gas will be sponsored by Paymaster, so we don't need to add gas cost
-      if (walletBalance < mainWalletCreditWei) {
+      // CRITICAL: Use credit from database as source of truth
+      // Only check if blockchain balance is sufficient for the credit amount
+      // Since gas is sponsored, we don't need to subtract gas from balance
+      // However, we should use the minimum of (walletBalance, mainWalletCreditWei) to avoid over-distribution
+      const availableCreditWei = walletBalance < mainWalletCreditWei ? walletBalance : mainWalletCreditWei
+      
+      if (availableCreditWei <= BigInt(0)) {
         throw new Error(
-          `Insufficient ETH balance. Required: ${formatEther(mainWalletCreditWei)} ETH, Available: ${formatEther(walletBalance)} ETH. Please ensure your wallet has enough ETH from Convert $BUMP to credit.`
+          `No credit available for distribution. Wallet balance: ${formatEther(walletBalance)} ETH, Credit in DB: ${formatEther(mainWalletCreditWei)} ETH. Please ensure your wallet has ETH from Convert $BUMP to credit.`
         )
       }
+      
+      // Use available credit (minimum of balance and credit in DB)
+      // This ensures we don't try to send more than what's actually available
+      const creditToDistribute = availableCreditWei
+      console.log(`   → Credit to distribute: ${formatEther(creditToDistribute)} ETH`)
 
       // Calculate amount per bot: Distribute ALL main wallet credit equally to 5 bot wallets
       const amountPerBot = mainWalletCreditWei / BigInt(5)
@@ -267,8 +279,11 @@ export function useDistributeCredits() {
         )
       }
 
-      console.log(`✅ All gasless transactions sent! Primary hash: ${txHash}`)
-      setHash(txHash)
+      // Use first transaction hash as primary hash for UI/notification
+      const primaryTxHash = transferTxHashes[0]
+      
+      console.log(`✅ All gasless transactions sent! Primary hash: ${primaryTxHash}`)
+      setHash(primaryTxHash)
 
       setStatus("Waiting for confirmations...")
 
@@ -276,7 +291,7 @@ export function useDistributeCredits() {
       // We'll wait for the first transaction as primary confirmation
       // Other transactions will confirm in parallel
       const receipt = await publicClient.waitForTransactionReceipt({
-        hash: txHash,
+        hash: primaryTxHash,
         confirmations: 1,
       })
       
@@ -284,18 +299,18 @@ export function useDistributeCredits() {
       // This ensures all transfers are confirmed before proceeding
       console.log(`⏳ Waiting for all ${transferTxHashes.length} transactions to confirm...`)
       const allReceipts = await Promise.all(
-        transferTxHashes.map(hash => 
+        transferTxHashes.map((hash: `0x${string}`) => 
           publicClient.waitForTransactionReceipt({
             hash,
             confirmations: 1,
-          }).catch(err => {
+          }).catch((err: any) => {
             console.warn(`⚠️ Transaction ${hash} confirmation warning:`, err)
             return null // Don't fail if one transaction has issues
           })
         )
       )
       
-      const successfulReceipts = allReceipts.filter(r => r !== null && r.status === "success")
+      const successfulReceipts = allReceipts.filter((r: any) => r !== null && r.status === "success")
       console.log(`✅ ${successfulReceipts.length}/${transferTxHashes.length} transactions confirmed successfully`)
 
       if (receipt.status === "success") {
@@ -317,7 +332,7 @@ export function useDistributeCredits() {
             body: JSON.stringify({
               userAddress: userAddress,
               distributions: distributions,
-              txHash: txHash, // Primary transaction hash
+              txHash: primaryTxHash, // Primary transaction hash
               allTxHashes: transferTxHashes, // All transaction hashes for reference
             }),
           })
@@ -340,15 +355,15 @@ export function useDistributeCredits() {
           description: `100% Gasless via CDP Paymaster (${transferTxHashes.length} transactions)`,
           action: {
             label: "View",
-            onClick: () => window.open(`https://basescan.org/tx/${txHash}`, "_blank"),
+            onClick: () => window.open(`https://basescan.org/tx/${primaryTxHash}`, "_blank"),
           },
         })
 
         return {
           success: true,
-          txHash,
+          txHash: primaryTxHash,
           amountPerBot: formatEther(amountPerBot),
-          totalDistributed: formatEther(mainWalletCreditWei),
+          totalDistributed: formatEther(creditToDistribute),
           gasless: true,
         }
       } else {

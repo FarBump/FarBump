@@ -12,7 +12,7 @@ import { ActivityFeed } from "@/components/activity-feed"
 import { BotLiveActivity } from "@/components/bot-live-activity"
 import { PriceChart } from "@/components/price-chart"
 import { AnalyticsCards } from "@/components/analytics-cards"
-import { WalletHistory } from "@/components/wallet-history"
+import { ManageBot } from "@/components/manage-bot"
 import { User } from "lucide-react"
 import Image from "next/image"
 import { useFarcasterMiniApp } from "@/components/miniapp-provider"
@@ -1148,10 +1148,10 @@ export default function BumpBotDashboard() {
               Live Activity
             </TabsTrigger>
             <TabsTrigger
-              value="history"
+              value="manage"
               className="text-xs font-medium data-[state=active]:bg-primary data-[state=active]:text-primary-foreground"
             >
-              Wallet History
+              Manage Bot
             </TabsTrigger>
           </TabsList>
 
@@ -1224,8 +1224,8 @@ export default function BumpBotDashboard() {
             />
           </TabsContent>
 
-          <TabsContent value="history" className="mt-4">
-            <WalletHistory />
+          <TabsContent value="manage" className="mt-4">
+            <ManageBot userAddress={privySmartWalletAddress} botWallets={existingBotWallets} />
           </TabsContent>
         </Tabs>
       </div>
