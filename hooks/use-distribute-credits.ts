@@ -45,22 +45,7 @@ export function useDistributeCredits() {
     setIsPending(true)
 
     try {
-      // Validate Privy Smart Wallet
-      if (!smartWalletClient) {
-        throw new Error("Privy Smart Wallet client not found. Please login again.")
-      }
-
-      if (!privySmartWalletAddress) {
-        throw new Error("Privy Smart Wallet address not found. Please login again.")
-      }
-
-      const smartWalletAddress = userAddress.toLowerCase() === privySmartWalletAddress.toLowerCase()
-        ? privySmartWalletAddress
-        : (userAddress as Address)
-
-      console.log(`✅ Privy Smart Wallet connected: ${smartWalletAddress}`)
-      console.log(`   Chain: Base Mainnet (${base.id})`)
-
+      // Validate inputs
       if (!botWallets || botWallets.length !== 5) {
         throw new Error(`Expected 5 bot wallets, but found ${botWallets?.length || 0}`)
       }
@@ -69,8 +54,95 @@ export function useDistributeCredits() {
         throw new Error("No credit balance available for distribution")
       }
 
-      console.log("💰 Starting Credit Distribution (Normal Transaction)...")
-      console.log(`   → Distributing ALL credit from main wallet to 5 bot wallets`)
+      console.log("💰 Starting Credit Distribution...")
+      console.log(`   → User Address: ${userAddress}`)
+      console.log(`   → Bot Wallets: ${botWallets.length}`)
+
+      // ===============================================
+      // METHOD 1: Try Backend API (Relayer) First
+      // This bypasses Paymaster allowlist issues
+      // ===============================================
+      setStatus("Connecting to backend relayer...")
+
+      try {
+        console.log(`\n📤 Attempting backend API distribution...`)
+        
+        const response = await fetch("/api/bot/distribute-credits", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            userAddress: userAddress,
+            botWallets: botWallets.map(w => ({ smartWalletAddress: w.smartWalletAddress })),
+          }),
+        })
+
+        const data = await response.json()
+
+        // If backend succeeded
+        if (response.ok && data.success) {
+          console.log(`✅ Backend distribution successful!`)
+          console.log(`   → Transaction hash: ${data.txHash}`)
+          console.log(`   → Total distributed: ${data.totalDistributed} ETH`)
+          console.log(`   → Method: ${data.method}`)
+          
+          setHash(data.txHash as `0x${string}`)
+          setIsSuccess(true)
+          setStatus("Distribution completed!")
+          
+          toast.success(`Successfully distributed credit to ${data.transfers?.length || 5} bot wallets!`, {
+            description: `Total: ${data.totalDistributed} ETH`,
+            action: data.txHash ? {
+              label: "View",
+              onClick: () => window.open(`https://basescan.org/tx/${data.txHash}`, "_blank"),
+            } : undefined,
+          })
+
+          return {
+            success: true,
+            txHash: data.txHash,
+            amountPerBot: data.amountPerBot,
+            totalDistributed: data.totalDistributed,
+            method: "backend",
+          }
+        }
+
+        // If backend says to fallback
+        if (data.fallback) {
+          console.log(`⚠️ Backend API requested fallback: ${data.error || "Not available"}`)
+          throw new Error("FALLBACK_TO_FRONTEND")
+        }
+
+        // Backend returned an error
+        throw new Error(data.error || "Backend distribution failed")
+      } catch (backendError: any) {
+        if (backendError.message !== "FALLBACK_TO_FRONTEND") {
+          console.warn(`⚠️ Backend distribution failed: ${backendError.message}`)
+        }
+        console.log(`🔄 Falling back to frontend Smart Wallet...`)
+      }
+
+      // ===============================================
+      // METHOD 2: Fallback to Frontend Smart Wallet
+      // Uses Privy Smart Wallet with isSponsored: false
+      // ===============================================
+      
+      // Validate Privy Smart Wallet for fallback
+      if (!smartWalletClient) {
+        throw new Error("Smart Wallet client not found and backend API unavailable. Please login again.")
+      }
+
+      if (!privySmartWalletAddress) {
+        throw new Error("Smart Wallet address not found. Please login again.")
+      }
+
+      const smartWalletAddress = userAddress.toLowerCase() === privySmartWalletAddress.toLowerCase()
+        ? privySmartWalletAddress
+        : (userAddress as Address)
+
+      console.log(`\n💰 Using frontend Smart Wallet: ${smartWalletAddress}`)
+      console.log(`   Chain: Base Mainnet (${base.id})`)
       
       setStatus("Checking credit balance...")
       
