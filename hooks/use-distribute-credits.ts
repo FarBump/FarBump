@@ -143,60 +143,174 @@ export function useDistributeCredits() {
       })
 
       // =============================================
-      // METHOD 1: Try Paymaster (Gasless) First
+      // METHOD 1: Try Backend API with CDP SDK + Paymaster Proxy
       // =============================================
-      setStatus("Attempting gasless transaction via Paymaster...")
+      setStatus("Attempting gasless transaction via CDP SDK + Paymaster Proxy...")
       
-      console.log(`\n📤 METHOD 1: Trying Paymaster (Gasless)...`)
+      console.log(`\n📤 METHOD 1: Trying Backend API (CDP SDK + Paymaster Proxy)...`)
       console.log(`   → Smart Wallet: ${smartWalletAddress}`)
+      console.log(`   → Paymaster Proxy: https://farbump.vercel.app/api/paymaster`)
       console.log(`   → Total calls: ${calls.length}`)
-      console.log(`   → User pays gas: NO (Gasless via Paymaster)`)
+      console.log(`   → User pays gas: NO (Gasless via Paymaster Proxy)`)
 
       let txHash: `0x${string}` | null = null
       let gasless = false
-      let paymasterError: Error | null = null
+      let backendError: Error | null = null
 
       try {
-        // Try with Paymaster (gasless)
-        txHash = await smartWalletClient.sendTransaction(
-          {
-            calls: calls,
-          },
-          {
-            // Enable Paymaster sponsorship (gasless)
-            isSponsored: true,
+        // Call backend API which uses CDP SDK with Paymaster Proxy
+        const backendResponse = await fetch("/api/bot/distribute-credits-cdp", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            userAddress: userAddress,
+            botWallets: botWallets.map(w => ({ smartWalletAddress: w.smartWalletAddress })),
+          }),
+        })
+
+        const backendData = await backendResponse.json()
+
+        if (backendResponse.ok && backendData.success) {
+          txHash = backendData.txHash as `0x${string}`
+          gasless = true
+          console.log(`✅ Backend API (CDP SDK + Paymaster Proxy) transaction submitted!`)
+          console.log(`   → Hash: ${txHash}`)
+          console.log(`   → Gasless: YES`)
+          console.log(`   → Method: ${backendData.method}`)
+          
+          // Early return - backend API succeeded, no need to try other methods
+          setHash(txHash)
+          setStatus("Confirming on blockchain...")
+
+          // Wait for transaction confirmation
+          const receipt = await publicClient.waitForTransactionReceipt({
+            hash: txHash,
+            confirmations: 1,
+          })
+
+          if (receipt.status !== "success") {
+            throw new Error("Transaction failed on-chain")
           }
-        ) as `0x${string}`
 
-        gasless = true
-        console.log(`✅ Paymaster transaction submitted!`)
-        console.log(`   → Hash: ${txHash}`)
-        console.log(`   → Gasless: YES`)
-      } catch (paymasterErr: any) {
-        paymasterError = paymasterErr
-        console.warn(`⚠️ Paymaster transaction failed:`)
-        console.warn(`   → Error: ${paymasterErr.message}`)
-        
-        // Check if it's an allowlist error
-        const isAllowlistError = paymasterErr.message?.includes("allowlist") || 
-                                 paymasterErr.message?.includes("not allowlisted") ||
-                                 paymasterErr.message?.includes("ResourceUnavailable") ||
-                                 paymasterErr.message?.includes("not in allowlist")
+          console.log(`✅ Transaction confirmed!`)
+          console.log(`   → Block: ${receipt.blockNumber}`)
+          console.log(`   → Gas used: ${receipt.gasUsed.toString()}`)
 
-        if (isAllowlistError) {
-          console.log(`\n🔄 Paymaster allowlist error detected. Falling back to normal transaction...`)
-          console.log(`   → User will pay gas fees`)
+          // Record distribution in database
+          setStatus("Recording distribution...")
+          
+          const distributions = botWallets.map((wallet, index) => {
+            const distAmount: bigint = index === 0 ? amountForFirstBot : amountPerBot
+            return {
+              botWalletAddress: wallet.smartWalletAddress,
+              amountWei: distAmount.toString(),
+            }
+          })
+
+          try {
+            await fetch("/api/bot/record-distribution", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                userAddress: userAddress,
+                distributions: distributions,
+                txHash: txHash,
+              }),
+            })
+            console.log("✅ Distribution recorded in database")
+          } catch (recordError) {
+            console.warn("⚠️ Failed to record distribution in database:", recordError)
+          }
+
+          setIsSuccess(true)
+          setStatus("Distribution completed!")
+          
+          toast.success("Successfully distributed credit to 5 bot wallets!", {
+            description: `Total: ${formatEther(creditToDistribute)} ETH (Gasless via Paymaster Proxy)`,
+            action: {
+              label: "View",
+              onClick: () => window.open(`https://basescan.org/tx/${txHash}`, "_blank"),
+            },
+          })
+
+          return {
+            success: true,
+            txHash: txHash,
+            amountPerBot: formatEther(amountPerBot),
+            totalDistributed: formatEther(creditToDistribute),
+            gasUsed: receipt.gasUsed.toString(),
+            method: "cdp_sdk_paymaster_proxy",
+            gasless: true,
+          }
         } else {
-          // Not an allowlist error, might be other Paymaster issue
-          // Still try fallback
-          console.log(`\n🔄 Paymaster error (non-allowlist). Falling back to normal transaction...`)
+          // Backend returned error or fallback flag
+          if (backendData.fallback) {
+            throw new Error("FALLBACK_TO_FRONTEND")
+          }
+          throw new Error(backendData.error || "Backend API failed")
+        }
+      } catch (backendErr: any) {
+        backendError = backendErr
+        console.warn(`⚠️ Backend API (CDP SDK) failed:`)
+        console.warn(`   → Error: ${backendErr.message}`)
+        
+        if (backendErr.message === "FALLBACK_TO_FRONTEND") {
+          console.log(`\n🔄 Backend API not available. Falling back to frontend Smart Wallet...`)
+        } else {
+          console.log(`\n🔄 Backend API error. Falling back to frontend Smart Wallet...`)
         }
       }
 
       // =============================================
-      // METHOD 2: Fallback to Normal Transaction (User Pays Gas)
+      // METHOD 2: Try Frontend Privy SDK with Paymaster
       // =============================================
-      if (!txHash && paymasterError) {
+      if (!txHash && backendError) {
+        setStatus("Attempting gasless transaction via Privy Paymaster...")
+        
+        console.log(`\n📤 METHOD 2: Trying Privy SDK Paymaster (Gasless)...`)
+        console.log(`   → Smart Wallet: ${smartWalletAddress}`)
+        console.log(`   → Total calls: ${calls.length}`)
+        console.log(`   → User pays gas: NO (Gasless via Privy Paymaster)`)
+
+        try {
+          // Try with Privy SDK Paymaster (gasless)
+          txHash = await smartWalletClient.sendTransaction(
+            {
+              calls: calls,
+            },
+            {
+              // Enable Paymaster sponsorship (gasless)
+              isSponsored: true,
+            }
+          ) as `0x${string}`
+
+          gasless = true
+          console.log(`✅ Privy Paymaster transaction submitted!`)
+          console.log(`   → Hash: ${txHash}`)
+          console.log(`   → Gasless: YES`)
+        } catch (paymasterErr: any) {
+          console.warn(`⚠️ Privy Paymaster transaction failed:`)
+          console.warn(`   → Error: ${paymasterErr.message}`)
+          
+          // Check if it's an allowlist error
+          const isAllowlistError = paymasterErr.message?.includes("allowlist") || 
+                                   paymasterErr.message?.includes("not allowlisted") ||
+                                   paymasterErr.message?.includes("ResourceUnavailable") ||
+                                   paymasterErr.message?.includes("not in allowlist")
+
+          if (isAllowlistError) {
+            console.log(`\n🔄 Paymaster allowlist error detected. Falling back to normal transaction...`)
+            console.log(`   → User will pay gas fees`)
+          } else {
+            console.log(`\n🔄 Paymaster error (non-allowlist). Falling back to normal transaction...`)
+          }
+        }
+      }
+
+      // =============================================
+      // METHOD 3: Fallback to Normal Transaction (User Pays Gas)
+      // =============================================
+      if (!txHash) {
         setStatus("Paymaster unavailable. Using normal transaction (user pays gas)...")
         
         console.log(`\n📤 METHOD 2: Normal Transaction (User Pays Gas)...`)
