@@ -11,7 +11,6 @@ import { ActionButton } from "@/components/action-button"
 import { ActivityFeed } from "@/components/activity-feed"
 import { BotLiveActivity } from "@/components/bot-live-activity"
 import { PriceChart } from "@/components/price-chart"
-import { AnalyticsCards } from "@/components/analytics-cards"
 import { ManageBot } from "@/components/manage-bot"
 import { User } from "lucide-react"
 import Image from "next/image"
@@ -1156,7 +1155,6 @@ export default function BumpBotDashboard() {
           </TabsList>
 
           <TabsContent value="control" className="mt-4 space-y-4">
-            <AnalyticsCards isActive={isActive} />
             <PriceChart tokenAddress={targetTokenAddress} />
             <WalletCard 
               fuelBalance={fuelBalance} 

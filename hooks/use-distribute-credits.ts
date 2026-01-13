@@ -206,9 +206,11 @@ export function useDistributeCredits() {
       setStatus("Distributing credits (gasless via CDP Paymaster with EIP-5792)...")
 
       let primaryTxHash: `0x${string}`
+      let isGasless = true
       
+      // First, try gasless transaction with CDP Paymaster
       try {
-        console.log(`📤 Sending batch transaction via Privy Smart Wallet with EIP-5792 Paymaster...`)
+        console.log(`📤 Attempting GASLESS batch transaction via Privy Smart Wallet with EIP-5792 Paymaster...`)
         console.log(`   Using Smart Wallet address: ${smartWalletAddress}`)
         console.log(`   Paymaster Service URL: ${paymasterServiceUrl}`)
         console.log(`   Strategy: Batch transaction with EIP-5792 capabilities`)
@@ -231,64 +233,103 @@ export function useDistributeCredits() {
           }
         ) as `0x${string}`
         
-        console.log(`✅ Batch transaction sent successfully!`)
+        console.log(`✅ GASLESS batch transaction sent successfully!`)
         console.log(`   Transaction hash: ${primaryTxHash}`)
         console.log(`   Total transfers: ${calls.length}`)
-      } catch (txError: any) {
-        // Handle UserOperationExecutionError and other errors
-        const errorName = txError.name || txError.constructor?.name || ""
-        const errorMessage = txError.message || String(txError)
+      } catch (gaslessError: any) {
+        const gaslessErrorMessage = gaslessError.message || String(gaslessError)
         
-        if (
-          errorName === "UserOperationExecutionError" ||
-          errorMessage.includes("Execution reverted") ||
-          errorMessage.includes("user operation execution failed") ||
-          errorMessage.includes("revert")
-        ) {
-          console.error("❌ User Operation Execution Error:", txError)
-          console.error("   Error name:", errorName)
-          console.error("   Error message:", errorMessage)
-          console.error("   Error details:", txError.details || txError.cause || "No additional details")
+        // Check if it's an allowlist or Paymaster error - fallback to normal transaction
+        const isPaymasterError = 
+          gaslessErrorMessage.includes("address not in allowlist") ||
+          gaslessErrorMessage.includes("not in allowlist") ||
+          gaslessErrorMessage.includes("allowlist") ||
+          gaslessErrorMessage.includes("Paymaster") ||
+          gaslessErrorMessage.includes("paymaster") ||
+          gaslessErrorMessage.includes("not available") ||
+          gaslessErrorMessage.includes("pm_getPaymasterStubData")
+        
+        if (isPaymasterError) {
+          console.warn(`⚠️ Gasless transaction failed (Paymaster error): ${gaslessErrorMessage}`)
+          console.log(`🔄 Falling back to NORMAL (non-gasless) transaction...`)
           
-          // Extract revert reason if available
-          const revertReason = 
-            txError.cause?.message || 
-            txError.reason || 
-            txError.details || 
-            errorMessage || 
-            "Unknown error"
+          setStatus("Gasless failed. Sending normal transaction...")
+          isGasless = false
           
+          // Fallback: Send normal transaction WITHOUT Paymaster (user pays gas)
+          try {
+            console.log(`📤 Sending NORMAL batch transaction (user pays gas)...`)
+            console.log(`   Using Smart Wallet address: ${smartWalletAddress}`)
+            console.log(`   Total calls: ${calls.length}`)
+            
+            primaryTxHash = await smartWalletClient.sendTransaction({
+              calls: calls, // Batch all transfers in one transaction
+            }) as `0x${string}`
+            
+            console.log(`✅ NORMAL batch transaction sent successfully!`)
+            console.log(`   Transaction hash: ${primaryTxHash}`)
+            console.log(`   Total transfers: ${calls.length}`)
+            console.log(`   Note: User paid gas fees for this transaction`)
+          } catch (normalTxError: any) {
+            const normalErrorMessage = normalTxError.message || String(normalTxError)
+            console.error("❌ Normal transaction also failed:", normalErrorMessage)
+            
+            // Handle insufficient balance for normal transaction
+            if (
+              normalErrorMessage.includes("insufficient balance") ||
+              normalErrorMessage.includes("insufficient funds") ||
+              normalErrorMessage.includes("balance too low")
+            ) {
+              throw new Error(
+                `Insufficient balance for transaction. Required: ${formatEther(creditToDistribute)} ETH + gas. Please add more ETH to your wallet.`
+              )
+            }
+            
+            throw new Error(
+              `Both gasless and normal transactions failed. Last error: ${normalErrorMessage}. Please try again.`
+            )
+          }
+        } else {
+          // Not a Paymaster error - handle other errors
+          const errorName = gaslessError.name || gaslessError.constructor?.name || ""
+          
+          if (
+            errorName === "UserOperationExecutionError" ||
+            gaslessErrorMessage.includes("Execution reverted") ||
+            gaslessErrorMessage.includes("user operation execution failed") ||
+            gaslessErrorMessage.includes("revert")
+          ) {
+            console.error("❌ User Operation Execution Error:", gaslessError)
+            
+            // Extract revert reason if available
+            const revertReason = 
+              gaslessError.cause?.message || 
+              gaslessError.reason || 
+              gaslessError.details || 
+              gaslessErrorMessage || 
+              "Unknown error"
+            
+            throw new Error(
+              `Transaction execution failed: ${revertReason}. Please check your wallet balance.`
+            )
+          }
+          
+          // Handle insufficient balance errors
+          if (
+            gaslessErrorMessage.includes("insufficient balance") ||
+            gaslessErrorMessage.includes("insufficient funds") ||
+            gaslessErrorMessage.includes("balance too low")
+          ) {
+            throw new Error(
+              `Insufficient balance: ${gaslessErrorMessage}. Please ensure your wallet has enough ETH.`
+            )
+          }
+          
+          // Re-throw other errors with more context
           throw new Error(
-            `Transaction execution failed: ${revertReason}. Please check your wallet balance and ensure you have sufficient ETH for gas fees.`
+            `Transaction failed: ${gaslessErrorMessage}. Please try again.`
           )
         }
-        
-        // Handle allowlist errors
-        if (
-          errorMessage.includes("address not in allowlist") ||
-          errorMessage.includes("not in allowlist") ||
-          errorMessage.includes("allowlist")
-        ) {
-          throw new Error(
-            `Paymaster allowlist error: ${errorMessage}. Please ensure CDP Paymaster is configured with Sender-based sponsorship policy.`
-          )
-        }
-        
-        // Handle insufficient balance errors
-        if (
-          errorMessage.includes("insufficient balance") ||
-          errorMessage.includes("insufficient funds") ||
-          errorMessage.includes("balance too low")
-        ) {
-          throw new Error(
-            `Insufficient balance: ${errorMessage}. Please ensure your wallet has enough ETH for the distribution and gas fees.`
-          )
-        }
-        
-        // Re-throw other errors with more context
-        throw new Error(
-          `Transaction failed: ${errorMessage}. Please try again or contact support if the issue persists.`
-        )
       }
 
       console.log(`✅ Batch transaction sent! Hash: ${primaryTxHash}`)
@@ -343,7 +384,7 @@ export function useDistributeCredits() {
         setStatus("Distribution completed!")
         
         toast.success(`Successfully distributed credit to 5 bot wallets!`, {
-          description: `100% Gasless via CDP Paymaster (Batch Transaction)`,
+          description: isGasless ? `100% Gasless via CDP Paymaster` : `Normal transaction (gas paid by user)`,
           action: {
             label: "View",
             onClick: () => window.open(`https://basescan.org/tx/${primaryTxHash}`, "_blank"),
@@ -355,7 +396,7 @@ export function useDistributeCredits() {
           txHash: primaryTxHash,
           amountPerBot: formatEther(amountPerBot),
           totalDistributed: formatEther(creditToDistribute),
-          gasless: true,
+          gasless: isGasless,
         }
       } else {
         throw new Error("Transaction failed")

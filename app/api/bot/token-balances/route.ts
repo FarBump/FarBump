@@ -1,10 +1,13 @@
 import { NextRequest, NextResponse } from "next/server"
-import { createPublicClient, http, type Address } from "viem"
+import { createPublicClient, http, type Address, formatUnits } from "viem"
 import { base } from "viem/chains"
 import "dotenv/config"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
+
+// BaseScan API base URL
+const BASESCAN_API_URL = "https://api.basescan.org/api"
 
 // ERC20 ABI for balanceOf, decimals, and symbol
 const ERC20_ABI = [
@@ -29,6 +32,13 @@ const ERC20_ABI = [
     outputs: [{ name: "", type: "string" }],
     type: "function",
   },
+  {
+    constant: true,
+    inputs: [],
+    name: "name",
+    outputs: [{ name: "", type: "string" }],
+    type: "function",
+  },
 ] as const
 
 // Public client for blockchain queries
@@ -37,25 +47,131 @@ const publicClient = createPublicClient({
   transport: http(process.env.NEXT_PUBLIC_BASE_RPC_URL),
 })
 
-// Common Base tokens to check (expanded list)
-// These are the most popular tokens on Base that bot wallets might receive from swaps
-const COMMON_BASE_TOKENS: Array<{ address: string; symbol: string; decimals: number }> = [
-  // Native Wrapped ETH
-  { address: "0x4200000000000000000000000000000000000006", symbol: "WETH", decimals: 18 },
-  // Stablecoins
-  { address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", symbol: "USDC", decimals: 6 },
-  { address: "0x50c5725949A6F0c72E6C4a641F24049A917DB0Cb", symbol: "DAI", decimals: 18 },
-  { address: "0xd9aAEc86B65D86f6A7B5B1b0c42FFA531710b6CA", symbol: "USDbC", decimals: 6 },
-  // Popular Base tokens
-  { address: "0x78a087d713Be963Bf307b18F2Ff8122EF9A63ae9", symbol: "BRETT", decimals: 18 },
-  { address: "0x940181a94A35A4569E4529A3CDfB74e38FD98631", symbol: "AERO", decimals: 18 },
-  // Add more popular tokens as needed
-]
+interface TokenBalance {
+  address: string
+  symbol: string
+  name: string
+  decimals: number
+  balance: string
+  balanceFormatted: string
+}
+
+interface BaseScanTokenTransfer {
+  contractAddress: string
+  tokenName: string
+  tokenSymbol: string
+  tokenDecimal: string
+  value: string
+}
+
+/**
+ * Fetch token list from BaseScan API (tokens transferred to this address)
+ * This gives us a list of all ERC20 tokens that the address has ever received
+ */
+async function fetchTokenListFromBaseScan(address: string): Promise<string[]> {
+  try {
+    const apiKey = process.env.BASESCAN_API_KEY || ""
+    
+    // Use tokentx endpoint to get all token transfers to this address
+    const url = `${BASESCAN_API_URL}?module=account&action=tokentx&address=${address}&startblock=0&endblock=99999999&sort=desc&apikey=${apiKey}`
+    
+    console.log(`📡 Fetching token transactions for ${address.substring(0, 10)}...`)
+    
+    const response = await fetch(url)
+    const data = await response.json()
+    
+    if (data.status !== "1" || !data.result || !Array.isArray(data.result)) {
+      console.log(`   No token transactions found for ${address.substring(0, 10)}...`)
+      return []
+    }
+    
+    // Extract unique token contract addresses
+    const tokenAddresses = new Set<string>()
+    for (const tx of data.result as BaseScanTokenTransfer[]) {
+      if (tx.contractAddress) {
+        tokenAddresses.add(tx.contractAddress.toLowerCase())
+      }
+    }
+    
+    console.log(`   Found ${tokenAddresses.size} unique tokens for ${address.substring(0, 10)}...`)
+    return Array.from(tokenAddresses)
+  } catch (error: any) {
+    console.error(`❌ BaseScan API error for ${address}:`, error.message)
+    return []
+  }
+}
+
+/**
+ * Fetch token balance and metadata from blockchain
+ */
+async function fetchTokenDetails(
+  tokenAddress: string,
+  walletAddresses: string[]
+): Promise<TokenBalance | null> {
+  try {
+    // Fetch token metadata
+    const [symbol, name, decimals] = await Promise.all([
+      publicClient.readContract({
+        address: tokenAddress as Address,
+        abi: ERC20_ABI,
+        functionName: "symbol",
+      }).catch(() => "UNKNOWN"),
+      publicClient.readContract({
+        address: tokenAddress as Address,
+        abi: ERC20_ABI,
+        functionName: "name",
+      }).catch(() => "Unknown Token"),
+      publicClient.readContract({
+        address: tokenAddress as Address,
+        abi: ERC20_ABI,
+        functionName: "decimals",
+      }).catch(() => 18),
+    ])
+    
+    // Fetch balance for all wallet addresses
+    let totalBalance = BigInt(0)
+    
+    for (const walletAddress of walletAddresses) {
+      try {
+        const balance = await publicClient.readContract({
+          address: tokenAddress as Address,
+          abi: ERC20_ABI,
+          functionName: "balanceOf",
+          args: [walletAddress as Address],
+        }) as bigint
+        totalBalance += balance
+      } catch (error) {
+        // Skip this wallet if balance fetch fails
+        continue
+      }
+    }
+    
+    // Only return tokens with positive balance
+    if (totalBalance <= BigInt(0)) {
+      return null
+    }
+    
+    const decimalNumber = typeof decimals === "number" ? decimals : Number(decimals)
+    
+    return {
+      address: tokenAddress,
+      symbol: String(symbol),
+      name: String(name),
+      decimals: decimalNumber,
+      balance: totalBalance.toString(),
+      balanceFormatted: formatUnits(totalBalance, decimalNumber),
+    }
+  } catch (error: any) {
+    console.warn(`⚠️ Failed to fetch details for token ${tokenAddress}:`, error.message)
+    return null
+  }
+}
 
 /**
  * API Route: Get Token Balances for Bot Wallets
  * 
- * Fetches ERC20 token balances for multiple bot wallets in batch.
+ * Fetches ERC20 token balances for multiple bot wallets.
+ * Uses BaseScan API to discover tokens, then fetches real-time balances from blockchain.
  * Returns aggregated balances (sum across all bot wallets) for each token.
  */
 export async function POST(request: NextRequest) {
@@ -73,78 +189,76 @@ export async function POST(request: NextRequest) {
     }
 
     console.log(`📊 Fetching token balances for ${botWallets.length} bot wallets...`)
-    console.log(`   Bot wallets:`, botWallets.map((addr, i) => `${i + 1}. ${addr}`).join(", "))
-    console.log(`   Checking ${COMMON_BASE_TOKENS.length} common tokens...`)
+    console.log(`   Bot wallets:`, botWallets.map((addr, i) => `${i + 1}. ${addr.substring(0, 10)}...`).join(", "))
 
-    const tokenBalances: Array<{
-      address: string
-      symbol: string
-      decimals: number
-      totalBalance: string
-    }> = []
-
-    // Check balances for each common token across all bot wallets
-    // Use Promise.all for parallel fetching (faster)
-    const tokenPromises = COMMON_BASE_TOKENS.map(async (token) => {
-      let totalBalance = BigInt(0)
-      let hasBalance = false
-
-      // Fetch balances for all bot wallets in parallel
-      const balancePromises = botWallets.map(async (botWalletAddress) => {
-        try {
-          // Validate address format
-          if (!botWalletAddress || typeof botWalletAddress !== 'string') {
-            console.warn(`Invalid bot wallet address: ${botWalletAddress}`)
-            return BigInt(0)
-          }
-
-          const balance = await publicClient.readContract({
-            address: token.address as Address,
-            abi: ERC20_ABI,
-            functionName: "balanceOf",
-            args: [botWalletAddress.toLowerCase() as Address],
-          })
-
-          const balanceBigInt = BigInt(balance.toString())
-          if (balanceBigInt > BigInt(0)) {
-            hasBalance = true
-            totalBalance += balanceBigInt
-            console.log(`  ✅ ${token.symbol}: ${balanceBigInt.toString()} in ${botWalletAddress.substring(0, 10)}...`)
-          }
-          return balanceBigInt
-        } catch (error: any) {
-          // Token might not exist or contract might not support balanceOf
-          // Only log if it's not a "contract does not exist" error
-          if (!error.message?.includes("does not exist") && !error.message?.includes("execution reverted")) {
-            console.warn(`⚠️ Failed to fetch balance for ${token.symbol} in ${botWalletAddress}:`, error.message)
-          }
-          return BigInt(0)
-        }
-      })
-
-      await Promise.all(balancePromises)
-
-      // Only include tokens with non-zero total balance
-      if (hasBalance && totalBalance > BigInt(0)) {
-        return {
-          address: token.address,
-          symbol: token.symbol,
-          decimals: token.decimals,
-          totalBalance: totalBalance.toString(),
-        }
+    // Step 1: Discover all unique tokens across all bot wallets using BaseScan
+    console.log(`🔍 Discovering tokens from BaseScan...`)
+    
+    const allTokenAddresses = new Set<string>()
+    
+    // Fetch token list for each bot wallet in parallel
+    const tokenListPromises = botWallets.map(async (walletAddress) => {
+      const tokens = await fetchTokenListFromBaseScan(walletAddress)
+      return tokens
+    })
+    
+    const tokenLists = await Promise.all(tokenListPromises)
+    
+    // Combine all unique token addresses
+    for (const tokens of tokenLists) {
+      for (const token of tokens) {
+        allTokenAddresses.add(token.toLowerCase())
       }
+    }
+    
+    console.log(`✅ Discovered ${allTokenAddresses.size} unique tokens across all bot wallets`)
+    
+    if (allTokenAddresses.size === 0) {
+      console.log(`ℹ️ No tokens found in bot wallets`)
+      return NextResponse.json({
+        success: true,
+        tokens: [],
+        count: 0,
+        message: "No tokens found in bot wallets",
+      })
+    }
 
-      return null
+    // Step 2: Fetch real-time balances for each discovered token
+    console.log(`💰 Fetching real-time balances for ${allTokenAddresses.size} tokens...`)
+    
+    const tokenDetailsPromises = Array.from(allTokenAddresses).map(async (tokenAddress) => {
+      return await fetchTokenDetails(tokenAddress, botWallets)
+    })
+    
+    const tokenDetails = await Promise.all(tokenDetailsPromises)
+    
+    // Filter out null results (tokens with zero balance)
+    const validTokens = tokenDetails.filter((token): token is TokenBalance => token !== null)
+    
+    // Sort by balance (highest first)
+    validTokens.sort((a, b) => {
+      const balanceA = BigInt(a.balance)
+      const balanceB = BigInt(b.balance)
+      return balanceB > balanceA ? 1 : balanceB < balanceA ? -1 : 0
     })
 
-    const results = await Promise.all(tokenPromises)
-    const validTokens = results.filter((token): token is NonNullable<typeof token> => token !== null)
-
-    console.log(`✅ Found ${validTokens.length} tokens with balances`)
+    console.log(`✅ Found ${validTokens.length} tokens with positive balances`)
+    
+    // Log token details for debugging
+    for (const token of validTokens) {
+      console.log(`   → ${token.symbol}: ${token.balanceFormatted} (${token.name})`)
+    }
 
     return NextResponse.json({
       success: true,
-      tokens: validTokens,
+      tokens: validTokens.map(token => ({
+        address: token.address,
+        symbol: token.symbol,
+        name: token.name,
+        decimals: token.decimals,
+        totalBalance: token.balance,
+        balanceFormatted: token.balanceFormatted,
+      })),
       count: validTokens.length,
     })
   } catch (error: any) {
@@ -159,4 +273,3 @@ export async function POST(request: NextRequest) {
     )
   }
 }
-
