@@ -11,8 +11,7 @@ import { isAddress, formatUnits, parseUnits, type Address, type Hex } from "viem
 import { base } from "wagmi/chains"
 import { useSmartWallets } from "@privy-io/react-auth/smart-wallets"
 import { toast } from "sonner"
-import { Send, Loader2, Maximize2 } from "lucide-react"
-import { createSupabaseClient } from "@/lib/supabase"
+import { Send, Loader2, Maximize2, RefreshCw } from "lucide-react"
 
 // ERC20 ABI for balanceOf and transfer
 const ERC20_ABI = [
@@ -50,10 +49,11 @@ const ERC20_ABI = [
 ] as const
 
 interface TokenInfo {
-  address: string
+  contractAddress: string
   symbol: string
+  name: string
   decimals: number
-  balance: bigint
+  balance: string
   balanceFormatted: string
 }
 
@@ -71,7 +71,6 @@ interface ManageBotProps {
 export function ManageBot({ userAddress, botWallets }: ManageBotProps) {
   const { client: smartWalletClient } = useSmartWallets()
   const publicClient = usePublicClient()
-  const supabase = createSupabaseClient()
 
   const [selectedToken, setSelectedToken] = useState<string>("")
   const [recipientAddress, setRecipientAddress] = useState<string>("")
@@ -80,73 +79,85 @@ export function ManageBot({ userAddress, botWallets }: ManageBotProps) {
   const [isSending, setIsSending] = useState(false)
   const [tokens, setTokens] = useState<TokenInfo[]>([])
 
-  // Fetch token balances for all bot wallets
-  // Uses API endpoint for faster batch fetching
-  useEffect(() => {
+  // Fetch token balances from BaseScan API
+  const fetchTokenBalances = async () => {
     if (!botWallets || botWallets.length === 0 || !userAddress) {
+      console.log("❌ Cannot fetch tokens: missing botWallets or userAddress")
       setTokens([])
       return
     }
 
-    const fetchTokenBalances = async () => {
-      setIsLoadingTokens(true)
-      try {
-        console.log(`📊 Fetching token balances for ${botWallets.length} bot wallets...`)
-        
-        // Use API endpoint for faster batch token balance fetching
-        const response = await fetch("/api/bot/token-balances", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            botWallets: botWallets.map(w => w.smartWalletAddress),
-          }),
-        })
+    setIsLoadingTokens(true)
+    try {
+      console.log("=====================================")
+      console.log("🔍 FETCHING TOKENS FROM API...")
+      console.log("=====================================")
+      console.log(`📊 Bot wallets: ${botWallets.length}`)
+      botWallets.forEach((w, i) => console.log(`   ${i + 1}. ${w.smartWalletAddress}`))
+      
+      const response = await fetch("/api/bot/token-balances", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          botWallets: botWallets.map(w => w.smartWalletAddress),
+        }),
+      })
 
-        if (!response.ok) {
-          const errorData = await response.json().catch(() => ({}))
-          console.error("❌ Failed to fetch token balances:", errorData)
-          throw new Error(errorData.error || "Failed to fetch token balances")
-        }
-
-        const data = await response.json()
-        console.log(`✅ Token balances response:`, data)
-        
-        if (data.success && data.tokens && Array.isArray(data.tokens)) {
-          // Convert to TokenInfo format
-          const tokenBalances: TokenInfo[] = data.tokens.map((token: any) => {
-            const totalBalance = BigInt(token.totalBalance || "0")
-            return {
-              address: token.address,
-              symbol: token.symbol,
-              decimals: token.decimals,
-              balance: totalBalance,
-              balanceFormatted: formatUnits(totalBalance, token.decimals),
-            }
-          })
-          
-          console.log(`✅ Found ${tokenBalances.length} tokens with balances:`, tokenBalances.map(t => `${t.symbol}: ${t.balanceFormatted}`))
-          setTokens(tokenBalances)
-        } else {
-          console.log("ℹ️ No tokens found or invalid response format")
-          setTokens([])
-        }
-      } catch (error: any) {
-        console.error("❌ Error fetching token balances:", error)
-        toast.error("Failed to load token balances", {
-          description: error.message || "Please try again",
-        })
-        setTokens([])
-      } finally {
-        setIsLoadingTokens(false)
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}))
+        console.error("❌ API Error:", errorData)
+        throw new Error(errorData.error || "Failed to fetch token balances")
       }
-    }
 
+      const data = await response.json()
+      
+      // DEBUG LOG - Show raw API response
+      console.log("=====================================")
+      console.log("📦 API RESPONSE:")
+      console.log("Tokens fetched:", data)
+      console.log("=====================================")
+      
+      if (data.success && data.tokens && Array.isArray(data.tokens)) {
+        // Map API response to TokenInfo format
+        const tokenBalances: TokenInfo[] = data.tokens.map((token: any) => ({
+          contractAddress: token.contractAddress || token.address,
+          symbol: token.symbol,
+          name: token.name || "Unknown",
+          decimals: token.decimals,
+          balance: token.balance || token.totalBalance || "0",
+          balanceFormatted: token.balanceFormatted || formatUnits(BigInt(token.balance || token.totalBalance || "0"), token.decimals),
+        }))
+        
+        console.log(`✅ Parsed ${tokenBalances.length} tokens:`)
+        tokenBalances.forEach(t => {
+          console.log(`   → ${t.symbol} (${t.name}): ${t.balanceFormatted}`)
+        })
+        
+        setTokens(tokenBalances)
+      } else {
+        console.log("ℹ️ No tokens found or invalid response format")
+        setTokens([])
+      }
+    } catch (error: any) {
+      console.error("❌ Error fetching token balances:", error)
+      toast.error("Failed to load token balances", {
+        description: error.message || "Please try again",
+      })
+      setTokens([])
+    } finally {
+      setIsLoadingTokens(false)
+    }
+  }
+
+  // Fetch tokens when botWallets or userAddress changes
+  useEffect(() => {
     fetchTokenBalances()
   }, [botWallets, userAddress])
 
   // Get selected token info
   const selectedTokenInfo = useMemo(() => {
-    return tokens.find((t) => t.address.toLowerCase() === selectedToken.toLowerCase())
+    if (!selectedToken) return null
+    return tokens.find((t) => t.contractAddress.toLowerCase() === selectedToken.toLowerCase()) || null
   }, [tokens, selectedToken])
 
   // Handle Max button
@@ -154,6 +165,11 @@ export function ManageBot({ userAddress, botWallets }: ManageBotProps) {
     if (selectedTokenInfo) {
       setAmount(selectedTokenInfo.balanceFormatted)
     }
+  }
+
+  // Handle Refresh button
+  const handleRefresh = () => {
+    fetchTokenBalances()
   }
 
   // Handle Send
@@ -178,20 +194,20 @@ export function ManageBot({ userAddress, botWallets }: ManageBotProps) {
 
       // Parse amount
       const amountWei = parseUnits(amount, selectedTokenInfo.decimals)
+      const totalBalance = BigInt(selectedTokenInfo.balance)
 
-      if (amountWei > selectedTokenInfo.balance) {
+      if (amountWei > totalBalance) {
         toast.error(`Insufficient balance. Available: ${selectedTokenInfo.balanceFormatted} ${selectedTokenInfo.symbol}`)
         return
       }
 
       // Find bot wallet with sufficient balance
       let sourceWallet: BotWallet | null = null
-      let sourceBalance = BigInt(0)
 
       for (const botWallet of botWallets) {
         try {
           const balance = await publicClient.readContract({
-            address: selectedTokenInfo.address as Address,
+            address: selectedTokenInfo.contractAddress as Address,
             abi: ERC20_ABI,
             functionName: "balanceOf",
             args: [botWallet.smartWalletAddress as Address],
@@ -200,7 +216,6 @@ export function ManageBot({ userAddress, botWallets }: ManageBotProps) {
           const balanceBigInt = BigInt(balance.toString())
           if (balanceBigInt >= amountWei) {
             sourceWallet = botWallet
-            sourceBalance = balanceBigInt
             break
           }
         } catch (error) {
@@ -213,27 +228,14 @@ export function ManageBot({ userAddress, botWallets }: ManageBotProps) {
         return
       }
 
-      // Encode transfer function call
-      const { encodeFunctionData } = await import("viem")
-      const transferData = encodeFunctionData({
-        abi: ERC20_ABI,
-        functionName: "transfer",
-        args: [recipientAddress as Address, amountWei],
-      })
-
       console.log(`📤 Sending ${amount} ${selectedTokenInfo.symbol} from ${sourceWallet.smartWalletAddress} to ${recipientAddress}...`)
-
-      // Send transaction using Privy Smart Wallet
-      // Note: This will use the main Privy Smart Wallet, not the bot wallet
-      // For bot wallet transactions, we need to use CDP SDK server-side
-      // For now, we'll create an API endpoint to handle this
 
       const response = await fetch("/api/bot/send-token", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           botWalletAddress: sourceWallet.smartWalletAddress,
-          tokenAddress: selectedTokenInfo.address,
+          tokenAddress: selectedTokenInfo.contractAddress,
           recipientAddress: recipientAddress,
           amountWei: amountWei.toString(),
           decimals: selectedTokenInfo.decimals,
@@ -249,7 +251,7 @@ export function ManageBot({ userAddress, botWallets }: ManageBotProps) {
       const result = await response.json()
 
       toast.success(`Successfully sent ${amount} ${selectedTokenInfo.symbol}!`, {
-        description: "100% Gasless Transaction",
+        description: "Transaction confirmed",
         action: {
           label: "View",
           onClick: () => window.open(`https://basescan.org/tx/${result.txHash}`, "_blank"),
@@ -261,8 +263,7 @@ export function ManageBot({ userAddress, botWallets }: ManageBotProps) {
       setRecipientAddress("")
 
       // Refresh token balances
-      // Trigger re-fetch by updating a dependency
-      setTokens([...tokens])
+      fetchTokenBalances()
     } catch (error: any) {
       console.error("Error sending token:", error)
       toast.error("Failed to send token", {
@@ -275,7 +276,18 @@ export function ManageBot({ userAddress, botWallets }: ManageBotProps) {
 
   return (
     <Card className="glass-card border-border p-4">
-      <h3 className="mb-4 text-sm font-semibold text-foreground">Send Token</h3>
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="text-sm font-semibold text-foreground">Send Token</h3>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={handleRefresh}
+          disabled={isLoadingTokens}
+          className="h-8 w-8 p-0"
+        >
+          <RefreshCw className={`h-4 w-4 ${isLoadingTokens ? "animate-spin" : ""}`} />
+        </Button>
+      </div>
 
       <div className="space-y-4">
         {/* Token Selection */}
@@ -287,31 +299,36 @@ export function ManageBot({ userAddress, botWallets }: ManageBotProps) {
             <SelectTrigger id="token-select" className="w-full">
               <SelectValue placeholder={isLoadingTokens ? "Loading tokens..." : "Select Token"} />
             </SelectTrigger>
-              <SelectContent>
-                {tokens.length === 0 ? (
-                  <SelectItem value="no-tokens" disabled>
-                    No tokens found
+            <SelectContent>
+              {isLoadingTokens ? (
+                <SelectItem value="loading" disabled>
+                  <div className="flex items-center gap-2">
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                    Loading tokens...
+                  </div>
+                </SelectItem>
+              ) : tokens.length === 0 ? (
+                <SelectItem value="no-tokens" disabled>
+                  No tokens found
+                </SelectItem>
+              ) : (
+                tokens.map((token) => (
+                  <SelectItem key={token.contractAddress} value={token.contractAddress}>
+                    <span className="font-medium">{token.symbol}</span>
+                    <span className="ml-2 text-muted-foreground">
+                      ({parseFloat(token.balanceFormatted).toFixed(4)})
+                    </span>
                   </SelectItem>
-                ) : (
-                  tokens.map((token) => (
-                    <SelectItem key={token.address} value={token.address}>
-                      <div className="flex items-center justify-between w-full">
-                        <span>{token.symbol}</span>
-                        <span className="ml-2 text-xs text-muted-foreground">
-                          {token.balanceFormatted}
-                        </span>
-                      </div>
-                    </SelectItem>
-                  ))
-                )}
-              </SelectContent>
-            </Select>
-            {selectedTokenInfo && (
-              <p className="text-xs text-muted-foreground">
-                Available: {selectedTokenInfo.balanceFormatted} {selectedTokenInfo.symbol}
-              </p>
-            )}
-          </div>
+                ))
+              )}
+            </SelectContent>
+          </Select>
+          {selectedTokenInfo && (
+            <p className="text-xs text-muted-foreground">
+              Available: {selectedTokenInfo.balanceFormatted} {selectedTokenInfo.symbol}
+            </p>
+          )}
+        </div>
 
         {/* Recipient Address */}
         <div className="space-y-2">
@@ -341,7 +358,6 @@ export function ManageBot({ userAddress, botWallets }: ManageBotProps) {
               placeholder="0.0"
               value={amount}
               onChange={(e) => {
-                // Allow only numbers and decimal point
                 const value = e.target.value.replace(/[^0-9.]/g, "")
                 setAmount(value)
               }}
@@ -390,4 +406,3 @@ export function ManageBot({ userAddress, botWallets }: ManageBotProps) {
     </Card>
   )
 }
-

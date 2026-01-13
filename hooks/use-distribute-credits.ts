@@ -115,22 +115,20 @@ export function useDistributeCredits() {
       console.log(`   → Wallet balance: ${formatEther(walletBalance)} ETH`)
       console.log(`   → Main wallet credit (from DB): ${formatEther(mainWalletCreditWei)} ETH`)
       
-      // Use available credit (minimum of balance and credit in DB)
-      // Reserve some ETH for gas fees (estimate ~0.001 ETH for batch transaction)
-      const gasReserve = BigInt("1000000000000000") // 0.001 ETH for gas
-      const availableForDistribution = walletBalance > gasReserve ? walletBalance - gasReserve : BigInt(0)
-      const creditToDistribute = availableForDistribution < mainWalletCreditWei 
-        ? availableForDistribution 
+      // Use available credit - distribute ALL credit without minimum amount
+      // Take the minimum of wallet balance and main wallet credit to ensure we don't over-distribute
+      const creditToDistribute = walletBalance < mainWalletCreditWei 
+        ? walletBalance 
         : mainWalletCreditWei
       
+      // Allow distribution of any amount (no minimum)
       if (creditToDistribute <= BigInt(0)) {
         throw new Error(
-          `Insufficient balance for distribution. Wallet balance: ${formatEther(walletBalance)} ETH (need ~0.001 ETH for gas). Please add more ETH to your wallet.`
+          `No credit available for distribution. Wallet balance: ${formatEther(walletBalance)} ETH, Credit in DB: ${formatEther(mainWalletCreditWei)} ETH.`
         )
       }
       
-      console.log(`   → Credit to distribute: ${formatEther(creditToDistribute)} ETH`)
-      console.log(`   → Gas reserve: ${formatEther(gasReserve)} ETH`)
+      console.log(`   → Credit to distribute: ${formatEther(creditToDistribute)} ETH (100% of available credit)`)
 
       // Calculate amount per bot
       const amountPerBot = creditToDistribute / BigInt(5)
