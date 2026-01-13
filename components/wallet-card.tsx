@@ -96,11 +96,11 @@ export function WalletCard({ fuelBalance = 0, credits = 0, walletAddress, isSmar
               size="sm"
               variant="ghost"
               onClick={handleRefreshBalance}
-              disabled={isLoadingBalance || !isSmartAccountActive}
-              className="h-6 w-6 p-0 hover:bg-muted/50 shrink-0"
+              disabled={isLoadingBalance || isLoadingCredit || !isSmartAccountActive}
+              className="h-6 w-6 p-0 hover:bg-muted/50 shrink-0 disabled:opacity-50"
               title="Refresh balance"
             >
-              <RefreshCw className={`h-3.5 w-3.5 text-muted-foreground ${isLoadingBalance ? "animate-spin" : ""}`} />
+              <RefreshCw className={`h-3.5 w-3.5 text-muted-foreground transition-transform ${isLoadingBalance || isLoadingCredit ? "animate-spin" : ""}`} />
             </Button>
           </div>
           <p className="text-[9px] text-muted-foreground mt-2">
@@ -124,11 +124,11 @@ export function WalletCard({ fuelBalance = 0, credits = 0, walletAddress, isSmar
               size="sm"
               variant="ghost"
               onClick={handleRefreshBalance}
-              disabled={isLoadingCredit || !isSmartAccountActive}
-              className="h-6 w-6 p-0 hover:bg-muted/50 shrink-0"
+              disabled={isLoadingBalance || isLoadingCredit || !isSmartAccountActive}
+              className="h-6 w-6 p-0 hover:bg-muted/50 shrink-0 disabled:opacity-50"
               title="Refresh credit balance"
             >
-              <RefreshCw className={`h-3.5 w-3.5 text-muted-foreground ${isLoadingCredit ? "animate-spin" : ""}`} />
+              <RefreshCw className={`h-3.5 w-3.5 text-muted-foreground transition-transform ${isLoadingBalance || isLoadingCredit ? "animate-spin" : ""}`} />
             </Button>
           </div>
           <p className="text-[9px] text-muted-foreground mt-2">

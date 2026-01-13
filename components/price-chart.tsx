@@ -1,5 +1,6 @@
 "use client"
 
+import { useMemo } from "react"
 import { Card } from "@/components/ui/card"
 import { BarChart3, ExternalLink } from "lucide-react"
 import { isAddress } from "viem"
@@ -16,7 +17,11 @@ export function PriceChart({ tokenAddress }: PriceChartProps) {
     return `https://dexscreener.com/base/${address}?embed=1&theme=dark&trades=0&info=0`
   }
 
-  const chartUrl = tokenAddress ? getDexScreenerUrl(tokenAddress) : null
+  // CRITICAL: Use useMemo to prevent chart from reloading/flickering on tab switches
+  // This ensures chart URL is stable and only changes when tokenAddress actually changes
+  const chartUrl = useMemo(() => {
+    return tokenAddress ? getDexScreenerUrl(tokenAddress) : null
+  }, [tokenAddress])
 
   return (
     <Card className="border border-border bg-card p-4">

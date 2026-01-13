@@ -41,9 +41,10 @@ export function ActionButton({
   const isLoading = !!loadingState || isLoadingWallets
   
   // Determine button text based on state:
+  // - If active: Always show 'Stop Bumping' (primary action)
   // - If credit 0: 'No fuel detected'
   // - If credit > 0 but bot wallets not created: 'Generate Bot Wallet'
-  // - If credit > 0 and bot wallets exist: 'Start Bumping' (or 'Stop Bumping' if active)
+  // - If credit > 0 and bot wallets exist: 'Start Bumping'
   const getButtonText = () => {
     if (isActive) {
       return "Stop Bumping"
@@ -56,6 +57,11 @@ export function ActionButton({
     }
     return "Start Bumping"
   }
+  
+  // When active, button should always be enabled and visible
+  // When not active, button is locked if requirements not met
+  const shouldShowButton = true // Always show button
+  const isButtonDisabled = isActive ? false : isLocked // Only disable when not active and locked
   
   const buttonText = getButtonText()
   
@@ -72,18 +78,23 @@ export function ActionButton({
     }
   }
 
+  // Don't render button if it shouldn't be shown (for future use)
+  if (!shouldShowButton) {
+    return null
+  }
+
   return (
     <Button
       size="lg"
       onClick={handleClick}
-      disabled={isLocked || isLoading}
+      disabled={isButtonDisabled || isLoading}
       className={`w-full h-14 text-base font-semibold transition-all ${
-        isLocked
+        isButtonDisabled
           ? "bg-muted text-muted-foreground cursor-not-allowed opacity-50"
           : isLoading
             ? "bg-primary/80 text-primary-foreground cursor-wait"
             : isActive
-              ? "bg-destructive hover:bg-destructive/90 text-destructive-foreground"
+              ? "bg-destructive hover:bg-destructive/90 text-destructive-foreground shadow-lg"
               : "bg-primary hover:bg-primary/90 text-primary-foreground"
       }`}
     >

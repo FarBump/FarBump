@@ -93,6 +93,19 @@ export default function BumpBotDashboard() {
   const [isTokenVerified, setIsTokenVerified] = useState(false)
   const [tokenMetadata, setTokenMetadata] = useState<{ name: string; symbol: string; decimals: number } | null>(null)
   
+  // CRITICAL: Persist isBumping state to localStorage
+  // This ensures state persists across tab switches and page refreshes
+  useEffect(() => {
+    if (typeof window !== "undefined" && privySmartWalletAddress) {
+      if (isActive) {
+        localStorage.setItem(`isBumping_${privySmartWalletAddress}`, "true")
+      } else {
+        // Only clear when user explicitly stops bumping (handled in stopSession)
+        // Don't clear on tab switch or other actions
+      }
+    }
+  }, [isActive, privySmartWalletAddress])
+
   // Persist targetTokenAddress to localStorage whenever it changes
   useEffect(() => {
     if (typeof window !== "undefined" && privySmartWalletAddress) {
@@ -105,11 +118,16 @@ export default function BumpBotDashboard() {
     }
   }, [targetTokenAddress, privySmartWalletAddress])
   
-  // Load persisted token metadata when component mounts or privySmartWalletAddress changes
-  // CRITICAL: Restore verified state from localStorage to ensure UI shows verified status
-  // This ensures targetTokenAddress persists even when user switches tabs
+  // CRITICAL: Restore sticky state from localStorage on mount
+  // This ensures state persists across tab switches and page refreshes
   useEffect(() => {
     if (typeof window !== "undefined" && privySmartWalletAddress) {
+      // Restore isBumping state
+      const storedIsBumping = localStorage.getItem(`isBumping_${privySmartWalletAddress}`)
+      if (storedIsBumping === "true" && !isActive) {
+        setIsActive(true)
+      }
+      
       // First, restore targetTokenAddress from localStorage
       const storedAddress = localStorage.getItem(`targetTokenAddress_${privySmartWalletAddress}`)
       if (storedAddress && storedAddress !== targetTokenAddress) {
@@ -130,7 +148,7 @@ export default function BumpBotDashboard() {
         }
       }
     }
-  }, [privySmartWalletAddress]) // Only depend on privySmartWalletAddress, not targetTokenAddress
+  }, [privySmartWalletAddress]) // Only depend on privySmartWalletAddress, not targetTokenAddress or isActive
   
   // Persist token metadata when it changes
   useEffect(() => {
@@ -309,7 +327,15 @@ export default function BumpBotDashboard() {
   }, [privyReady, authenticated, wallets, smartWalletClientAddress, user?.id, embeddedWalletAddress, wagmiAddress, smartWallets.length, verifySmartWalletContract])
   
   const [isConnecting, setIsConnecting] = useState(false)
-  const [isActive, setIsActive] = useState(false)
+  // CRITICAL: Sticky state for isBumping - persist to localStorage
+  // Restore from localStorage on mount to maintain state across tab switches and page refreshes
+  const [isActive, setIsActive] = useState<boolean>(() => {
+    if (typeof window !== "undefined" && privySmartWalletAddress) {
+      const stored = localStorage.getItem(`isBumping_${privySmartWalletAddress}`)
+      return stored === "true"
+    }
+    return false
+  })
   const [fuelBalance] = useState(1250.5)
   const [buyAmountUsd, setBuyAmountUsd] = useState("0.01") // Default: 0.01 USD (micro transaction support)
   const [intervalSeconds, setIntervalSeconds] = useState(60) // Default: 60 seconds (1 minute)
@@ -924,11 +950,18 @@ export default function BumpBotDashboard() {
         // Clear loading state
         setBumpLoadingState(null)
         
+        // CRITICAL: Set isActive to true and persist to localStorage
+        // This ensures UI shows "Stop Bumping" state immediately
+        setIsActive(true)
+        if (typeof window !== "undefined" && privySmartWalletAddress) {
+          localStorage.setItem(`isBumping_${privySmartWalletAddress}`, "true")
+        }
+        
         // Integrasi Real-Time: Auto-scroll ke Live Activity tab setelah Start Bumping diklik
         // Pastikan setelah tombol 'Start Bumping' diklik, UI langsung beralih ke tab/bagian Live Activity
         setActiveTab("activity")
         
-        // Don't set isActive here - let useEffect sync it from session status
+        // Note: useEffect will also sync isActive from session status as backup
         toast.success("Bot started successfully! Continuous bumping is now running. Check Live Activity for updates.")
       } catch (error: any) {
         console.error("❌ Failed to start bot:", error)
@@ -943,12 +976,14 @@ export default function BumpBotDashboard() {
         // Don't clear botWallets on stop - they should persist
         // setBotWallets(null) // Removed - wallets should persist after stopping
         
-        // CRITICAL: Only clear targetTokenAddress when user explicitly stops bumping
-        // This ensures it persists when switching tabs or doing other actions
+        // CRITICAL: Clear sticky state when user explicitly stops bumping
+        // This ensures state is reset only when user stops, not on tab switches
         if (typeof window !== "undefined" && privySmartWalletAddress) {
+          localStorage.removeItem(`isBumping_${privySmartWalletAddress}`)
           localStorage.removeItem(`targetTokenAddress_${privySmartWalletAddress}`)
           localStorage.removeItem(`targetTokenMetadata_${privySmartWalletAddress}`)
         }
+        setIsActive(false)
         setTargetTokenAddress(null)
         setIsTokenVerified(false)
         setTokenMetadata(null)
@@ -1120,12 +1155,16 @@ export default function BumpBotDashboard() {
             />
             <TokenInput 
               initialAddress={targetTokenAddress}
+              disabled={isActive} // Lock input when bumping is active
               onAddressChange={(address) => {
-                setTargetTokenAddress(address)
-                // Reset verification if address changes
-                if (!address) {
-                  setIsTokenVerified(false)
-                  setTokenMetadata(null)
+                // Only allow changes when not bumping
+                if (!isActive) {
+                  setTargetTokenAddress(address)
+                  // Reset verification if address changes
+                  if (!address) {
+                    setIsTokenVerified(false)
+                    setTokenMetadata(null)
+                  }
                 }
               }}
               onVerifiedChange={(isVerified, metadata) => {

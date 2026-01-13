@@ -42,11 +42,12 @@ interface TokenMetadata {
 
 interface TokenInputProps {
   initialAddress?: string | null // Initial address to load (from localStorage)
+  disabled?: boolean // Lock input when bumping is active
   onAddressChange?: (address: string | null) => void
   onVerifiedChange?: (isVerified: boolean, metadata?: TokenMetadata) => void
 }
 
-export function TokenInput({ initialAddress, onAddressChange, onVerifiedChange }: TokenInputProps) {
+export function TokenInput({ initialAddress, disabled = false, onAddressChange, onVerifiedChange }: TokenInputProps) {
   // Use initialAddress if provided, otherwise start empty
   const [address, setAddress] = useState(initialAddress || "")
   const [status, setStatus] = useState<"idle" | "loading" | "verified" | "error">("idle")
@@ -215,8 +216,14 @@ export function TokenInput({ initialAddress, onAddressChange, onVerifiedChange }
             <Input
               placeholder="Paste Contract Address (0x...)"
               value={address}
-              onChange={(e) => setAddress(e.target.value)}
-              className="font-mono text-sm pr-10 bg-secondary border-border text-foreground"
+              onChange={(e) => {
+                if (!disabled) {
+                  setAddress(e.target.value)
+                }
+              }}
+              disabled={disabled}
+              readOnly={disabled}
+              className="font-mono text-sm pr-10 bg-secondary border-border text-foreground disabled:opacity-60 disabled:cursor-not-allowed"
             />
             {status === "verified" && (
               <CheckCircle2 className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-primary" />
@@ -227,13 +234,13 @@ export function TokenInput({ initialAddress, onAddressChange, onVerifiedChange }
           </div>
           <Button
             onClick={handleVerify}
-            disabled={!address || status === "loading"}
-            className="shrink-0 bg-primary text-primary-foreground hover:bg-primary/90"
+            disabled={!address || status === "loading" || disabled}
+            className="shrink-0 bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {status === "loading" ? <Loader2 className="h-4 w-4 animate-spin" /> : "Verify"}
           </Button>
         </div>
-        {status === "verified" && tokenMetadata && (
+        {(status === "verified" || disabled) && tokenMetadata && (
           <div className="space-y-2">
             <div className="flex items-center gap-2 text-xs text-primary">
               <CheckCircle2 className="h-3 w-3" />
