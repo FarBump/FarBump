@@ -145,42 +145,75 @@ export function useDistributeCredits() {
       // =============================================
       // STEP 10: Execute Batch Transaction using User's Smart Wallet
       // WITH PAYMASTER PROXY - Gasless transaction via server-side proxy
+      // CRITICAL: Only use /api/paymaster - NO Coinbase URLs in frontend
       // =============================================
       setStatus("Awaiting signature... (1 approval for 5 transfers)")
+      
+      // Build absolute Paymaster Proxy URL to ensure Viem doesn't do local validation
+      // Use current origin to build absolute URL
+      const paymasterProxyUrl = typeof window !== "undefined"
+        ? `${window.location.origin}/api/paymaster`
+        : "/api/paymaster"
       
       console.log(`\n📤 Sending BATCH transaction with Paymaster Proxy...`)
       console.log(`   → Smart Wallet: ${smartWalletAddress}`)
       console.log(`   → Total calls: ${calls.length}`)
-      console.log(`   → Paymaster Proxy: /api/paymaster`)
+      console.log(`   → Paymaster Proxy URL: ${paymasterProxyUrl}`)
       console.log(`   → User pays gas: NO (Gasless via Paymaster Proxy)`)
+      console.log(`   → CRITICAL: No Coinbase URLs in frontend - all requests go through proxy`)
 
       let txHash: `0x${string}` | null = null
       let gasless = false
       let paymasterProxyError: Error | null = null
 
       try {
-        // Execute batch transaction with Paymaster Proxy
+        // Execute batch transaction with Paymaster Proxy ONLY
         // Using capabilities.paymasterService.url to route through our proxy
-        // This bypasses client-side allowlist restrictions
+        // This bypasses client-side allowlist restrictions completely
+        // 
+        // CRITICAL REQUIREMENTS:
+        // 1. Only use /api/paymaster - NO Coinbase URLs in frontend
+        // 2. Use absolute URL to prevent Viem from doing local validation
+        // 3. DO NOT include isSponsored - let capabilities handle Paymaster
+        // 4. DO NOT include any Coinbase CDP URLs or API keys
+        //
+        // This ensures all Paymaster requests go through server-side proxy
+        // where CDP_PAYMASTER_URL (secret API key) is stored securely
+        const transactionOptions = {
+          // CRITICAL: Only use Paymaster Proxy - no Coinbase URLs
+          // This ensures all Paymaster requests go through our server-side proxy
+          capabilities: {
+            paymasterService: {
+              url: paymasterProxyUrl, // Absolute URL: https://farbump.vercel.app/api/paymaster
+            },
+          },
+          // DO NOT include:
+          // - isSponsored (let capabilities handle it)
+          // - Any Coinbase CDP URLs
+          // - Any API keys
+        }
+
+        console.log(`   → Transaction options:`, JSON.stringify({
+          ...transactionOptions,
+          capabilities: {
+            paymasterService: {
+              url: paymasterProxyUrl, // Log URL for debugging
+            },
+          },
+        }, null, 2))
+
         txHash = await smartWalletClient.sendTransaction(
           {
             calls: calls, // Array of 5 calls - batched into single tx
           },
-          {
-            // Use Paymaster Proxy to bypass allowlist restrictions
-            // Paymaster Proxy URL is relative to current origin
-            capabilities: {
-              paymasterService: {
-                url: "/api/paymaster",
-              },
-            },
-          }
+          transactionOptions
         ) as `0x${string}`
 
         gasless = true
         console.log(`✅ Transaction submitted via Paymaster Proxy!`)
         console.log(`   → Hash: ${txHash}`)
         console.log(`   → Gasless: YES`)
+        console.log(`   → All Paymaster requests routed through: ${paymasterProxyUrl}`)
       } catch (paymasterErr: any) {
         paymasterProxyError = paymasterErr
         console.error(`❌ Paymaster Proxy transaction failed:`)
@@ -195,6 +228,8 @@ export function useDistributeCredits() {
           errorMessage.includes("paymasterService") ||
           errorMessage.includes("not configured") ||
           errorString.includes("CDP_PAYMASTER_URL") ||
+          errorString.includes("coinbase.com") || // Check for any Coinbase URLs
+          errorString.includes("developer.coinbase.com") || // Check for CDP URLs
           (paymasterErr.response && paymasterErr.response.status !== 200) ||
           (paymasterErr.status && paymasterErr.status !== 200)
 
@@ -203,7 +238,13 @@ export function useDistributeCredits() {
           console.error(`   → Possible causes:`)
           console.error(`      - CDP_PAYMASTER_URL not configured in environment`)
           console.error(`      - Paymaster Proxy endpoint returned non-200 status`)
-          console.error(`      - Allowlist restriction still applies`)
+          console.error(`      - Viem may have attempted local validation (check for Coinbase URLs in error)`)
+          
+          // Check if Viem tried to use Coinbase URL directly
+          if (errorString.includes("coinbase.com") || errorString.includes("developer.coinbase.com")) {
+            console.error(`   → ⚠️ WARNING: Viem may have attempted to use Coinbase URL directly!`)
+            console.error(`   → This should not happen - all requests must go through /api/paymaster`)
+          }
         }
       }
 
