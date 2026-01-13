@@ -230,8 +230,11 @@ export function useDistributeCredits() {
         // Use first transaction hash as primary hash for UI/notification
         const txHash = transferTxHashes[0]
         
+        // Use first transaction hash as primary hash for UI/notification
+        const primaryTxHash = transferTxHashes[0]
+        
         console.log(`✅ All ${transferTxHashes.length} transactions sent successfully!`)
-        console.log(`   Primary transaction: ${txHash}`)
+        console.log(`   Primary transaction: ${primaryTxHash}`)
         console.log(`   All transaction hashes:`, transferTxHashes)
       } catch (txError: any) {
         // Handle UserOperationExecutionError and other errors
