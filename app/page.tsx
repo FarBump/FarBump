@@ -999,7 +999,8 @@ export default function BumpBotDashboard() {
     }
   }, [isActive, isTokenVerified, targetTokenAddress, buyAmountUsd, privySmartWalletAddress, intervalSeconds, credits, startSession, stopSession, hasBotWallets, hasCredit, isMounted])
   
-  // Sync isActive with session status
+  // CRITICAL: Sync isActive with session status and persist to localStorage
+  // This ensures state is consistent between session and UI, even after page refresh
   // Use useRef to track previous status to prevent infinite loops
   const prevSessionStatusRef = useRef<string | undefined>(undefined)
   
@@ -1012,8 +1013,14 @@ export default function BumpBotDashboard() {
       
       if (!session) {
         setIsActive(false)
+        // Don't clear localStorage here - only clear when user explicitly stops
       } else {
-        setIsActive(session.status === "running")
+        const isRunning = session.status === "running"
+        setIsActive(isRunning)
+        // Persist to localStorage when session is running
+        if (isRunning && typeof window !== "undefined" && privySmartWalletAddress) {
+          localStorage.setItem(`isBumping_${privySmartWalletAddress}`, "true")
+        }
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
