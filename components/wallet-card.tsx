@@ -42,6 +42,15 @@ export function WalletCard({ fuelBalance = 0, credits = 0, walletAddress, isSmar
 
   // Use credit from database if available, otherwise fallback to prop (for backward compatibility)
   const displayCredit = creditData?.balanceUsd ?? credits
+  
+  // Debug: Log credit data to console
+  console.log("💰 WalletCard Credit Debug:", {
+    balanceWei: creditData?.balanceWei,
+    balanceEth: creditData?.balanceEth,
+    balanceUsd: creditData?.balanceUsd,
+    displayCredit,
+    isLoadingCredit,
+  })
 
   const handleCopy = () => {
     navigator.clipboard.writeText(smartWalletAddress)
