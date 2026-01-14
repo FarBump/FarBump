@@ -90,7 +90,50 @@ export function useDistributeCredits() {
       console.log(`📊 Bot Wallets: ${botWallets.length}`)
 
       setStatus("Checking balance & status...")
-      const walletBalance = await publicClient.getBalance({ address: smartWalletAddress })
+      
+      // Get Native ETH balance
+      const nativeEthBalance = await publicClient.getBalance({ address: smartWalletAddress })
+      
+      // Get WETH balance
+      const WETH_ADDRESS = "0x4200000000000000000000000000000000000006" as const
+      const WETH_ABI = [
+        {
+          inputs: [{ name: "account", type: "address" }],
+          name: "balanceOf",
+          outputs: [{ name: "", type: "uint256" }],
+          stateMutability: "view",
+          type: "function",
+        },
+        {
+          inputs: [],
+          name: "deposit",
+          outputs: [],
+          stateMutability: "payable",
+          type: "function",
+        },
+        {
+          inputs: [
+            { name: "to", type: "address" },
+            { name: "amount", type: "uint256" },
+          ],
+          name: "transfer",
+          outputs: [{ name: "", type: "bool" }],
+          stateMutability: "nonpayable",
+          type: "function",
+        },
+      ] as const
+      
+      let wethBalance = BigInt(0)
+      try {
+        wethBalance = await publicClient.readContract({
+          address: WETH_ADDRESS,
+          abi: WETH_ABI,
+          functionName: "balanceOf",
+          args: [smartWalletAddress as Address],
+        }) as bigint
+      } catch (error) {
+        console.warn("⚠️ Failed to fetch WETH balance, assuming 0")
+      }
 
       // Fetch Credit from DB
       const creditResponse = await fetch("/api/credit-balance", {
@@ -103,34 +146,41 @@ export function useDistributeCredits() {
       const mainWalletCreditWei = BigInt(creditData.mainWalletCreditWei || "0")
 
       if (mainWalletCreditWei <= BigInt(0)) {
-        throw new Error("No credit available in main wallet.")
+        throw new Error("No credit available in main wallet. Please convert $BUMP to credit first.")
       }
 
       // =============================================
       // Calculate Distribution Amount
-      // Privy will automatically handle sponsorship via Dashboard configuration
+      // CRITICAL: Total available = Native ETH + WETH in main wallet
+      // User can have credit in ETH or WETH form (from Convert $BUMP to Credit)
       // =============================================
       setStatus("Calculating distribution amount...")
       
       console.log(`\n📊 Distribution Calculation:`)
-      console.log(`   → Wallet balance: ${formatEther(walletBalance)} ETH`)
+      console.log(`   → Native ETH Balance: ${formatEther(nativeEthBalance)} ETH`)
+      console.log(`   → WETH Balance: ${formatEther(wethBalance)} WETH`)
+      console.log(`   → Total Available (ETH + WETH): ${formatEther(nativeEthBalance + wethBalance)} ETH`)
       console.log(`   → Credit in database: ${formatEther(mainWalletCreditWei)} ETH`)
 
-      // Privy automatically handles sponsorship, so we can use full balance
-      const creditToDistribute: bigint = walletBalance < mainWalletCreditWei
-        ? walletBalance
-        : mainWalletCreditWei
-
-      if (creditToDistribute <= BigInt(0)) {
+      // Total available = Native ETH + WETH
+      const totalAvailable = nativeEthBalance + wethBalance
+      
+      // Check if wallet has enough balance (ETH + WETH) for distribution
+      if (totalAvailable < mainWalletCreditWei) {
         throw new Error(
-          `Insufficient ETH balance for distribution. ` +
-          `Balance: ${formatEther(walletBalance)} ETH, ` +
-          `Credit in DB: ${formatEther(mainWalletCreditWei)} ETH. ` +
-          `Please add more ETH to your wallet.`
+          `Insufficient balance for distribution.\n` +
+          `Available: ${formatEther(totalAvailable)} ETH (${formatEther(nativeEthBalance)} Native + ${formatEther(wethBalance)} WETH)\n` +
+          `Credit to distribute: ${formatEther(mainWalletCreditWei)} ETH\n\n` +
+          `Please ensure you have ETH/WETH in your wallet.\n` +
+          `The "Convert $BUMP to Credit" function should have given you ETH/WETH.`
         )
       }
+      
+      // Use credit from database (what user earned from Convert $BUMP)
+      const creditToDistribute: bigint = mainWalletCreditWei
 
       console.log(`   → Credit to distribute: ${formatEther(creditToDistribute)} ETH`)
+      console.log(`   → Will use: ${formatEther(Math.min(Number(wethBalance), Number(creditToDistribute)))} WETH + ${formatEther(Math.max(BigInt(0), creditToDistribute - wethBalance))} Native ETH`)
 
       // Calculate amount per bot
       const amountPerBot: bigint = creditToDistribute / BigInt(5)
@@ -144,77 +194,74 @@ export function useDistributeCredits() {
       }
 
       // =============================================
-      // STEP 1: Deposit ETH to WETH
-      // Convert all ETH to WETH before distribution
+      // STEP 1: Ensure we have enough WETH
+      // If we have WETH already, use it. If not, convert Native ETH to WETH.
       // This ensures 100% gasless transactions and avoids Paymaster allowlist errors
       // =============================================
-      setStatus("Depositing ETH to WETH...")
+      setStatus("Preparing WETH...")
       
-      console.log(`\n🔄 Converting ETH to WETH...`)
+      console.log(`\n💱 Ensuring WETH balance...`)
       console.log(`   → WETH Contract: ${WETH_ADDRESS}`)
-      console.log(`   → Amount: ${formatEther(creditToDistribute)} ETH`)
-      console.log(`   → Strategy: Deposit ETH to WETH, then distribute WETH to bot wallets`)
-      console.log(`   → Bot Strategy: Bot wallets will hold WETH. Uniswap v4 can use WETH directly for swaps.`)
+      console.log(`   → Credit to distribute: ${formatEther(creditToDistribute)} ETH`)
+      console.log(`   → Current WETH balance: ${formatEther(wethBalance)} WETH`)
+      console.log(`   → Strategy: Use existing WETH or convert Native ETH to WETH`)
       
-      /**
-       * STRATEGY: WETH-Based Credit Distribution
-       * 
-       * Why WETH instead of Native ETH?
-       * 1. Gasless Transactions: Paymaster Coinbase allows ERC20 (WETH) transfers to bot addresses
-       *    that were previously rejected for Native ETH transfers (allowlist restrictions).
-       * 2. Uniswap v4 Compatibility: Bot wallets hold WETH, which can be directly used in Uniswap v4
-       *    swaps without needing to unwrap back to Native ETH.
-       * 3. 1:1 Value: WETH maintains 1:1 value with ETH, so credit calculations remain accurate.
-       * 
-       * Bot Wallet Behavior:
-       * - Bot wallets now receive WETH instead of Native ETH
-       * - When bot performs swaps via Uniswap v4, it uses WETH directly
-       * - No unwrap operation needed (WETH → Token swap is more efficient)
-       * 
-       * Credit Display:
-       * - UI displays as "Total Credit" or "Total ETH" (1:1 equivalent)
-       * - Database tracks both distributed_amount_wei (ETH) and weth_balance_wei (WETH)
-       * - Total Credit = Native ETH (main wallet) + WETH (bot wallets)
-       */
-
       let depositTxHash: `0x${string}` | null = null
-
-      try {
-        // Encode deposit function call (WETH.deposit())
-        const depositData = encodeFunctionData({
-          abi: WETH_ABI,
-          functionName: "deposit",
-          args: [],
-        })
-
-        // Send transaction to WETH contract with ETH value
-        // Privy automatically handles sponsorship via Dashboard configuration
-        depositTxHash = await smartWalletClient.sendTransaction({
-          to: WETH_ADDRESS,
-          value: creditToDistribute, // Send ETH to WETH contract
-          data: depositData,
-        }) as `0x${string}`
-
-        console.log(`   ✅ WETH deposit transaction submitted: ${depositTxHash}`)
-        
-        // Wait for deposit confirmation
-        setStatus("Waiting for WETH deposit confirmation...")
-        const depositReceipt = await publicClient.waitForTransactionReceipt({
-          hash: depositTxHash,
-          confirmations: 1,
-        })
-
-        if (depositReceipt.status !== "success") {
-          throw new Error("WETH deposit transaction failed on-chain")
+      
+      // Calculate how much WETH we need to convert from Native ETH
+      const wethNeeded = creditToDistribute > wethBalance ? creditToDistribute - wethBalance : BigInt(0)
+      
+      if (wethNeeded > BigInt(0)) {
+        if (nativeEthBalance < wethNeeded) {
+          throw new Error(
+            `Insufficient Native ETH for conversion.\n` +
+            `Need: ${formatEther(wethNeeded)} ETH\n` +
+            `Available: ${formatEther(nativeEthBalance)} ETH`
+          )
         }
+        
+        console.log(`   → Converting ${formatEther(wethNeeded)} Native ETH to WETH...`)
+        setStatus("Converting ETH to WETH...")
 
-        console.log(`   ✅ WETH deposit confirmed!`)
-        console.log(`      → Block: ${depositReceipt.blockNumber}`)
-        console.log(`      → Gas used: ${depositReceipt.gasUsed.toString()}`)
-      } catch (depositError: any) {
-        console.error(`   ❌ WETH deposit failed:`, depositError.message)
-        throw new Error(`Failed to deposit ETH to WETH: ${depositError.message}`)
+        try {
+          // Encode deposit function call (WETH.deposit())
+          const depositData = encodeFunctionData({
+            abi: WETH_ABI,
+            functionName: "deposit",
+          })
+
+          // Send transaction to WETH contract with ETH value
+          depositTxHash = await smartWalletClient.sendTransaction({
+            to: WETH_ADDRESS,
+            value: wethNeeded,
+            data: depositData,
+          }) as `0x${string}`
+
+          console.log(`   ✅ WETH deposit transaction submitted: ${depositTxHash}`)
+          setHash(depositTxHash)
+          
+          // Wait for deposit confirmation
+          const depositReceipt = await publicClient.waitForTransactionReceipt({
+            hash: depositTxHash,
+            confirmations: 1,
+          })
+
+          if (depositReceipt.status !== "success") {
+            throw new Error("WETH deposit transaction failed on-chain")
+          }
+
+          console.log(`   ✅ ${formatEther(wethNeeded)} ETH successfully converted to WETH!`)
+          console.log(`      → Block: ${depositReceipt.blockNumber}`)
+        } catch (depositError: any) {
+          console.error(`   ❌ WETH deposit failed:`, depositError.message)
+          throw new Error(`Failed to deposit ETH to WETH: ${depositError.message}`)
+        }
+      } else {
+        console.log(`   ✅ Already have enough WETH (${formatEther(wethBalance)} WETH)`)
+        console.log(`   → No conversion needed`)
       }
+      
+      console.log(`   → Total WETH available for distribution: ${formatEther(creditToDistribute)} WETH`)
 
       // =============================================
       // STEP 2: Execute Individual WETH Transfers (Like Withdraw Function)
