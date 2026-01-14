@@ -150,9 +150,15 @@ export function ManageBot({ userAddress, botWallets }: ManageBotProps) {
   }
 
   // Fetch tokens when botWallets or userAddress changes
+  // Also fetch when component mounts to ensure real-time data from BaseScan
   useEffect(() => {
-    fetchTokenBalances()
+    if (botWallets && botWallets.length > 0 && userAddress) {
+      fetchTokenBalances()
+    }
   }, [botWallets, userAddress])
+  
+  // Note: fetchTokenBalances uses BaseScan API (module=account&action=tokentx) 
+  // to fetch real-time token balances for bot smart wallets
 
   // Get selected token info
   const selectedTokenInfo = useMemo(() => {

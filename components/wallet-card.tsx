@@ -17,6 +17,8 @@ interface WalletCardProps {
 
 export function WalletCard({ fuelBalance = 0, credits = 0, walletAddress, isSmartAccountActive = false, bumpBalance }: WalletCardProps) {
   const [copied, setCopied] = useState(false)
+  const [isRefreshing, setIsRefreshing] = useState(false)
+  
   // Privy Smart Wallet address (PRIMARY ADDRESS - used for all $BUMP balance checks and transactions)
   // CRITICAL: This is the Smart Wallet address, NOT the Embedded Wallet (signer) address
   const smartWalletAddress = walletAddress || "0x000...000"
@@ -47,10 +49,18 @@ export function WalletCard({ fuelBalance = 0, credits = 0, walletAddress, isSmar
     setTimeout(() => setCopied(false), 2000)
   }
 
-  const handleRefreshBalance = () => {
-    refetchBalance()
-    refetchCredit()
+  const handleRefreshBalance = async () => {
+    setIsRefreshing(true)
+    try {
+      await Promise.all([refetchBalance(), refetchCredit()])
+    } finally {
+      // Keep spinner visible for at least 500ms for better UX
+      setTimeout(() => setIsRefreshing(false), 500)
+    }
   }
+  
+  // Show spinner when loading OR refreshing
+  const showSpinner = isLoadingBalance || isLoadingCredit || isRefreshing
 
   return (
     <Card className="border border-border bg-card p-4">
@@ -96,11 +106,11 @@ export function WalletCard({ fuelBalance = 0, credits = 0, walletAddress, isSmar
               size="sm"
               variant="ghost"
               onClick={handleRefreshBalance}
-              disabled={isLoadingBalance || isLoadingCredit || !isSmartAccountActive}
+              disabled={showSpinner || !isSmartAccountActive}
               className="h-6 w-6 p-0 hover:bg-muted/50 shrink-0 disabled:opacity-50"
               title="Refresh balance"
             >
-              <RefreshCw className={`h-3.5 w-3.5 text-muted-foreground transition-transform ${isLoadingBalance || isLoadingCredit ? "animate-spin" : ""}`} />
+              <RefreshCw className={`h-3.5 w-3.5 text-muted-foreground transition-transform ${showSpinner ? "animate-spin" : ""}`} />
             </Button>
           </div>
           <p className="text-[9px] text-muted-foreground mt-2">
@@ -124,11 +134,11 @@ export function WalletCard({ fuelBalance = 0, credits = 0, walletAddress, isSmar
               size="sm"
               variant="ghost"
               onClick={handleRefreshBalance}
-              disabled={isLoadingBalance || isLoadingCredit || !isSmartAccountActive}
+              disabled={showSpinner || !isSmartAccountActive}
               className="h-6 w-6 p-0 hover:bg-muted/50 shrink-0 disabled:opacity-50"
               title="Refresh credit balance"
             >
-              <RefreshCw className={`h-3.5 w-3.5 text-muted-foreground transition-transform ${isLoadingBalance || isLoadingCredit ? "animate-spin" : ""}`} />
+              <RefreshCw className={`h-3.5 w-3.5 text-muted-foreground transition-transform ${showSpinner ? "animate-spin" : ""}`} />
             </Button>
           </div>
           <p className="text-[9px] text-muted-foreground mt-2">

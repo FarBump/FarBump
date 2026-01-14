@@ -189,32 +189,44 @@ async function fetchTokenDetails(
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
-    const { botWallets } = body as {
-      botWallets: string[]
+    const { botWallets, botWalletAddress } = body as {
+      botWallets?: string[]
+      botWalletAddress?: string // Optional: fetch for single bot wallet address
     }
 
     console.log("=====================================")
     console.log("🔍 TOKEN BALANCES API CALLED")
     console.log("=====================================")
 
-    if (!botWallets || !Array.isArray(botWallets) || botWallets.length === 0) {
-      console.log("❌ Missing or invalid botWallets array")
+    // Support both botWallets array and single botWalletAddress
+    let walletAddresses: string[] = []
+    
+    if (botWalletAddress) {
+      // Single bot wallet address (for Manage Bot tab)
+      walletAddresses = [botWalletAddress]
+      console.log(`📊 Fetching token balances for single bot wallet: ${botWalletAddress}`)
+    } else if (botWallets && Array.isArray(botWallets) && botWallets.length > 0) {
+      // Multiple bot wallets (for backward compatibility)
+      walletAddresses = botWallets
+      console.log(`📊 Fetching token balances for ${botWallets.length} bot wallets:`)
+      botWallets.forEach((addr, i) => console.log(`   ${i + 1}. ${addr}`))
+    } else {
+      console.log("❌ Missing botWallets array or botWalletAddress")
       return NextResponse.json(
-        { error: "Missing or invalid botWallets array" },
+        { error: "Missing botWallets array or botWalletAddress" },
         { status: 400 }
       )
     }
 
-    console.log(`📊 Fetching token balances for ${botWallets.length} bot wallets:`)
-    botWallets.forEach((addr, i) => console.log(`   ${i + 1}. ${addr}`))
-
-    // Step 1: Discover all unique tokens across all bot wallets using BaseScan
-    console.log(`\n🔍 Step 1: Discovering tokens from BaseScan API...`)
+    // Step 1: Discover all unique tokens across all bot wallets using BaseScan API
+    // Uses BASESCAN_API_KEY from environment variables
+    console.log(`\n🔍 Step 1: Discovering tokens from BaseScan API (real-time)...`)
+    console.log(`   Using BaseScan API Key: ${process.env.BASESCAN_API_KEY ? "✅ Configured" : "❌ Not configured"}`)
     
     const allTokenAddresses = new Set<string>()
     
-    // Fetch token list for each bot wallet in parallel
-    const tokenListPromises = botWallets.map(async (walletAddress) => {
+    // Fetch token list for each bot wallet in parallel using BaseScan API
+    const tokenListPromises = walletAddresses.map(async (walletAddress) => {
       return await fetchTokenListFromBaseScan(walletAddress)
     })
     
@@ -227,10 +239,10 @@ export async function POST(request: NextRequest) {
       }
     }
     
-    console.log(`\n✅ Discovered ${allTokenAddresses.size} unique tokens across all bot wallets`)
+    console.log(`\n✅ Discovered ${allTokenAddresses.size} unique tokens from BaseScan API`)
     
     if (allTokenAddresses.size === 0) {
-      console.log(`ℹ️ No tokens found in bot wallets`)
+      console.log(`ℹ️ No tokens found in bot wallets (BaseScan API returned no token transactions)`)
       return NextResponse.json({
         success: true,
         tokens: [],
@@ -239,11 +251,11 @@ export async function POST(request: NextRequest) {
       })
     }
 
-    // Step 2: Fetch real-time balances for each discovered token
-    console.log(`\n💰 Step 2: Fetching real-time balances for ${allTokenAddresses.size} tokens...`)
+    // Step 2: Fetch real-time balances for each discovered token from blockchain
+    console.log(`\n💰 Step 2: Fetching real-time balances for ${allTokenAddresses.size} tokens from blockchain...`)
     
     const tokenDetailsPromises = Array.from(allTokenAddresses).map(async (tokenAddress) => {
-      return await fetchTokenDetails(tokenAddress, botWallets)
+      return await fetchTokenDetails(tokenAddress, walletAddresses)
     })
     
     const tokenDetails = await Promise.all(tokenDetailsPromises)

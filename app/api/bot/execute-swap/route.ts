@@ -1037,16 +1037,10 @@ export async function POST(request: NextRequest) {
           console.warn(`   ⚠️ No credit records found for bot wallet`)
         }
 
-        // Record swap in swap_history table
-        await supabase.from("swap_history").insert({
-          user_address: user_address.toLowerCase(),
-          bot_wallet_address: smartAccountAddress.toLowerCase(),
-          token_address: token_address.toLowerCase(),
-          sell_amount_wei: amountWei.toString(),
-          buy_amount_wei: buyAmountWei.toString(),
-          tx_hash: txHash,
-        })
-        console.log(`   ✅ Swap recorded in swap_history`)
+        // Record swap in bot_logs table (swap_history is not needed, we use bot_logs)
+        // The swap is already logged above in Step 10, but we can add additional details here if needed
+        // Note: bot_logs already contains all swap information (tx_hash, token_address, amount_wei, etc.)
+        console.log(`   ✅ Swap recorded in bot_logs (swap_history not needed)`)
 
       } catch (deductError: any) {
         console.error(`   ❌ Error deducting WETH balance: ${deductError.message}`)
