@@ -118,12 +118,14 @@ export function useCreditBalance(userAddress: string | null, options?: { enabled
       const mainWalletCreditWei = mainCreditData?.balance_wei || "0"
       
       // Calculate bot wallet credits
-      // Use weth_balance_wei if available (new WETH-based distributions)
-      // Otherwise fall back to distributed_amount_wei (backward compatibility)
-      // Total Credit = Native ETH + WETH (both are 1:1 equivalent)
+      // IMPORTANT: Only use weth_balance_wei to avoid double counting
+      // distributed_amount_wei is kept for backward compatibility but should not be used in calculation
+      // Total Credit = Native ETH (main wallet) + WETH (bot wallets) - both are 1:1 equivalent
       const botWalletCreditsWei = botCreditsData?.reduce((sum, record) => {
-        // Prefer weth_balance_wei (WETH), fallback to distributed_amount_wei (ETH)
-        const amountWei = record.weth_balance_wei || record.distributed_amount_wei || "0"
+        // Use weth_balance_wei only (new WETH-based distributions)
+        // Do NOT add distributed_amount_wei to avoid double counting
+        // distributed_amount_wei is only for backward compatibility tracking
+        const amountWei = record.weth_balance_wei || "0"
         return sum + BigInt(amountWei)
       }, BigInt(0)) || BigInt(0)
       

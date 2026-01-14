@@ -231,48 +231,93 @@ export function useDistributeCredits() {
 
       const txHashes: `0x${string}`[] = []
 
-      // Execute individual WETH transfers sequentially (like Withdraw function)
-      // This avoids batch allowlist restrictions that Coinbase Paymaster may have
-      for (let i = 0; i < botWallets.length; i++) {
-        const wallet = botWallets[i]
-        const amount: bigint = i === 0 ? amountForFirstBot : amountPerBot
-        const checksumAddress = getAddress(wallet.smartWalletAddress)
-        
-        setStatus(`Sending WETH transfer ${i + 1}/${botWallets.length}...`)
-        
-        console.log(`\n   📤 WETH Transfer ${i + 1}/${botWallets.length}:`)
-        console.log(`      → To: ${checksumAddress}`)
-        console.log(`      → Amount: ${formatEther(amount)} WETH`)
-
-        try {
-          // Encode WETH transfer function call (WETH.transfer(address, uint256))
+      // Try batch transaction first (faster, single transaction)
+      // If batch fails, fallback to individual transactions
+      setStatus("Preparing batch WETH transfer...")
+      
+      console.log(`\n📤 Attempting BATCH WETH transfer (all transfers in one transaction)...`)
+      console.log(`   → Smart Wallet: ${smartWalletAddress}`)
+      console.log(`   → Total transfers: ${botWallets.length}`)
+      console.log(`   → Strategy: Batch all WETH transfers in single transaction (faster, no delay)`)
+      
+      let batchSuccess = false
+      let batchTxHash: `0x${string}` | null = null
+      
+      try {
+        // Prepare all transfer calls for batch
+        const batchCalls = botWallets.map((wallet, index) => {
+          const amount: bigint = index === 0 ? amountForFirstBot : amountPerBot
+          const checksumAddress = getAddress(wallet.smartWalletAddress)
+          
           const transferData = encodeFunctionData({
             abi: WETH_ABI,
             functionName: "transfer",
             args: [checksumAddress as Address, amount],
           })
-
-          // Execute individual WETH transfer (same pattern as Withdraw $BUMP)
-          // Privy automatically handles sponsorship via Dashboard configuration
-          const txHash = await smartWalletClient.sendTransaction({
+          
+          return {
             to: WETH_ADDRESS,
             data: transferData,
             value: BigInt(0), // ERC20 transfer, value is 0
-          }) as `0x${string}`
-
-          txHashes.push(txHash)
-          console.log(`      ✅ Transaction ${i + 1} submitted: ${txHash}`)
-
-          // Wait between transactions to avoid nonce conflicts
-          // Same delay as Withdraw function uses
-          if (i < botWallets.length - 1) {
-            const delay = 2000 // 2 seconds between transactions
-            console.log(`      → Waiting ${delay}ms before next transaction...`)
-            await new Promise(resolve => setTimeout(resolve, delay))
           }
-        } catch (transferError: any) {
-          console.error(`      ❌ Transfer ${i + 1} failed:`, transferError.message)
-          throw transferError // Re-throw to stop execution
+        })
+        
+        console.log(`   → Executing batch transaction with ${batchCalls.length} calls...`)
+        
+        // Execute batch transaction
+        batchTxHash = await smartWalletClient.sendTransaction({
+          calls: batchCalls as any,
+        }) as `0x${string}`
+        
+        console.log(`   ✅ Batch transaction submitted: ${batchTxHash}`)
+        batchSuccess = true
+        txHashes.push(batchTxHash)
+        
+      } catch (batchError: any) {
+        console.warn(`   ⚠️ Batch transaction failed: ${batchError.message}`)
+        console.log(`   → Falling back to individual transactions...`)
+        batchSuccess = false
+      }
+      
+      // Fallback to individual transactions if batch failed
+      if (!batchSuccess) {
+        console.log(`\n📤 Executing INDIVIDUAL WETH transfers (fallback)...`)
+        
+        for (let i = 0; i < botWallets.length; i++) {
+          const wallet = botWallets[i]
+          const amount: bigint = i === 0 ? amountForFirstBot : amountPerBot
+          const checksumAddress = getAddress(wallet.smartWalletAddress)
+          
+          setStatus(`Sending WETH transfer ${i + 1}/${botWallets.length}...`)
+          
+          console.log(`\n   📤 WETH Transfer ${i + 1}/${botWallets.length}:`)
+          console.log(`      → To: ${checksumAddress}`)
+          console.log(`      → Amount: ${formatEther(amount)} WETH`)
+
+          try {
+            // Encode WETH transfer function call (WETH.transfer(address, uint256))
+            const transferData = encodeFunctionData({
+              abi: WETH_ABI,
+              functionName: "transfer",
+              args: [checksumAddress as Address, amount],
+            })
+
+            // Execute individual WETH transfer (same pattern as Withdraw $BUMP)
+            // Privy automatically handles sponsorship via Dashboard configuration
+            const txHash = await smartWalletClient.sendTransaction({
+              to: WETH_ADDRESS,
+              data: transferData,
+              value: BigInt(0), // ERC20 transfer, value is 0
+            }) as `0x${string}`
+
+            txHashes.push(txHash)
+            console.log(`      ✅ Transaction ${i + 1} submitted: ${txHash}`)
+            
+            // No delay - removed as requested
+          } catch (transferError: any) {
+            console.error(`      ❌ Transfer ${i + 1} failed:`, transferError.message)
+            throw transferError // Re-throw to stop execution
+          }
         }
       }
 

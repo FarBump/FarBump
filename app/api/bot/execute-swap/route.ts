@@ -367,15 +367,17 @@ export async function POST(request: NextRequest) {
     }
 
     /**
-     * 0x API v2 Quote with Retry Logic for Clanker v4 (Uniswap v4) with thin liquidity
+     * 0x API v2 Quote with Retry Logic for WETH swaps (ERC20 token)
      * 
      * Based on: https://docs.0x.org/0x-api-swap/api-references/get-swap-v2-quote
      * 
-     * Key Changes in v2:
-     * - Endpoint: /swap/allowance-holder/quote (for native ETH, simpler than Permit2)
-     * - Parameter: slippagePercentage → slippageBps (basis points: 5% = 500, 10% = 1000)
-     * - Response: quote.to → quote.transaction.to, quote.data → quote.transaction.data, etc.
-     * - Removed: skipValidation (always validates in v2)
+     * Key Changes for WETH (ERC20):
+     * - Endpoint: /swap/v2/quote (for ERC20 tokens like WETH)
+     * - sellToken: WETH contract address (0x4200000000000000000000000000000000000006)
+     * - buyToken: Target token address
+     * - Parameter: slippageBps (basis points: 5% = 500, 10% = 1000)
+     * - Response: quote.transaction.to, quote.transaction.data, quote.transaction.value (should be 0 for ERC20)
+     * - Transaction value: Always 0 for ERC20 swaps (WETH is not native ETH)
      * 
      * Attempt 1: 5% slippage (500 bps)
      * Attempt 2: 10% slippage (1000 bps) for thin liquidity tokens
