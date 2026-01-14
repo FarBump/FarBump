@@ -12,37 +12,33 @@ interface CreditBalance {
 }
 
 /**
- * Fetches user credit balance from database and converts to USD
+ * Fetches user credit balance and converts to USD
  * Uses real-time ETH price from CoinGecko API
  * 
  * IMPORTANT: This is NOT the $BUMP token balance!
  * - Credit Balance = Total ETH value from:
- *   1. Main Smart Wallet: ETH obtained through "Convert $BUMP to credit" function
- *   2. Bot Smart Wallets: Accumulated balance from 5 bot wallets obtained through "distribute" function
- * - Database stores:
- *   - user_credits.balance_wei: Main wallet credit (90% of ETH from each convert transaction)
- *   - bot_wallet_credits.distributed_amount_wei: Bot wallet credits (from distribute function)
- * - Display: Converts wei → ETH → USD using real-time ETH price
- * - Used for paying for bump bot services in the future
- * - For $BUMP token balance, use useBumpBalance() instead
+ *   1. Main Smart Wallet: Actual ETH + WETH balance (on-chain, real-time)
+ *   2. Bot Smart Wallets: WETH balance from database (weth_balance_wei)
+ * 
+ * CRITICAL CHANGE (Latest):
+ * - Main wallet credit is now fetched from BLOCKCHAIN (actual ETH + WETH balance)
+ * - NOT from user_credits.balance_wei database (only used for audit/history)
+ * - This ensures credit decreases naturally when distributing to bot wallets
  * 
  * Credit Calculation:
- * - Main wallet credit: Sum of all 90% portions from all convert transactions (stored in user_credits)
- * - Bot wallet credits: Sum of all distributed amounts to bot wallets (stored in bot_wallet_credits)
- * - Total credit = Main wallet credit + Bot wallet credits
- * - USD value = Total ETH credit × Current ETH price (refreshed every 15 seconds)
+ * - Main wallet credit: Actual ETH + WETH in smart wallet (on-chain)
+ * - Bot wallet credits: Sum of weth_balance_wei from bot_wallet_credits table
+ * - Total credit = Main wallet (ETH + WETH) + Bot wallets WETH
+ * - USD value = Total ETH credit × Current ETH price
  * 
- * Security:
- * - Only credits from valid convert transactions and distribute operations are counted
- * - Direct ETH transfers to smart wallets are NOT counted (prevents bypass)
- * 
- * This ensures:
- * 1. Credit amount in ETH matches the actual ETH in Smart Wallets (from valid operations only)
- * 2. Credit value in USD follows ETH price fluctuations in real-time
- * 3. Users cannot bypass the system by directly transferring ETH to their wallets
+ * Why this approach?
+ * 1. When user converts $BUMP to credit → ETH/WETH added to main wallet
+ * 2. When distributing to bot wallets → ETH/WETH moves from main wallet to bot wallets
+ * 3. Main wallet balance decreases automatically (on-chain)
+ * 4. No need to manually track in database for display
  * 
  * This hook is completely independent from withdraw operations.
- * Withdraw uses useBumpBalance() which reads directly from blockchain.
+ * Withdraw uses useBumpBalance() which reads $BUMP token balance from blockchain.
  */
 export function useCreditBalance(userAddress: string | null, options?: { enabled?: boolean }) {
   // CRITICAL: Initialize Supabase client inside hook (not at module level)
@@ -61,43 +57,27 @@ export function useCreditBalance(userAddress: string | null, options?: { enabled
         throw new Error("User address is required")
       }
 
-      // Fetch main wallet credit from database
-      const { data: mainCreditData, error: mainCreditError } = await supabase
-        .from("user_credits")
-        .select("balance_wei, last_updated")
-        .eq("user_address", userAddress.toLowerCase())
-        .single()
+      // CRITICAL: Use backend API to fetch credit balance
+      // Backend fetches actual ETH + WETH from blockchain for main wallet
+      // This ensures credit decreases naturally when distributing
+      const creditResponse = await fetch("/api/credit-balance", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userAddress }),
+      })
 
-      // Fetch bot wallet credits from database
-      // IMPORTANT: Only 1 row per bot_wallet_address, only weth_balance_wei is used
-      // Total Credit = Native ETH (main wallet) + WETH (bot wallets)
-      const { data: botCreditsData, error: botCreditsError } = await supabase
-        .from("bot_wallet_credits")
-        .select("weth_balance_wei")
-        .eq("user_address", userAddress.toLowerCase())
-
-      // Handle errors gracefully
-      if (mainCreditError && mainCreditError.code !== "PGRST116") {
-        // PGRST116 = no rows returned, which is OK for new users
-        // Error 406 (Not Acceptable) = RLS policy issue - return default instead of throwing
-        const is406Error = 
-          mainCreditError.code === "406" ||
-          mainCreditError.message?.includes("406") || 
-          mainCreditError.message?.includes("Not Acceptable") ||
-          mainCreditError.details?.includes("406") ||
-          String(mainCreditError).includes("406")
+      if (!creditResponse.ok) {
+        const errorData = await creditResponse.json().catch(() => ({}))
         
-        if (is406Error) {
-          // Mark 406 error occurred - disable future queries to prevent console spam
+        // Handle 406 errors gracefully (RLS policy issue)
+        if (creditResponse.status === 406) {
           if (typeof window !== "undefined") {
             sessionStorage.setItem("credit_406_error", "true")
             
-            // Only log warning once per session to avoid console spam
             if (!sessionStorage.getItem("credit_406_warned")) {
               console.warn("⚠️ Credit balance fetch failed (RLS policy issue). Disabling auto-refetch.")
               console.warn("💡 This does NOT affect withdraw - withdraw uses $BUMP token balance from blockchain.")
-              console.warn("💡 Please update RLS policy in Supabase. See FIX-RLS-POLICY.md for instructions.")
-              console.warn("💡 After fixing RLS policy, refresh the page to re-enable credit balance fetch.")
+              console.warn("💡 Please update RLS policy in Supabase.")
               sessionStorage.setItem("credit_406_warned", "true")
             }
           }
@@ -110,26 +90,12 @@ export function useCreditBalance(userAddress: string | null, options?: { enabled
           }
         }
         
-        // For other errors, still throw to maintain error visibility
-        throw mainCreditError
+        throw new Error(errorData.error || `Failed to fetch credit balance: ${creditResponse.statusText}`)
       }
 
-      // Calculate main wallet credit
-      const mainWalletCreditWei = mainCreditData?.balance_wei || "0"
-      
-      // Calculate bot wallet credits
-      // IMPORTANT: Only weth_balance_wei is used (distributed_amount_wei removed)
-      // Only 1 row per bot_wallet_address (unique constraint), so no grouping needed
-      const botWalletCreditsWei = botCreditsData?.reduce((sum, record) => {
-        // Only use weth_balance_wei (distributed_amount_wei removed)
-        const amountWei = BigInt(record.weth_balance_wei || "0")
-        return sum + amountWei
-      }, BigInt(0)) || BigInt(0)
-      
-      // Total credit = Main wallet credit + Bot wallet credits (ETH + WETH)
-      const totalCreditWei = BigInt(mainWalletCreditWei) + botWalletCreditsWei
-      const balanceWei = totalCreditWei.toString()
-      const balanceEth = formatUnits(BigInt(balanceWei), 18)
+      const creditData = await creditResponse.json()
+      const balanceWei = creditData.balanceWei || "0"
+      const balanceEth = creditData.balanceEth || "0"
 
       // Fetch ETH price in USD from CoinGecko (real-time)
       // IMPORTANT: ETH price is fetched fresh every time to reflect current market price
