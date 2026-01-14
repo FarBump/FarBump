@@ -83,22 +83,34 @@ const supabase = createClient(supabaseUrl, supabaseKey)
 
 // Initialize CDP Client using Environment Variables
 // IMPORTANT: Use environment variables only, do NOT read from file
-// Use CDP_API_KEY_NAME and CDP_API_KEY_PRIVATE_KEY (or CDP_PRIVATE_KEY as fallback)
+// Use CDP_API_KEY_NAME and CDP_API_KEY_PRIVATE_KEY
 const cdpApiKeyName = process.env.CDP_API_KEY_NAME
-const cdpPrivateKey = process.env.CDP_API_KEY_PRIVATE_KEY || process.env.CDP_PRIVATE_KEY
+const cdpPrivateKey = process.env.CDP_API_KEY_PRIVATE_KEY
 
 if (!cdpApiKeyName || !cdpPrivateKey) {
   console.error("❌ Missing CDP environment variables")
-  console.error("   Required: CDP_API_KEY_NAME and CDP_API_KEY_PRIVATE_KEY (or CDP_PRIVATE_KEY)")
+  console.error("   Required environment variables:")
+  console.error("   - CDP_API_KEY_NAME: Your CDP API Key Name")
+  console.error("   - CDP_API_KEY_PRIVATE_KEY: Your CDP Private Key (PEM format, use \\n for newlines)")
   process.exit(1)
 }
 
-CdpClient.configure({
-  apiKeyName: cdpApiKeyName,
-  privateKey: cdpPrivateKey,
-})
-
-console.log("✅ CDP Client configured from environment variables")
+try {
+  // Replace escaped newlines if needed (Railway/Vercel environment variables)
+  const privateKeyFormatted = cdpPrivateKey.replace(/\\n/g, '\n')
+  
+  CdpClient.configure({
+    apiKeyName: cdpApiKeyName,
+    privateKey: privateKeyFormatted,
+  })
+  
+  console.log("✅ CDP Client configured from environment variables")
+  console.log(`   API Key Name: ${cdpApiKeyName}`)
+} catch (error: any) {
+  console.error("❌ Failed to configure CDP Client:", error.message)
+  console.error("   Make sure CDP_API_KEY_NAME and CDP_API_KEY_PRIVATE_KEY are set correctly")
+  process.exit(1)
+}
 
 const cdp = new CdpClient()
 

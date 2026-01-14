@@ -6,7 +6,7 @@
     "build": "next build --webpack",
     "dev": "next dev",
     "lint": "eslint .",
-    "start": "next start",
+    "start": "next start -p ${PORT:-8080}",
     "worker": "ts-node server/bumping-worker.ts"
   },
   "dependencies": {

@@ -5,6 +5,7 @@ import { createSupabaseServiceClient } from "@/lib/supabase"
 import { Coinbase, Wallet } from "@coinbase/coinbase-sdk"
 import "dotenv/config"
 
+// CRITICAL: Force dynamic to prevent build-time errors
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
 export const maxDuration = 60
@@ -16,25 +17,32 @@ const publicClient = createPublicClient({
 })
 
 // Initialize Coinbase SDK using Environment Variables
-// IMPORTANT: Do NOT use configureFromJson or read from file
+// CRITICAL: Do NOT use configureFromJson or read from ./cdp_api_key.json
 // Use environment variables only: CDP_API_KEY_NAME and CDP_API_KEY_PRIVATE_KEY
 let coinbase: Coinbase | null = null
 try {
   const apiKeyName = process.env.CDP_API_KEY_NAME
-  const apiKeyPrivateKey = process.env.CDP_API_KEY_PRIVATE_KEY || process.env.CDP_PRIVATE_KEY
+  const apiKeyPrivateKey = process.env.CDP_API_KEY_PRIVATE_KEY
 
   if (!apiKeyName || !apiKeyPrivateKey) {
     console.warn("⚠️ CDP SDK not configured: Missing CDP_API_KEY_NAME or CDP_API_KEY_PRIVATE_KEY environment variables")
-    console.warn("   Required env vars: CDP_API_KEY_NAME, CDP_API_KEY_PRIVATE_KEY (or CDP_PRIVATE_KEY)")
+    console.warn("   Required environment variables:")
+    console.warn("   - CDP_API_KEY_NAME: Your CDP API Key Name")
+    console.warn("   - CDP_API_KEY_PRIVATE_KEY: Your CDP Private Key (PEM format, use \\n for newlines)")
   } else {
+    // Replace escaped newlines if needed (Railway/Vercel environment variables)
+    const privateKeyFormatted = apiKeyPrivateKey.replace(/\\n/g, '\n')
+    
     coinbase = Coinbase.configure({
       apiKeyName,
-      privateKey: apiKeyPrivateKey,
+      privateKey: privateKeyFormatted,
     })
     console.log("✅ CDP SDK configured from environment variables")
+    console.log(`   API Key Name: ${apiKeyName}`)
   }
-} catch (error) {
-  console.warn("⚠️ CDP SDK not configured:", error)
+} catch (error: any) {
+  console.warn("⚠️ CDP SDK configuration failed:", error.message)
+  console.warn("   This endpoint will return fallback error to use frontend distribution")
 }
 
 // Paymaster Proxy URL
