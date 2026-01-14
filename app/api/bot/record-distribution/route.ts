@@ -9,6 +9,12 @@ export const runtime = "nodejs"
  * 
  * Records distributed credits from main wallet to bot wallets in database.
  * This ensures credit balance calculation includes bot wallet credits.
+ * 
+ * IMPORTANT: This endpoint records WETH distribution (not Native ETH).
+ * - distributed_amount_wei: Original ETH amount (for backward compatibility)
+ * - weth_balance_wei: WETH balance (1:1 with ETH, explicitly tracked as WETH)
+ * - Credit value remains 1:1 (WETH = ETH in terms of credit calculation)
+ * - Bot wallets now hold WETH instead of Native ETH for gasless transactions
  */
 export async function POST(request: NextRequest) {
   try {
@@ -37,8 +43,17 @@ export async function POST(request: NextRequest) {
     const normalizedUserAddress = userAddress.toLowerCase()
 
     // Insert distribution records for each bot wallet
-    // Note: distributed_amount_wei stores the original ETH amount (for backward compatibility)
-    // weth_balance_wei stores the WETH amount (same value, but explicitly tracked as WETH)
+    // 
+    // CREDIT SYSTEM (1:1 Value):
+    // - distributed_amount_wei: Original ETH amount (for backward compatibility)
+    // - weth_balance_wei: WETH balance (same value as ETH, but explicitly tracked as WETH)
+    // - Total Credit = Native ETH (main wallet) + WETH (bot wallets)
+    // - Credit value is 1:1 (WETH = ETH in terms of credit calculation)
+    // 
+    // WHY WETH?
+    // - Bot wallets hold WETH instead of Native ETH for gasless transactions
+    // - WETH can be directly used in Uniswap v4 swaps without unwrapping
+    // - Paymaster Coinbase allows ERC20 (WETH) transfers that were rejected for Native ETH
     const records = distributions.map((dist) => ({
       user_address: normalizedUserAddress,
       bot_wallet_address: dist.botWalletAddress.toLowerCase(),
