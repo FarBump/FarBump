@@ -10,7 +10,9 @@ export const runtime = "nodejs"
 
 // Constants
 const WETH_ADDRESS = "0x4200000000000000000000000000000000000006" as const
-const ZEROX_EXCHANGE_PROXY = "0xDef1C0ded9bec7F1a1670819833240f027b25EfF" as const // 0x Exchange Proxy on Base
+// 0x API v2 uses AllowanceHolder contract for ERC20 token approvals
+// The AllowanceHolder address will be returned in the quote response (quote.allowanceTarget)
+// Reference: https://0x.org/docs/upgrading/upgrading_to_swap_v2
 
 // WETH ABI for balance and approval
 const WETH_ABI = [
@@ -369,14 +371,16 @@ export async function POST(request: NextRequest) {
     /**
      * 0x API v2 Quote with Retry Logic for WETH swaps (ERC20 token)
      * 
-     * Based on: https://docs.0x.org/0x-api-swap/api-references/get-swap-v2-quote
+     * Based on: https://0x.org/docs/upgrading/upgrading_to_swap_v2
      * 
-     * Key Changes for WETH (ERC20):
-     * - Endpoint: /swap/v2/quote (for ERC20 tokens like WETH)
+     * Key Changes for WETH (ERC20) using AllowanceHolder:
+     * - Endpoint: /swap/allowance-holder/quote (for ERC20 tokens like WETH)
      * - sellToken: WETH contract address (0x4200000000000000000000000000000000000006)
      * - buyToken: Target token address
      * - Parameter: slippageBps (basis points: 5% = 500, 10% = 1000)
+     * - Parameter: taker (changed from takerAddress in v1)
      * - Response: quote.transaction.to, quote.transaction.data, quote.transaction.value (should be 0 for ERC20)
+     * - Response: quote.allowanceTarget (AllowanceHolder contract address for approval)
      * - Transaction value: Always 0 for ERC20 swaps (WETH is not native ETH)
      * 
      * Attempt 1: 5% slippage (500 bps)
@@ -402,10 +406,11 @@ export async function POST(request: NextRequest) {
         slippageBps: attempt === 1 ? "500" : "1000", // 5% = 500 bps, 10% = 1000 bps
       })
 
-      // Use swap/quote endpoint for ERC20 token swaps (WETH)
-      // Reference: https://docs.0x.org/0x-api-swap/api-references/get-swap-v2-quote
-      const quoteUrl = `https://api.0x.org/swap/v2/quote?${quoteParams.toString()}`
-      console.log(`   Endpoint: /swap/v2/quote (WETH → Token)`)
+      // Use swap/allowance-holder/quote endpoint for ERC20 token swaps (WETH)
+      // Reference: https://0x.org/docs/upgrading/upgrading_to_swap_v2
+      // AllowanceHolder is ideal for single-signature use cases and ERC20 tokens
+      const quoteUrl = `https://api.0x.org/swap/allowance-holder/quote?${quoteParams.toString()}`
+      console.log(`   Endpoint: /swap/allowance-holder/quote (WETH → Token)`)
       console.log(`   URL: ${quoteUrl}`)
       console.log(`   Sell Token: WETH (${WETH_ADDRESS})`)
       console.log(`   Buy Token: ${token_address}`)
@@ -456,6 +461,7 @@ export async function POST(request: NextRequest) {
           : "0"
         console.log(`   Value: ${formatEther(BigInt(logValue))} ETH`)
         console.log(`   Buy Amount: ${quote.buyAmount || 'N/A'}`)
+        console.log(`   Allowance Target: ${quote.allowanceTarget || 'N/A'}`)
         console.log(`   Price: ${quote.price || 'N/A'}`)
         break
       }
@@ -514,8 +520,18 @@ export async function POST(request: NextRequest) {
       }, { status: 200 }) // Return 200 to continue session
     }
 
-    // Step 8: Check WETH approval for 0x Exchange Proxy
-    console.log(`🔐 Checking WETH approval for 0x Exchange Proxy...`)
+    // Step 8: Check WETH approval for 0x AllowanceHolder
+    // In v2 API, the AllowanceHolder contract address is returned in quote.allowanceTarget
+    // Reference: https://0x.org/docs/upgrading/upgrading_to_swap_v2
+    const allowanceTarget = quote.allowanceTarget || quote.transaction?.to
+    
+    if (!allowanceTarget) {
+      console.error(`❌ No allowance target found in quote response`)
+      throw new Error("Invalid quote response: missing allowanceTarget")
+    }
+    
+    console.log(`🔐 Checking WETH approval for 0x AllowanceHolder...`)
+    console.log(`   AllowanceHolder Address: ${allowanceTarget}`)
     
     let needsApproval = false
     try {
@@ -523,7 +539,7 @@ export async function POST(request: NextRequest) {
         address: WETH_ADDRESS,
         abi: WETH_ABI,
         functionName: "allowance",
-        args: [smartAccountAddress, ZEROX_EXCHANGE_PROXY],
+        args: [smartAccountAddress, allowanceTarget as Address],
       }) as bigint
 
       console.log(`   Current allowance: ${formatEther(currentAllowance)} WETH`)
@@ -531,7 +547,7 @@ export async function POST(request: NextRequest) {
 
       if (currentAllowance < amountWei) {
         needsApproval = true
-        console.log(`   ⚠️ Insufficient allowance. Need to approve WETH.`)
+        console.log(`   ⚠️ Insufficient allowance. Need to approve WETH to AllowanceHolder.`)
       } else {
         console.log(`   ✅ Sufficient allowance. No approval needed.`)
       }
@@ -542,8 +558,11 @@ export async function POST(request: NextRequest) {
     }
 
     // Step 9: Approve WETH if needed
+    // In v2 API, we approve to AllowanceHolder contract (not Exchange Proxy)
+    // Reference: https://0x.org/docs/upgrading/upgrading_to_swap_v2
     if (needsApproval) {
-      console.log(`🔐 Approving WETH for 0x Exchange Proxy...`)
+      console.log(`🔐 Approving WETH for 0x AllowanceHolder...`)
+      console.log(`   AllowanceHolder Address: ${allowanceTarget}`)
       
       try {
         // Get Owner Account and Smart Account
@@ -562,11 +581,12 @@ export async function POST(request: NextRequest) {
 
         // Encode approve function call
         // Approve max amount (2^256 - 1) to avoid repeated approvals
+        // In v2 API, we approve to AllowanceHolder contract (returned in quote.allowanceTarget)
         const maxApproval = BigInt("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
         const approveData = encodeFunctionData({
           abi: WETH_ABI,
           functionName: "approve",
-          args: [ZEROX_EXCHANGE_PROXY, maxApproval],
+          args: [allowanceTarget as Address, maxApproval],
         })
 
         // Execute approval transaction
