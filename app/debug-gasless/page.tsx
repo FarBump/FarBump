@@ -2,7 +2,24 @@
 
 import { useState } from "react"
 import { useSmartWallets } from "@privy-io/react-auth/smart-wallets"
-import { parseEther, type Address } from "viem"
+import { encodeFunctionData, type Address, type Hex } from "viem"
+
+// WETH Contract Address (Base Network)
+const WETH_ADDRESS = "0x4200000000000000000000000000000000000006" as const
+
+// ERC20 ABI for transfer function
+const ERC20_ABI = [
+  {
+    inputs: [
+      { name: "to", type: "address" },
+      { name: "amount", type: "uint256" },
+    ],
+    name: "transfer",
+    outputs: [{ name: "", type: "bool" }],
+    stateMutability: "nonpayable",
+    type: "function",
+  },
+] as const
 
 export default function DebugGaslessPage() {
   const { client: smartWalletClient } = useSmartWallets()
@@ -11,7 +28,7 @@ export default function DebugGaslessPage() {
   const [error, setError] = useState<any>(null)
 
   const addLog = (message: string) => {
-    setLogs((prev) => [...prev, `[${new Date().toLocaleTimeString()}] ${message}`])
+    setLogs((prev: string[]) => [...prev, `[${new Date().toLocaleTimeString()}] ${message}`])
     console.log(message)
   }
 
@@ -35,23 +52,34 @@ export default function DebugGaslessPage() {
 
       addLog(`✅ Smart Wallet connected: ${smartWalletAddress}`)
 
-      // Transaction parameters
-      const to: Address = "0x2D20B703c92BB5133f6e6151aaEB51598068d434"
-      const value = parseEther("0.0001")
+      // WETH Transfer parameters
+      const recipient: Address = "0x2D20B703c92BB5133f6e6151aaEB51598068d434"
+      const amount = BigInt("5000000000000") // 0.000005 WETH (18 decimals)
 
-      addLog(`📤 Preparing transaction...`)
-      addLog(`   → To: ${to}`)
-      addLog(`   → Value: 0.0001 ETH`)
-      addLog(`   → Data: 0x (empty, simple ETH transfer)`)
+      addLog(`📤 Preparing WETH transfer transaction...`)
+      addLog(`   → WETH Contract: ${WETH_ADDRESS}`)
+      addLog(`   → Recipient: ${recipient}`)
+      addLog(`   → Amount: 0.000005 WETH (5000000000000 wei)`)
+      addLog(`   → Type: ERC20 transfer (contract interaction)`)
       addLog(`   → Paymaster: Auto (Privy Dashboard configuration)`)
+
+      // Encode transfer function call
+      addLog(`🔧 Encoding transfer function...`)
+      const transferData = encodeFunctionData({
+        abi: ERC20_ABI,
+        functionName: "transfer",
+        args: [recipient, amount],
+      })
+
+      addLog(`   → Encoded data: ${transferData}`)
 
       // Send transaction (let Privy handle sponsorship automatically)
       addLog(`⏳ Sending transaction...`)
       
       const txHash = await smartWalletClient.sendTransaction({
-        to: to,
-        value: value,
-        data: "0x" as const,
+        to: WETH_ADDRESS,
+        value: BigInt(0), // No native ETH value (contract interaction)
+        data: transferData as Hex,
       }) as `0x${string}`
 
       addLog(`✅ Transaction submitted!`)
@@ -110,7 +138,7 @@ export default function DebugGaslessPage() {
           disabled={!isConnected || isPending}
           className="w-full py-4 px-6 bg-blue-600 text-white font-semibold rounded-lg hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed text-lg"
         >
-          {isPending ? "Sending..." : "Kirim 0.0001 ETH (Gasless Test)"}
+          {isPending ? "Sending..." : "Kirim 0.000005 WETH (Gasless Test)"}
         </button>
       </div>
 
@@ -142,11 +170,13 @@ export default function DebugGaslessPage() {
       <div className="mt-6 p-4 bg-blue-50 rounded-lg border border-blue-200">
         <h2 className="text-lg font-semibold mb-2">Test Information</h2>
         <ul className="text-sm space-y-1 text-gray-700">
-          <li>• <strong>To:</strong> 0x2D20B703c92BB5133f6e6151aaEB51598068d434 (Bot Wallet)</li>
-          <li>• <strong>Value:</strong> 0.0001 ETH</li>
-          <li>• <strong>Type:</strong> Simple ETH transfer (no contract call)</li>
+          <li>• <strong>Token:</strong> WETH (Wrapped ETH)</li>
+          <li>• <strong>Contract:</strong> 0x4200000000000000000000000000000000000006 (Base Network)</li>
+          <li>• <strong>Recipient:</strong> 0x2D20B703c92BB5133f6e6151aaEB51598068d434 (Bot Wallet)</li>
+          <li>• <strong>Amount:</strong> 0.000005 WETH (5000000000000 wei)</li>
+          <li>• <strong>Type:</strong> ERC20 transfer (contract interaction)</li>
           <li>• <strong>Paymaster:</strong> Auto-configured via Privy Dashboard</li>
-          <li>• <strong>Purpose:</strong> Test if allowlist error occurs on minimal transaction</li>
+          <li>• <strong>Purpose:</strong> Test if Paymaster allows ERC20 contract interaction to bot address</li>
         </ul>
       </div>
     </div>
