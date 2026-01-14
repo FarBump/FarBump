@@ -125,29 +125,11 @@ export function useDistributeCredits() {
       let amountForFirstBotAfterGas: bigint = amountForFirstBot
 
       // =============================================
-      // Prepare Batch Calls Array
-      // =============================================
-      setStatus("Preparing batch transaction...")
-      
-      const calls: Array<{ to: Address; value: bigint; data: Hex }> = botWallets.map((wallet, index) => {
-        const amount: bigint = index === 0 ? amountForFirstBot : amountPerBot
-        const checksumAddress = getAddress(wallet.smartWalletAddress)
-        
-        console.log(`   Call #${index + 1}: ${checksumAddress} → ${formatEther(amount)} ETH`)
-        
-        return {
-          to: checksumAddress as Address,
-          value: amount,
-          data: "0x" as Hex, // Empty data for simple ETH transfer
-        }
-      })
-
-      // =============================================
-      // STEP 10: Execute Batch Transaction using User's Smart Wallet
+      // STEP 10: Execute Individual Transactions (Like Withdraw Function)
       // WITH PAYMASTER PROXY - Gasless transaction via server-side proxy
-      // CRITICAL: Only use /api/paymaster - NO Coinbase URLs in frontend
+      // CRITICAL: Use individual transactions to avoid batch allowlist restrictions
       // =============================================
-      setStatus("Awaiting signature... (1 approval for 5 transfers)")
+      setStatus("Preparing individual transactions...")
       
       // Build absolute Paymaster Proxy URL to ensure Viem doesn't do local validation
       // Use current origin to build absolute URL
@@ -155,71 +137,127 @@ export function useDistributeCredits() {
         ? `${window.location.origin}/api/paymaster`
         : "/api/paymaster"
       
-      console.log(`\n📤 Sending BATCH transaction with Paymaster Proxy...`)
+      console.log(`\n📤 Sending INDIVIDUAL transactions with Paymaster Proxy...`)
       console.log(`   → Smart Wallet: ${smartWalletAddress}`)
-      console.log(`   → Total calls: ${calls.length}`)
+      console.log(`   → Total transfers: ${botWallets.length}`)
       console.log(`   → Paymaster Proxy URL: ${paymasterProxyUrl}`)
       console.log(`   → User pays gas: NO (Gasless via Paymaster Proxy)`)
+      console.log(`   → Strategy: Individual transactions (like Withdraw) to avoid batch allowlist restrictions`)
       console.log(`   → CRITICAL: No Coinbase URLs in frontend - all requests go through proxy`)
 
-      let txHash: `0x${string}` | null = null
+      // Transaction options - same as Withdraw function
+      // Using Paymaster Proxy via capabilities (exactly like Withdraw would use)
+      const transactionOptions = {
+        // CRITICAL: Only use Paymaster Proxy - no Coinbase URLs
+        // This ensures all Paymaster requests go through our server-side proxy
+        capabilities: {
+          paymasterService: {
+            url: paymasterProxyUrl, // Absolute URL: https://farbump.vercel.app/api/paymaster
+          },
+        },
+        // DO NOT include:
+        // - isSponsored (let capabilities handle it)
+        // - Any Coinbase CDP URLs
+        // - Any API keys
+      }
+
+      let txHashes: `0x${string}`[] = []
       let gasless = false
       let paymasterProxyError: Error | null = null
 
       try {
-        // Execute batch transaction with Paymaster Proxy ONLY
-        // Using capabilities.paymasterService.url to route through our proxy
-        // This bypasses client-side allowlist restrictions completely
-        // 
-        // CRITICAL REQUIREMENTS:
-        // 1. Only use /api/paymaster - NO Coinbase URLs in frontend
-        // 2. Use absolute URL to prevent Viem from doing local validation
-        // 3. DO NOT include isSponsored - let capabilities handle Paymaster
-        // 4. DO NOT include any Coinbase CDP URLs or API keys
-        //
-        // This ensures all Paymaster requests go through server-side proxy
-        // where CDP_PAYMASTER_URL (secret API key) is stored securely
-        const transactionOptions = {
-          // CRITICAL: Only use Paymaster Proxy - no Coinbase URLs
-          // This ensures all Paymaster requests go through our server-side proxy
-          capabilities: {
-            paymasterService: {
-              url: paymasterProxyUrl, // Absolute URL: https://farbump.vercel.app/api/paymaster
-            },
-          },
-          // DO NOT include:
-          // - isSponsored (let capabilities handle it)
-          // - Any Coinbase CDP URLs
-          // - Any API keys
+        // Execute individual transactions sequentially (like Withdraw function)
+        // This avoids batch allowlist restrictions that Coinbase Paymaster may have
+        for (let i = 0; i < botWallets.length; i++) {
+          const wallet = botWallets[i]
+          const amount: bigint = i === 0 ? amountForFirstBot : amountPerBot
+          const checksumAddress = getAddress(wallet.smartWalletAddress)
+          
+          setStatus(`Sending transfer ${i + 1}/${botWallets.length}...`)
+          
+          console.log(`\n   📤 Transfer ${i + 1}/${botWallets.length}:`)
+          console.log(`      → To: ${checksumAddress}`)
+          console.log(`      → Amount: ${formatEther(amount)} ETH`)
+          console.log(`      → Paymaster Proxy: ${paymasterProxyUrl}`)
+
+          try {
+            // Execute individual transaction (same format as Withdraw)
+            // Using Paymaster Proxy via capabilities
+            const txHash = await smartWalletClient.sendTransaction(
+              {
+                to: checksumAddress as Address,
+                value: amount,
+                data: "0x" as Hex, // Empty data for simple ETH transfer
+              },
+              transactionOptions
+            ) as `0x${string}`
+
+            txHashes.push(txHash)
+            gasless = true
+            console.log(`      ✅ Transaction ${i + 1} submitted: ${txHash}`)
+            console.log(`      → Gasless: YES (via Paymaster Proxy)`)
+
+            // Wait between transactions to avoid nonce conflicts
+            // Same delay as Withdraw function uses
+            if (i < botWallets.length - 1) {
+              const delay = 2000 // 2 seconds between transactions
+              console.log(`      → Waiting ${delay}ms before next transaction...`)
+              await new Promise(resolve => setTimeout(resolve, delay))
+            }
+          } catch (transferError: any) {
+            console.error(`      ❌ Transfer ${i + 1} failed:`, transferError.message)
+            
+            // Check if it's a Paymaster Proxy error
+            const errorMessage = transferError.message || ""
+            const errorString = JSON.stringify(transferError)
+            const isPaymasterProxyError = 
+              errorMessage.includes("/api/paymaster") ||
+              errorMessage.includes("Paymaster") ||
+              errorMessage.includes("paymasterService") ||
+              errorMessage.includes("not configured") ||
+              errorMessage.includes("not in allowlist") ||
+              errorMessage.includes("allowlist") ||
+              errorString.includes("CDP_PAYMASTER_URL") ||
+              errorString.includes("coinbase.com") ||
+              errorString.includes("developer.coinbase.com") ||
+              (transferError.response && transferError.response.status !== 200) ||
+              (transferError.status && transferError.status !== 200)
+
+            if (isPaymasterProxyError) {
+              console.error(`      → Paymaster Proxy error detected for transfer ${i + 1}`)
+              paymasterProxyError = transferError
+              
+              // If first transfer fails with allowlist, all will likely fail
+              // Stop and fallback to normal transaction
+              if (i === 0) {
+                console.error(`      → First transfer failed - stopping and falling back to normal transaction`)
+                break
+              }
+            }
+            
+            // Continue with other transfers even if one fails
+            console.warn(`      → Continuing with remaining transfers...`)
+          }
         }
 
-        console.log(`   → Transaction options:`, JSON.stringify({
-          ...transactionOptions,
-          capabilities: {
-            paymasterService: {
-              url: paymasterProxyUrl, // Log URL for debugging
-            },
-          },
-        }, null, 2))
+        // Use first transaction hash as primary
+        const txHash = txHashes.length > 0 ? txHashes[0] : null
 
-        txHash = await smartWalletClient.sendTransaction(
-          {
-            calls: calls, // Array of 5 calls - batched into single tx
-          },
-          transactionOptions
-        ) as `0x${string}`
+        if (txHashes.length === 0) {
+          throw new Error("All individual transactions failed")
+        }
 
-        gasless = true
-        console.log(`✅ Transaction submitted via Paymaster Proxy!`)
-        console.log(`   → Hash: ${txHash}`)
-        console.log(`   → Gasless: YES`)
-        console.log(`   → All Paymaster requests routed through: ${paymasterProxyUrl}`)
+        if (txHashes.length < botWallets.length) {
+          console.warn(`⚠️ Only ${txHashes.length}/${botWallets.length} transfers succeeded`)
+        } else {
+          console.log(`✅ All ${txHashes.length} individual transactions submitted successfully!`)
+        }
       } catch (paymasterErr: any) {
         paymasterProxyError = paymasterErr
-        console.error(`❌ Paymaster Proxy transaction failed:`)
+        console.error(`❌ Paymaster Proxy transactions failed:`)
         console.error(`   → Error: ${paymasterErr.message}`)
         
-        // Check if it's a Paymaster Proxy error (non-200 response from /api/paymaster)
+        // Check if it's a Paymaster Proxy error
         const errorMessage = paymasterErr.message || ""
         const errorString = JSON.stringify(paymasterErr)
         const isPaymasterProxyError = 
@@ -227,9 +265,11 @@ export function useDistributeCredits() {
           errorMessage.includes("Paymaster") ||
           errorMessage.includes("paymasterService") ||
           errorMessage.includes("not configured") ||
+          errorMessage.includes("not in allowlist") ||
+          errorMessage.includes("allowlist") ||
           errorString.includes("CDP_PAYMASTER_URL") ||
-          errorString.includes("coinbase.com") || // Check for any Coinbase URLs
-          errorString.includes("developer.coinbase.com") || // Check for CDP URLs
+          errorString.includes("coinbase.com") ||
+          errorString.includes("developer.coinbase.com") ||
           (paymasterErr.response && paymasterErr.response.status !== 200) ||
           (paymasterErr.status && paymasterErr.status !== 200)
 
@@ -238,7 +278,7 @@ export function useDistributeCredits() {
           console.error(`   → Possible causes:`)
           console.error(`      - CDP_PAYMASTER_URL not configured in environment`)
           console.error(`      - Paymaster Proxy endpoint returned non-200 status`)
-          console.error(`      - Viem may have attempted local validation (check for Coinbase URLs in error)`)
+          console.error(`      - Allowlist restriction still applies (even for individual transactions)`)
           
           // Check if Viem tried to use Coinbase URL directly
           if (errorString.includes("coinbase.com") || errorString.includes("developer.coinbase.com")) {
@@ -248,36 +288,41 @@ export function useDistributeCredits() {
         }
       }
 
+      // Use first transaction hash as primary (for UI display)
+      let txHash: `0x${string}` | null = txHashes.length > 0 ? txHashes[0] : null
+
       // =============================================
       // METHOD 2: Fallback to Normal Transaction (User Pays Gas)
-      // If Paymaster Proxy fails, fallback to normal transaction
+      // If Paymaster Proxy fails, fallback to normal individual transactions
       // =============================================
       if (!txHash && paymasterProxyError) {
-        setStatus("Paymaster Proxy unavailable. Using normal transaction (user pays gas)...")
+        setStatus("Paymaster Proxy unavailable. Using normal transactions (user pays gas)...")
         
-        console.log(`\n📤 METHOD 2: Normal Transaction (User Pays Gas)...`)
+        console.log(`\n📤 METHOD 2: Normal Individual Transactions (User Pays Gas)...`)
         console.log(`   → Smart Wallet: ${smartWalletAddress}`)
-        console.log(`   → Total calls: ${calls.length}`)
+        console.log(`   → Total transfers: ${botWallets.length}`)
         console.log(`   → User pays gas: YES`)
         console.log(`   → Reason: Paymaster Proxy failed or not configured`)
 
-        // Estimate gas cost for batch transaction
-        const estimatedGasUnits = BigInt(150000) // ~30k per transfer + overhead
+        // Estimate gas cost per individual transaction
+        const estimatedGasUnitsPerTx = BigInt(30000) // ~30k per individual transfer
         const gasPrice = await publicClient.getGasPrice()
-        const estimatedGasCost = (estimatedGasUnits * gasPrice * BigInt(120)) / BigInt(100) // 20% buffer
+        const estimatedGasCostPerTx = (estimatedGasUnitsPerTx * gasPrice * BigInt(120)) / BigInt(100) // 20% buffer
+        const totalEstimatedGasCost = estimatedGasCostPerTx * BigInt(botWallets.length)
 
-        console.log(`   → Estimated gas cost: ${formatEther(estimatedGasCost)} ETH`)
+        console.log(`   → Estimated gas cost per tx: ${formatEther(estimatedGasCostPerTx)} ETH`)
+        console.log(`   → Total estimated gas cost: ${formatEther(totalEstimatedGasCost)} ETH`)
 
         // Reserve gas cost from wallet balance
-        const availableForDistribution = walletBalance > estimatedGasCost
-          ? walletBalance - estimatedGasCost
+        const availableForDistribution = walletBalance > totalEstimatedGasCost
+          ? walletBalance - totalEstimatedGasCost
           : BigInt(0)
 
         if (availableForDistribution <= BigInt(0)) {
           throw new Error(
             `Insufficient ETH balance for gas and distribution. ` +
             `Balance: ${formatEther(walletBalance)} ETH, ` +
-            `Required for gas: ~${formatEther(estimatedGasCost)} ETH. ` +
+            `Required for gas: ~${formatEther(totalEstimatedGasCost)} ETH. ` +
             `Please add more ETH to your wallet.`
           )
         }
@@ -291,7 +336,7 @@ export function useDistributeCredits() {
           throw new Error(
             `Insufficient ETH balance for distribution after gas reservation. ` +
             `Available: ${formatEther(availableForDistribution)} ETH, ` +
-            `Gas cost: ~${formatEther(estimatedGasCost)} ETH.`
+            `Gas cost: ~${formatEther(totalEstimatedGasCost)} ETH.`
           )
         }
 
@@ -300,34 +345,67 @@ export function useDistributeCredits() {
         const remainderAfterGas: bigint = creditToDistributeAfterGas % BigInt(5)
         amountForFirstBotAfterGas = amountPerBotAfterGas + remainderAfterGas
 
-        // Update calls with new amounts
-        const callsAfterGas = botWallets.map((wallet, index) => {
-          const amount: bigint = index === 0 ? amountForFirstBotAfterGas : amountPerBotAfterGas
-          const checksumAddress = getAddress(wallet.smartWalletAddress)
-          return {
-            to: checksumAddress as Address,
-            value: amount,
-            data: "0x" as Hex,
-          }
-        })
-
         console.log(`   → Credit to distribute (after gas): ${formatEther(creditToDistributeAfterGas)} ETH`)
 
-        // Execute normal transaction (user pays gas)
-        txHash = await smartWalletClient.sendTransaction(
-          {
-            calls: callsAfterGas,
-          },
-          {
-            // Disable Paymaster - user pays gas
-            isSponsored: false,
-          }
-        ) as `0x${string}`
+        // Execute individual normal transactions (user pays gas)
+        const fallbackTxHashes: `0x${string}`[] = []
+        
+        for (let i = 0; i < botWallets.length; i++) {
+          const wallet = botWallets[i]
+          const amount: bigint = i === 0 ? amountForFirstBotAfterGas : amountPerBotAfterGas
+          const checksumAddress = getAddress(wallet.smartWalletAddress)
+          
+          setStatus(`Sending normal transaction ${i + 1}/${botWallets.length}...`)
+          
+          console.log(`\n   📤 Normal Transfer ${i + 1}/${botWallets.length}:`)
+          console.log(`      → To: ${checksumAddress}`)
+          console.log(`      → Amount: ${formatEther(amount)} ETH`)
 
+          try {
+            // Execute individual normal transaction (user pays gas)
+            const fallbackTxHash = await smartWalletClient.sendTransaction(
+              {
+                to: checksumAddress as Address,
+                value: amount,
+                data: "0x" as Hex,
+              },
+              {
+                // Disable Paymaster - user pays gas
+                isSponsored: false,
+              }
+            ) as `0x${string}`
+
+            fallbackTxHashes.push(fallbackTxHash)
+            console.log(`      ✅ Transaction ${i + 1} submitted: ${fallbackTxHash}`)
+            console.log(`      → Gasless: NO (User pays gas)`)
+
+            // Wait between transactions to avoid nonce conflicts
+            if (i < botWallets.length - 1) {
+              const delay = 2000 // 2 seconds between transactions
+              console.log(`      → Waiting ${delay}ms before next transaction...`)
+              await new Promise(resolve => setTimeout(resolve, delay))
+            }
+          } catch (transferError: any) {
+            console.error(`      ❌ Transfer ${i + 1} failed:`, transferError.message)
+            console.warn(`      → Continuing with remaining transfers...`)
+          }
+        }
+
+        // Use first transaction hash as primary
+        txHash = fallbackTxHashes.length > 0 ? fallbackTxHashes[0] : null
         gasless = false
-        console.log(`✅ Normal transaction submitted!`)
+
+        if (fallbackTxHashes.length === 0) {
+          throw new Error("All fallback normal transactions failed")
+        }
+
+        if (fallbackTxHashes.length < botWallets.length) {
+          console.warn(`⚠️ Only ${fallbackTxHashes.length}/${botWallets.length} fallback transfers succeeded`)
+        } else {
+          console.log(`✅ All ${fallbackTxHashes.length} normal transactions submitted successfully!`)
+        }
         console.log(`   → Hash: ${txHash}`)
-        console.log(`   → Gasless: NO (user pays gas)`)
+        console.log(`   → Gasless: NO (User pays gas)`)
       }
 
       if (!txHash) {
