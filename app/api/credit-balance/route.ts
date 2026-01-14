@@ -70,14 +70,32 @@ export async function POST(request: NextRequest) {
     // Calculate bot wallet credits
     // IMPORTANT: Only use weth_balance_wei to avoid double counting
     // distributed_amount_wei is kept for backward compatibility but should not be used in calculation
-    // Total Credit = Native ETH (main wallet) + WETH (bot wallets) - both are 1:1 equivalent
-    const botWalletCreditsWei = botCreditsData?.reduce((sum, record) => {
-      // Use weth_balance_wei only (new WETH-based distributions)
-      // Do NOT add distributed_amount_wei to avoid double counting
-      // distributed_amount_wei is only for backward compatibility tracking
-      const amountWei = record.weth_balance_wei || "0"
-      return sum + BigInt(amountWei)
-    }, BigInt(0)) || BigInt(0)
+    // 
+    // CRITICAL: Group by bot_wallet_address to avoid double counting if multiple records exist
+    // Each bot wallet should only be counted once (use the latest record or sum all records for that wallet)
+    // Since record-distribution creates new records for each distribution, we need to sum per bot wallet
+    const botWalletCreditsMap = new Map<string, bigint>()
+    
+    if (botCreditsData) {
+      for (const record of botCreditsData) {
+        const botWallet = record.bot_wallet_address?.toLowerCase() || ""
+        if (!botWallet) continue
+        
+        // Use weth_balance_wei only (new WETH-based distributions)
+        // Do NOT add distributed_amount_wei to avoid double counting
+        const amountWei = BigInt(record.weth_balance_wei || "0")
+        
+        // Sum all distributions for this bot wallet (in case of multiple distributions)
+        const currentSum = botWalletCreditsMap.get(botWallet) || BigInt(0)
+        botWalletCreditsMap.set(botWallet, currentSum + amountWei)
+      }
+    }
+    
+    // Sum all bot wallet credits (each bot wallet counted once with its total)
+    const botWalletCreditsWei = Array.from(botWalletCreditsMap.values()).reduce(
+      (sum, walletTotal) => sum + walletTotal,
+      BigInt(0)
+    )
     
     // Total credit = Main wallet credit + Bot wallet credits (ETH + WETH)
     const totalCreditWei = BigInt(mainWalletCreditWei) + botWalletCreditsWei

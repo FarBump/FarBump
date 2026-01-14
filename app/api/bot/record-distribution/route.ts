@@ -62,9 +62,18 @@ export async function POST(request: NextRequest) {
       tx_hash: txHash,
     }))
 
+    // IMPORTANT: Use upsert instead of insert to avoid duplicate records
+    // If a record already exists for this bot wallet, update it instead of creating a new one
+    // This prevents double counting in credit balance calculations
+    // 
+    // Note: We sum the amounts if multiple distributions exist for the same bot wallet
+    // This ensures that if user distributes multiple times, all amounts are tracked correctly
     const { error: insertError } = await supabase
       .from("bot_wallet_credits")
-      .insert(records)
+      .upsert(records, {
+        onConflict: "user_address,bot_wallet_address",
+        ignoreDuplicates: false, // Update existing records
+      })
 
     if (insertError) {
       console.error("❌ Error recording distribution:", insertError)
