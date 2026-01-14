@@ -59,12 +59,14 @@ export async function POST(request: NextRequest) {
     
     let nativeEthBalance = BigInt(0)
     let wethBalance = BigInt(0)
+    let balanceFetchError: string | null = null
     
     try {
       // Get Native ETH balance
       nativeEthBalance = await publicClient.getBalance({
         address: normalizedUserAddress as Address,
       })
+      console.log(`   ✅ Native ETH: ${formatUnits(nativeEthBalance, 18)} ETH`)
       
       // Get WETH balance
       wethBalance = await publicClient.readContract({
@@ -73,12 +75,31 @@ export async function POST(request: NextRequest) {
         functionName: "balanceOf",
         args: [normalizedUserAddress as Address],
       }) as bigint
+      console.log(`   ✅ WETH: ${formatUnits(wethBalance, 18)} WETH`)
       
-      console.log(`   → Native ETH: ${formatUnits(nativeEthBalance, 18)} ETH`)
-      console.log(`   → WETH: ${formatUnits(wethBalance, 18)} WETH`)
     } catch (balanceError: any) {
-      console.error("❌ Error fetching on-chain balance:", balanceError.message)
-      // Continue with 0 balance instead of failing completely
+      balanceFetchError = balanceError.message || String(balanceError)
+      console.error("❌ Error fetching on-chain balance:", balanceFetchError)
+      console.error("   → Full error:", balanceError)
+      
+      // If blockchain fetch fails, try to get from database as fallback
+      console.log("   → Attempting fallback to database balance...")
+      try {
+        const { data: userCreditData, error: userCreditError } = await supabase
+          .from("user_credits")
+          .select("balance_wei")
+          .eq("user_address", normalizedUserAddress)
+          .single()
+        
+        if (!userCreditError && userCreditData) {
+          // Use database balance as fallback (might be outdated but better than 0)
+          const dbBalance = BigInt(userCreditData.balance_wei || "0")
+          console.log(`   ⚠️ Using database balance as fallback: ${formatUnits(dbBalance, 18)} ETH`)
+          nativeEthBalance = dbBalance
+        }
+      } catch (fallbackError) {
+        console.error("   ❌ Fallback to database also failed:", fallbackError)
+      }
     }
 
     // Main wallet credit = Actual ETH + WETH in wallet (on-chain)
@@ -121,6 +142,11 @@ export async function POST(request: NextRequest) {
       mainWalletCreditWei: mainWalletCreditWei.toString(),
       botWalletCreditsWei: botWalletCreditsWei.toString(),
       lastUpdated: new Date().toISOString(),
+      debug: {
+        nativeEthBalance: nativeEthBalance.toString(),
+        wethBalance: wethBalance.toString(),
+        balanceFetchError,
+      },
     })
   } catch (error: any) {
     console.error("❌ Error in credit-balance API:", error)
