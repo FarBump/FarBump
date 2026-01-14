@@ -167,19 +167,18 @@ export async function POST(request: NextRequest) {
     console.log(`💰 Checking Smart Account WETH balance...`)
     
     // Fetch WETH balance from database (bot_wallet_credits)
-    const { data: creditRecords, error: creditError } = await supabase
+    // IMPORTANT: Only 1 row per bot_wallet_address, only weth_balance_wei is used
+    const { data: creditRecord, error: creditError } = await supabase
       .from("bot_wallet_credits")
-      .select("weth_balance_wei, distributed_amount_wei")
+      .select("weth_balance_wei")
       .eq("user_address", user_address.toLowerCase())
       .eq("bot_wallet_address", smartAccountAddress.toLowerCase())
-      .order("created_at", { ascending: false })
+      .single()
 
-    // Calculate total WETH balance for this bot wallet
-    // Use weth_balance_wei if available, otherwise fallback to distributed_amount_wei
-    const wethBalanceWei = creditRecords?.reduce((sum, record) => {
-      const amountWei = record.weth_balance_wei || record.distributed_amount_wei || "0"
-      return sum + BigInt(amountWei)
-    }, BigInt(0)) || BigInt(0)
+    // Get WETH balance (only weth_balance_wei is used)
+    const wethBalanceWei = creditRecord 
+      ? BigInt(creditRecord.weth_balance_wei || "0")
+      : BigInt(0)
 
     console.log(`   WETH Balance (from DB): ${formatEther(wethBalanceWei)} WETH`)
 
@@ -227,19 +226,20 @@ export async function POST(request: NextRequest) {
       })
 
       // Check if all wallets are depleted
+      // IMPORTANT: Only 1 row per bot_wallet_address, only weth_balance_wei is used
       let allDepleted = true
       for (let i = 0; i < botWallets.length; i++) {
         const w = botWallets[i]
-        const { data: wCredits } = await supabase
+        const { data: wCredit } = await supabase
           .from("bot_wallet_credits")
-          .select("weth_balance_wei, distributed_amount_wei")
+          .select("weth_balance_wei")
           .eq("user_address", user_address.toLowerCase())
           .eq("bot_wallet_address", w.smart_account_address.toLowerCase())
+          .single()
         
-        const wWethBalance = wCredits?.reduce((sum, record) => {
-          const amountWei = record.weth_balance_wei || record.distributed_amount_wei || "0"
-          return sum + BigInt(amountWei)
-        }, BigInt(0)) || BigInt(0)
+        const wWethBalance = wCredit 
+          ? BigInt(wCredit.weth_balance_wei || "0")
+          : BigInt(0)
         
         if (wWethBalance > BigInt(0)) {
           allDepleted = false
@@ -1015,48 +1015,44 @@ export async function POST(request: NextRequest) {
       
       try {
         // Deduct WETH balance from bot_wallet_credits
-        // Find the most recent credit record for this bot wallet
-        const { data: creditRecordsToUpdate, error: fetchCreditError } = await supabase
+        // IMPORTANT: Only 1 row per bot_wallet_address (unique constraint)
+        // Only weth_balance_wei is used (distributed_amount_wei removed)
+        const { data: creditRecord, error: fetchCreditError } = await supabase
           .from("bot_wallet_credits")
-          .select("id, weth_balance_wei, distributed_amount_wei")
+          .select("id, weth_balance_wei")
           .eq("user_address", user_address.toLowerCase())
           .eq("bot_wallet_address", smartAccountAddress.toLowerCase())
-          .order("created_at", { ascending: false })
+          .single()
 
-        if (!fetchCreditError && creditRecordsToUpdate && creditRecordsToUpdate.length > 0) {
-          // Deduct from most recent records first (FIFO)
-          let remainingToDeduct = amountWei
+        if (!fetchCreditError && creditRecord) {
+          const currentBalance = BigInt(creditRecord.weth_balance_wei || "0")
           
-          for (const record of creditRecordsToUpdate) {
-            if (remainingToDeduct <= BigInt(0)) break
+          if (currentBalance >= amountWei) {
+            const newBalance = currentBalance - amountWei
             
-            const currentBalance = BigInt(record.weth_balance_wei || record.distributed_amount_wei || "0")
+            const { error: updateError } = await supabase
+              .from("bot_wallet_credits")
+              .update({ 
+                weth_balance_wei: newBalance.toString(),
+              })
+              .eq("id", creditRecord.id)
             
-            if (currentBalance > BigInt(0)) {
-              const deductAmount = remainingToDeduct < currentBalance ? remainingToDeduct : currentBalance
-              const newBalance = currentBalance - deductAmount
-              
-              await supabase
-                .from("bot_wallet_credits")
-                .update({ 
-                  weth_balance_wei: newBalance.toString(),
-                  // Also update distributed_amount_wei for backward compatibility
-                  distributed_amount_wei: newBalance.toString(),
-                })
-                .eq("id", record.id)
-              
-              remainingToDeduct = remainingToDeduct - deductAmount
-              console.log(`   → Deducted ${formatEther(deductAmount)} WETH from record ${record.id}`)
+            if (updateError) {
+              console.error(`   ❌ Error updating WETH balance:`, updateError)
+            } else {
+              console.log(`   ✅ WETH balance deducted: ${formatEther(amountWei)} WETH`)
+              console.log(`   → Remaining balance: ${formatEther(newBalance)} WETH`)
             }
-          }
-          
-          if (remainingToDeduct > BigInt(0)) {
-            console.warn(`   ⚠️ Could not deduct full amount. Remaining: ${formatEther(remainingToDeduct)} WETH`)
           } else {
-            console.log(`   ✅ WETH balance deducted successfully`)
+            console.warn(`   ⚠️ Insufficient WETH balance: ${formatEther(currentBalance)} < ${formatEther(amountWei)}`)
+            // Set to 0 if insufficient
+            await supabase
+              .from("bot_wallet_credits")
+              .update({ weth_balance_wei: "0" })
+              .eq("id", creditRecord.id)
           }
         } else {
-          console.warn(`   ⚠️ No credit records found for bot wallet`)
+          console.warn(`   ⚠️ No credit record found for bot wallet`)
         }
 
         // Record swap in bot_logs table (swap_history is not needed, we use bot_logs)
@@ -1070,16 +1066,17 @@ export async function POST(request: NextRequest) {
       }
 
       // Log remaining WETH balance from database
-      const { data: remainingCredits } = await supabase
+      // IMPORTANT: Only 1 row per bot_wallet_address, only weth_balance_wei is used
+      const { data: remainingCredit } = await supabase
         .from("bot_wallet_credits")
-        .select("weth_balance_wei, distributed_amount_wei")
+        .select("weth_balance_wei")
         .eq("user_address", user_address.toLowerCase())
         .eq("bot_wallet_address", smartAccountAddress.toLowerCase())
+        .single()
 
-      const remainingWethBalance = remainingCredits?.reduce((sum, record) => {
-        const amountWei = record.weth_balance_wei || record.distributed_amount_wei || "0"
-        return sum + BigInt(amountWei)
-      }, BigInt(0)) || BigInt(0)
+      const remainingWethBalance = remainingCredit 
+        ? BigInt(remainingCredit.weth_balance_wei || "0")
+        : BigInt(0)
 
       const remainingBalanceUsd = Number(formatEther(remainingWethBalance)) * ethPriceUsd
 

@@ -158,32 +158,32 @@ async function getEthPriceUsd(): Promise<number> {
 
 /**
  * Get WETH balance for a bot wallet from database
+ * IMPORTANT: Only 1 row per bot_wallet_address, only weth_balance_wei is used
  */
 async function getBotWalletWethBalance(userAddress: string, botWalletAddress: string): Promise<bigint> {
   try {
     const { data, error } = await supabase
       .from("bot_wallet_credits")
-      .select("weth_balance_wei, distributed_amount_wei")
+      .select("weth_balance_wei")
       .eq("user_address", userAddress.toLowerCase())
       .eq("bot_wallet_address", botWalletAddress.toLowerCase())
-      .order("created_at", { ascending: false })
+      .single()
 
     if (error) {
+      if (error.code === "PGRST116") {
+        // No record found - return 0
+        return BigInt(0)
+      }
       console.error(`❌ Error fetching WETH balance for ${botWalletAddress}:`, error)
       return BigInt(0)
     }
 
-    if (!data || data.length === 0) {
+    if (!data) {
       return BigInt(0)
     }
 
-    // Sum all records for this bot wallet (grouped by bot_wallet_address)
-    const totalBalance = data.reduce((sum, record) => {
-      const amountWei = BigInt(record.weth_balance_wei || record.distributed_amount_wei || "0")
-      return sum + amountWei
-    }, BigInt(0))
-
-    return totalBalance
+    // Only weth_balance_wei is used (distributed_amount_wei removed)
+    return BigInt(data.weth_balance_wei || "0")
   } catch (error: any) {
     console.error(`❌ Error in getBotWalletWethBalance:`, error.message)
     return BigInt(0)

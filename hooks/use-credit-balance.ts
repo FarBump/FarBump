@@ -69,11 +69,11 @@ export function useCreditBalance(userAddress: string | null, options?: { enabled
         .single()
 
       // Fetch bot wallet credits from database
-      // Include both distributed_amount_wei (ETH) and weth_balance_wei (WETH)
-      // Total Credit = Native ETH + WETH (both are 1:1 equivalent)
+      // IMPORTANT: Only 1 row per bot_wallet_address, only weth_balance_wei is used
+      // Total Credit = Native ETH (main wallet) + WETH (bot wallets)
       const { data: botCreditsData, error: botCreditsError } = await supabase
         .from("bot_wallet_credits")
-        .select("distributed_amount_wei, weth_balance_wei")
+        .select("weth_balance_wei")
         .eq("user_address", userAddress.toLowerCase())
 
       // Handle errors gracefully
@@ -118,34 +118,13 @@ export function useCreditBalance(userAddress: string | null, options?: { enabled
       const mainWalletCreditWei = mainCreditData?.balance_wei || "0"
       
       // Calculate bot wallet credits
-      // IMPORTANT: Only use weth_balance_wei to avoid double counting
-      // distributed_amount_wei is kept for backward compatibility but should not be used in calculation
-      // 
-      // CRITICAL: Group by bot_wallet_address to avoid double counting if multiple records exist
-      // Each bot wallet should only be counted once (use the latest record or sum all records for that wallet)
-      // Since record-distribution creates new records for each distribution, we need to sum per bot wallet
-      const botWalletCreditsMap = new Map<string, bigint>()
-      
-      if (botCreditsData) {
-        for (const record of botCreditsData) {
-          const botWallet = record.bot_wallet_address?.toLowerCase() || ""
-          if (!botWallet) continue
-          
-          // Use weth_balance_wei only (new WETH-based distributions)
-          // Do NOT add distributed_amount_wei to avoid double counting
-          const amountWei = BigInt(record.weth_balance_wei || "0")
-          
-          // Sum all distributions for this bot wallet (in case of multiple distributions)
-          const currentSum = botWalletCreditsMap.get(botWallet) || BigInt(0)
-          botWalletCreditsMap.set(botWallet, currentSum + amountWei)
-        }
-      }
-      
-      // Sum all bot wallet credits (each bot wallet counted once with its total)
-      const botWalletCreditsWei = Array.from(botWalletCreditsMap.values()).reduce(
-        (sum, walletTotal) => sum + walletTotal,
-        BigInt(0)
-      )
+      // IMPORTANT: Only weth_balance_wei is used (distributed_amount_wei removed)
+      // Only 1 row per bot_wallet_address (unique constraint), so no grouping needed
+      const botWalletCreditsWei = botCreditsData?.reduce((sum, record) => {
+        // Only use weth_balance_wei (distributed_amount_wei removed)
+        const amountWei = BigInt(record.weth_balance_wei || "0")
+        return sum + amountWei
+      }, BigInt(0)) || BigInt(0)
       
       // Total credit = Main wallet credit + Bot wallet credits (ETH + WETH)
       const totalCreditWei = BigInt(mainWalletCreditWei) + botWalletCreditsWei
