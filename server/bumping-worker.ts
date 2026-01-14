@@ -81,16 +81,24 @@ if (!supabaseUrl || !supabaseKey) {
 
 const supabase = createClient(supabaseUrl, supabaseKey)
 
-// Initialize CDP Client
-if (!process.env.CDP_API_KEY_NAME || !process.env.CDP_PRIVATE_KEY) {
+// Initialize CDP Client using Environment Variables
+// IMPORTANT: Use environment variables only, do NOT read from file
+// Use CDP_API_KEY_NAME and CDP_API_KEY_PRIVATE_KEY (or CDP_PRIVATE_KEY as fallback)
+const cdpApiKeyName = process.env.CDP_API_KEY_NAME
+const cdpPrivateKey = process.env.CDP_API_KEY_PRIVATE_KEY || process.env.CDP_PRIVATE_KEY
+
+if (!cdpApiKeyName || !cdpPrivateKey) {
   console.error("❌ Missing CDP environment variables")
+  console.error("   Required: CDP_API_KEY_NAME and CDP_API_KEY_PRIVATE_KEY (or CDP_PRIVATE_KEY)")
   process.exit(1)
 }
 
 CdpClient.configure({
-  apiKeyName: process.env.CDP_API_KEY_NAME,
-  privateKey: process.env.CDP_PRIVATE_KEY,
+  apiKeyName: cdpApiKeyName,
+  privateKey: cdpPrivateKey,
 })
+
+console.log("✅ CDP Client configured from environment variables")
 
 const cdp = new CdpClient()
 

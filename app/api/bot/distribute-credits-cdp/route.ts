@@ -16,6 +16,8 @@ const publicClient = createPublicClient({
 })
 
 // Initialize Coinbase SDK using Environment Variables
+// IMPORTANT: Do NOT use configureFromJson or read from file
+// Use environment variables only: CDP_API_KEY_NAME and CDP_API_KEY_PRIVATE_KEY
 let coinbase: Coinbase | null = null
 try {
   const apiKeyName = process.env.CDP_API_KEY_NAME
@@ -23,6 +25,7 @@ try {
 
   if (!apiKeyName || !apiKeyPrivateKey) {
     console.warn("⚠️ CDP SDK not configured: Missing CDP_API_KEY_NAME or CDP_API_KEY_PRIVATE_KEY environment variables")
+    console.warn("   Required env vars: CDP_API_KEY_NAME, CDP_API_KEY_PRIVATE_KEY (or CDP_PRIVATE_KEY)")
   } else {
     coinbase = Coinbase.configure({
       apiKeyName,
