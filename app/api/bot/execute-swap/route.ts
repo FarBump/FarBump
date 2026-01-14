@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
-import { formatEther, parseEther, isAddress, type Address, type Hex, createPublicClient, http } from "viem"
+import { formatEther, parseEther, isAddress, type Address, type Hex, createPublicClient, http, encodeFunctionData, readContract } from "viem"
 import { base } from "viem/chains"
 import { createSupabaseServiceClient } from "@/lib/supabase"
 import { CdpClient } from "@coinbase/cdp-sdk"
@@ -9,7 +9,39 @@ export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
 
 // Constants
-const MIN_AMOUNT_USD = 0.01
+const WETH_ADDRESS = "0x4200000000000000000000000000000000000006" as const
+const ZEROX_EXCHANGE_PROXY = "0xDef1C0ded9bec7F1a1670819833240f027b25EfF" as const // 0x Exchange Proxy on Base
+
+// WETH ABI for balance and approval
+const WETH_ABI = [
+  {
+    inputs: [{ name: "account", type: "address" }],
+    name: "balanceOf",
+    outputs: [{ name: "", type: "uint256" }],
+    stateMutability: "view",
+    type: "function",
+  },
+  {
+    inputs: [
+      { name: "owner", type: "address" },
+      { name: "spender", type: "address" },
+    ],
+    name: "allowance",
+    outputs: [{ name: "", type: "uint256" }],
+    stateMutability: "view",
+    type: "function",
+  },
+  {
+    inputs: [
+      { name: "spender", type: "address" },
+      { name: "amount", type: "uint256" },
+    ],
+    name: "approve",
+    outputs: [{ name: "", type: "bool" }],
+    stateMutability: "nonpayable",
+    type: "function",
+  },
+] as const
 
 // Public client for balance checks
 const publicClient = createPublicClient({
@@ -129,26 +161,56 @@ export async function POST(request: NextRequest) {
     const cdp = new CdpClient()
     console.log(`✅ CDP Client V2 initialized`)
 
-    // Step 5: Check Smart Account balance using public RPC
-    console.log(`💰 Checking Smart Account balance...`)
+    // Step 5: Check Smart Account WETH balance from database
+    console.log(`💰 Checking Smart Account WETH balance...`)
     
-    const balance = await publicClient.getBalance({ address: smartAccountAddress })
-    
-    console.log(`   Balance: ${formatEther(balance)} ETH`)
+    // Fetch WETH balance from database (bot_wallet_credits)
+    const { data: creditRecords, error: creditError } = await supabase
+      .from("bot_wallet_credits")
+      .select("weth_balance_wei, distributed_amount_wei")
+      .eq("user_address", user_address.toLowerCase())
+      .eq("bot_wallet_address", smartAccountAddress.toLowerCase())
+      .order("created_at", { ascending: false })
+
+    // Calculate total WETH balance for this bot wallet
+    // Use weth_balance_wei if available, otherwise fallback to distributed_amount_wei
+    const wethBalanceWei = creditRecords?.reduce((sum, record) => {
+      const amountWei = record.weth_balance_wei || record.distributed_amount_wei || "0"
+      return sum + BigInt(amountWei)
+    }, BigInt(0)) || BigInt(0)
+
+    console.log(`   WETH Balance (from DB): ${formatEther(wethBalanceWei)} WETH`)
+
+    // Also check on-chain WETH balance for verification
+    try {
+      const onChainWethBalance = await readContract(publicClient, {
+        address: WETH_ADDRESS,
+        abi: WETH_ABI,
+        functionName: "balanceOf",
+        args: [smartAccountAddress],
+      }) as bigint
+      console.log(`   WETH Balance (on-chain): ${formatEther(onChainWethBalance)} WETH`)
+      
+      // If on-chain balance is less than database balance, sync database
+      if (onChainWethBalance < wethBalanceWei) {
+        console.log(`   ⚠️ On-chain balance is less than database balance. Syncing...`)
+        // This will be handled after swap execution
+      }
+    } catch (error: any) {
+      console.warn(`   ⚠️ Failed to check on-chain WETH balance: ${error.message}`)
+    }
 
     // Fetch ETH price for USD conversion
     const ethPriceResponse = await fetch(`${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/api/eth-price`)
     const { price: ethPriceUsd } = await ethPriceResponse.json()
     
-    const balanceInUsd = Number(formatEther(balance)) * ethPriceUsd
+    const balanceInUsd = Number(formatEther(wethBalanceWei)) * ethPriceUsd
     console.log(`   Balance: $${balanceInUsd.toFixed(4)} USD`)
 
-    // Check if balance is sufficient (minimum $0.01)
-    const minAmountEth = MIN_AMOUNT_USD / ethPriceUsd
-    const minAmountWei = BigInt(Math.floor(minAmountEth * 1e18))
-
-    if (balance < minAmountWei) {
-      console.log(`⚠️ Bot #${walletIndex + 1} balance insufficient (${balanceInUsd.toFixed(4)} < ${MIN_AMOUNT_USD}) - Skipping`)
+    // No minimum amount validation - bot can swap any amount
+    // But check if balance is zero
+    if (wethBalanceWei === BigInt(0)) {
+      console.log(`⚠️ Bot #${walletIndex + 1} has no WETH balance - Skipping`)
       
       // Log insufficient balance
       await supabase.from("bot_logs").insert({
@@ -157,7 +219,7 @@ export async function POST(request: NextRequest) {
         token_address: token_address,
         amount_wei: "0",
         action: "swap_skipped",
-        message: `[System] Bot #${walletIndex + 1} balance insufficient ($${balanceInUsd.toFixed(2)} < $${MIN_AMOUNT_USD}). Bumping stopped.`,
+        message: `[System] Bot #${walletIndex + 1} has no WETH balance. Please distribute credit first.`,
         status: "warning",
         created_at: new Date().toISOString(),
       })
@@ -166,11 +228,18 @@ export async function POST(request: NextRequest) {
       let allDepleted = true
       for (let i = 0; i < botWallets.length; i++) {
         const w = botWallets[i]
-        const wBalance = await publicClient.getBalance({ 
-          address: w.smart_account_address as Address 
-        })
+        const { data: wCredits } = await supabase
+          .from("bot_wallet_credits")
+          .select("weth_balance_wei, distributed_amount_wei")
+          .eq("user_address", user_address.toLowerCase())
+          .eq("bot_wallet_address", w.smart_account_address.toLowerCase())
         
-        if (wBalance >= minAmountWei) {
+        const wWethBalance = wCredits?.reduce((sum, record) => {
+          const amountWei = record.weth_balance_wei || record.distributed_amount_wei || "0"
+          return sum + BigInt(amountWei)
+        }, BigInt(0)) || BigInt(0)
+        
+        if (wWethBalance > BigInt(0)) {
           allDepleted = false
           break
         }
@@ -190,7 +259,7 @@ export async function POST(request: NextRequest) {
           token_address: token_address,
           amount_wei: "0",
           action: "session_stopped",
-          message: `[System] All bot balances below $${MIN_AMOUNT_USD}. Bumping session completed.`,
+          message: `[System] All bot wallets have no WETH balance. Bumping session completed.`,
           status: "info",
           created_at: new Date().toISOString(),
         })
@@ -209,16 +278,45 @@ export async function POST(request: NextRequest) {
         .eq("id", sessionId)
 
       return NextResponse.json({
-        message: "Bot wallet balance insufficient - Skipped",
+        message: "Bot wallet has no WETH balance - Skipped",
         skipped: true,
         nextIndex,
       })
     }
 
-    // Step 6: Calculate swap amount in ETH
+    // Step 6: Calculate swap amount in WETH
     const amountUsdValue = parseFloat(amount_usd)
     const amountEthValue = amountUsdValue / ethPriceUsd
     const amountWei = BigInt(Math.floor(amountEthValue * 1e18))
+    
+    // Check if bot has enough WETH balance
+    if (wethBalanceWei < amountWei) {
+      console.log(`⚠️ Bot #${walletIndex + 1} WETH balance insufficient (${formatEther(wethBalanceWei)} < ${formatEther(amountWei)}) - Skipping`)
+      
+      await supabase.from("bot_logs").insert({
+        user_address: user_address.toLowerCase(),
+        wallet_address: smartAccountAddress,
+        token_address: token_address,
+        amount_wei: amountWei.toString(),
+        action: "swap_skipped",
+        message: `[System] Bot #${walletIndex + 1} WETH balance insufficient (${formatEther(wethBalanceWei)} < ${formatEther(amountWei)}). Please distribute credit.`,
+        status: "warning",
+        created_at: new Date().toISOString(),
+      })
+
+      // Move to next wallet
+      const nextIndex = (wallet_rotation_index + 1) % 5
+      await supabase
+        .from("bot_sessions")
+        .update({ wallet_rotation_index: nextIndex })
+        .eq("id", sessionId)
+
+      return NextResponse.json({
+        message: "Bot wallet WETH balance insufficient - Skipped",
+        skipped: true,
+        nextIndex,
+      })
+    }
 
     // CRITICAL: Log amountWei before 0x API call for verification
     console.log(`💱 Swap Parameters:`)
@@ -292,21 +390,23 @@ export async function POST(request: NextRequest) {
       console.log(`\n🔄 Attempt ${attempt}/${maxAttempts} - Getting 0x API v2 quote...`)
       
       // Build quote parameters based on attempt
-      // Using allowance-holder endpoint for native ETH (simpler, no Permit2 needed)
+      // Using WETH as sellToken (ERC20 token)
       const quoteParams = new URLSearchParams({
         chainId: "8453", // Base Mainnet
-        sellToken: "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE", // Native ETH placeholder
+        sellToken: WETH_ADDRESS.toLowerCase(), // WETH contract address
         buyToken: token_address.toLowerCase(), // Target token (ensure lowercase)
         sellAmount: amountWei.toString(), // Amount in wei
-        taker: smartAccountAddress.toLowerCase(), // Smart Account holds the ETH (allowance holder)
+        taker: smartAccountAddress.toLowerCase(), // Smart Account holds the WETH
         slippageBps: attempt === 1 ? "500" : "1000", // 5% = 500 bps, 10% = 1000 bps
       })
 
-      // Use allowance-holder endpoint for native ETH swaps (simpler than Permit2)
+      // Use swap/quote endpoint for ERC20 token swaps (WETH)
       // Reference: https://docs.0x.org/0x-api-swap/api-references/get-swap-v2-quote
-      const quoteUrl = `https://api.0x.org/swap/allowance-holder/quote?${quoteParams.toString()}`
-      console.log(`   Endpoint: /swap/allowance-holder/quote (v2)`)
+      const quoteUrl = `https://api.0x.org/swap/v2/quote?${quoteParams.toString()}`
+      console.log(`   Endpoint: /swap/v2/quote (WETH → Token)`)
       console.log(`   URL: ${quoteUrl}`)
+      console.log(`   Sell Token: WETH (${WETH_ADDRESS})`)
+      console.log(`   Buy Token: ${token_address}`)
       console.log(`   Slippage: ${attempt === 1 ? "5%" : "10%"} (${attempt === 1 ? "500" : "1000"} bps)`)
 
       const quoteResponse = await fetch(quoteUrl, {
@@ -412,7 +512,104 @@ export async function POST(request: NextRequest) {
       }, { status: 200 }) // Return 200 to continue session
     }
 
-    // Step 8: Create swap log entry
+    // Step 8: Check WETH approval for 0x Exchange Proxy
+    console.log(`🔐 Checking WETH approval for 0x Exchange Proxy...`)
+    
+    let needsApproval = false
+    try {
+      const currentAllowance = await readContract(publicClient, {
+        address: WETH_ADDRESS,
+        abi: WETH_ABI,
+        functionName: "allowance",
+        args: [smartAccountAddress, ZEROX_EXCHANGE_PROXY],
+      }) as bigint
+
+      console.log(`   Current allowance: ${formatEther(currentAllowance)} WETH`)
+      console.log(`   Required amount: ${formatEther(amountWei)} WETH`)
+
+      if (currentAllowance < amountWei) {
+        needsApproval = true
+        console.log(`   ⚠️ Insufficient allowance. Need to approve WETH.`)
+      } else {
+        console.log(`   ✅ Sufficient allowance. No approval needed.`)
+      }
+    } catch (approvalCheckError: any) {
+      console.warn(`   ⚠️ Failed to check allowance: ${approvalCheckError.message}`)
+      // Assume approval is needed if check fails
+      needsApproval = true
+    }
+
+    // Step 9: Approve WETH if needed
+    if (needsApproval) {
+      console.log(`🔐 Approving WETH for 0x Exchange Proxy...`)
+      
+      try {
+        // Get Owner Account and Smart Account
+        const ownerAccount = await cdp.evm.getAccount({ address: ownerAddress })
+        if (!ownerAccount) {
+          throw new Error("Failed to get Owner Account from CDP")
+        }
+
+        const smartAccount = await cdp.evm.getSmartAccount({ 
+          owner: ownerAccount,
+          address: smartAccountAddress 
+        })
+        if (!smartAccount) {
+          throw new Error("Failed to get Smart Account from CDP")
+        }
+
+        // Encode approve function call
+        // Approve max amount (2^256 - 1) to avoid repeated approvals
+        const maxApproval = BigInt("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
+        const approveData = encodeFunctionData({
+          abi: WETH_ABI,
+          functionName: "approve",
+          args: [ZEROX_EXCHANGE_PROXY, maxApproval],
+        })
+
+        // Execute approval transaction
+        const approveCall = {
+          to: WETH_ADDRESS,
+          data: approveData,
+          value: BigInt(0), // ERC20 approval, value is 0
+        }
+
+        console.log(`   → Executing approval transaction...`)
+        const approveUserOpHash = await (smartAccount as any).sendUserOperation({
+          network: "base",
+          calls: [approveCall],
+          isSponsored: true,
+        })
+
+        const approveUserOpHashStr = typeof approveUserOpHash === 'string' 
+          ? approveUserOpHash 
+          : (approveUserOpHash?.hash || approveUserOpHash?.userOpHash || String(approveUserOpHash))
+
+        console.log(`   → Approval User Operation submitted: ${approveUserOpHashStr}`)
+
+        // Wait for approval confirmation
+        if (typeof (smartAccount as any).waitForUserOperation === 'function') {
+          await (smartAccount as any).waitForUserOperation({
+            userOpHash: approveUserOpHashStr,
+            network: "base",
+          })
+          console.log(`   ✅ WETH approval confirmed`)
+        } else {
+          // Fallback: wait using public client
+          await publicClient.waitForTransactionReceipt({
+            hash: approveUserOpHashStr as `0x${string}`,
+            confirmations: 1,
+            timeout: 60000,
+          })
+          console.log(`   ✅ WETH approval confirmed (via public client)`)
+        }
+      } catch (approvalError: any) {
+        console.error(`   ❌ WETH approval failed: ${approvalError.message}`)
+        throw new Error(`Failed to approve WETH: ${approvalError.message}`)
+      }
+    }
+
+    // Step 10: Create swap log entry
     const { data: logEntry, error: logError } = await supabase
       .from("bot_logs")
       .insert({
@@ -421,7 +618,7 @@ export async function POST(request: NextRequest) {
         token_address: token_address,
         amount_wei: amountWei.toString(),
         action: "swap_executing",
-        message: `[Bot #${walletIndex + 1}] Executing swap worth $${amountUsdValue.toFixed(2)} to Target Token...`,
+        message: `[Bot #${walletIndex + 1}] Executing swap worth $${amountUsdValue.toFixed(2)} (${formatEther(amountWei)} WETH) to Target Token...`,
         status: "pending",
         created_at: new Date().toISOString(),
       })
@@ -432,7 +629,7 @@ export async function POST(request: NextRequest) {
       console.error("❌ Failed to create log entry:", logError)
     }
 
-    // Step 9: Check/Create CDP Spend Permissions
+    // Step 11: Check/Create CDP Spend Permissions
     // Reference: https://docs.cdp.coinbase.com/server-wallets/v2/evm-features/spend-permissions
     console.log(`🔐 Checking CDP Spend Permissions...`)
     
@@ -551,11 +748,14 @@ export async function POST(request: NextRequest) {
       console.log(`   → Available Smart Account methods:`, Object.keys(smartAccount || {}).slice(0, 10).join(", "))
       
       // Prepare transaction call for Smart Account (uses calls array format)
+      // For WETH swaps, value should be 0 (ERC20 transfer, not native ETH)
       const transactionCall = {
         to: transaction.to as Address,
         data: transaction.data as Hex,
-        value: BigInt(transactionValue),
+        value: BigInt(0), // WETH is ERC20, value is always 0
       }
+      
+      console.log(`   → Transaction value: 0 (WETH swap, not native ETH)`)
       
       let userOpHash: any
       let userOpReceipt: any
@@ -785,44 +985,95 @@ export async function POST(request: NextRequest) {
           .eq("id", logEntry.id)
       }
 
-      // Step 11: Consume credit from bot wallet (reduce credit balance in database)
-      console.log(`💰 Consuming credit from bot wallet...`)
+      // Step 12: Deduct WETH balance from database and record swap history
+      console.log(`💰 Deducting WETH balance from database...`)
+      
+      // Get buyAmount from quote if available
+      const buyAmountWei = quote.buyAmount ? BigInt(quote.buyAmount) : BigInt(0)
+      
       try {
-        const consumeResponse = await fetch(`${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/api/bot/consume-credit`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            userAddress: user_address,
-            botWalletAddress: smartAccountAddress,
-            consumedAmountWei: amountWei.toString(), // Amount consumed in this swap
-          }),
-        })
+        // Deduct WETH balance from bot_wallet_credits
+        // Find the most recent credit record for this bot wallet
+        const { data: creditRecordsToUpdate, error: fetchCreditError } = await supabase
+          .from("bot_wallet_credits")
+          .select("id, weth_balance_wei, distributed_amount_wei")
+          .eq("user_address", user_address.toLowerCase())
+          .eq("bot_wallet_address", smartAccountAddress.toLowerCase())
+          .order("created_at", { ascending: false })
 
-        if (consumeResponse.ok) {
-          const consumeData = await consumeResponse.json()
-          console.log(`   ✅ Credit consumed: ${formatEther(BigInt(consumeData.consumedAmountWei || "0"))} ETH`)
-          console.log(`   → Remaining credit: ${formatEther(BigInt(consumeData.remainingCreditWei || "0"))} ETH`)
+        if (!fetchCreditError && creditRecordsToUpdate && creditRecordsToUpdate.length > 0) {
+          // Deduct from most recent records first (FIFO)
+          let remainingToDeduct = amountWei
+          
+          for (const record of creditRecordsToUpdate) {
+            if (remainingToDeduct <= BigInt(0)) break
+            
+            const currentBalance = BigInt(record.weth_balance_wei || record.distributed_amount_wei || "0")
+            
+            if (currentBalance > BigInt(0)) {
+              const deductAmount = remainingToDeduct < currentBalance ? remainingToDeduct : currentBalance
+              const newBalance = currentBalance - deductAmount
+              
+              await supabase
+                .from("bot_wallet_credits")
+                .update({ 
+                  weth_balance_wei: newBalance.toString(),
+                  // Also update distributed_amount_wei for backward compatibility
+                  distributed_amount_wei: newBalance.toString(),
+                })
+                .eq("id", record.id)
+              
+              remainingToDeduct = remainingToDeduct - deductAmount
+              console.log(`   → Deducted ${formatEther(deductAmount)} WETH from record ${record.id}`)
+            }
+          }
+          
+          if (remainingToDeduct > BigInt(0)) {
+            console.warn(`   ⚠️ Could not deduct full amount. Remaining: ${formatEther(remainingToDeduct)} WETH`)
+          } else {
+            console.log(`   ✅ WETH balance deducted successfully`)
+          }
         } else {
-          const errorData = await consumeResponse.json().catch(() => ({}))
-          console.warn(`   ⚠️ Failed to consume credit: ${errorData.error || consumeResponse.statusText}`)
-          // Don't throw - swap succeeded, just log warning
+          console.warn(`   ⚠️ No credit records found for bot wallet`)
         }
-      } catch (consumeError: any) {
-        console.warn(`   ⚠️ Error consuming credit: ${consumeError.message}`)
-        // Don't throw - swap succeeded, just log warning
+
+        // Record swap in swap_history table
+        await supabase.from("swap_history").insert({
+          user_address: user_address.toLowerCase(),
+          bot_wallet_address: smartAccountAddress.toLowerCase(),
+          token_address: token_address.toLowerCase(),
+          sell_amount_wei: amountWei.toString(),
+          buy_amount_wei: buyAmountWei.toString(),
+          tx_hash: txHash,
+        })
+        console.log(`   ✅ Swap recorded in swap_history`)
+
+      } catch (deductError: any) {
+        console.error(`   ❌ Error deducting WETH balance: ${deductError.message}`)
+        // Don't throw - swap succeeded, just log error
       }
 
-      // Log remaining balance
-      const newBalance = await publicClient.getBalance({ address: smartAccountAddress })
-      const newBalanceUsd = Number(formatEther(newBalance)) * ethPriceUsd
+      // Log remaining WETH balance from database
+      const { data: remainingCredits } = await supabase
+        .from("bot_wallet_credits")
+        .select("weth_balance_wei, distributed_amount_wei")
+        .eq("user_address", user_address.toLowerCase())
+        .eq("bot_wallet_address", smartAccountAddress.toLowerCase())
+
+      const remainingWethBalance = remainingCredits?.reduce((sum, record) => {
+        const amountWei = record.weth_balance_wei || record.distributed_amount_wei || "0"
+        return sum + BigInt(amountWei)
+      }, BigInt(0)) || BigInt(0)
+
+      const remainingBalanceUsd = Number(formatEther(remainingWethBalance)) * ethPriceUsd
 
       await supabase.from("bot_logs").insert({
         user_address: user_address.toLowerCase(),
         wallet_address: smartAccountAddress,
         token_address: token_address,
-        amount_wei: newBalance.toString(),
+        amount_wei: remainingWethBalance.toString(),
         action: "balance_check",
-        message: `[System] Remaining balance in Bot #${walletIndex + 1}: ${formatEther(newBalance)} ETH ($${newBalanceUsd.toFixed(2)})`,
+        message: `[System] Remaining WETH balance in Bot #${walletIndex + 1}: ${formatEther(remainingWethBalance)} WETH ($${remainingBalanceUsd.toFixed(2)})`,
         status: "info",
         created_at: new Date().toISOString(),
       })
@@ -840,8 +1091,10 @@ export async function POST(request: NextRequest) {
         message: "Swap executed successfully",
         txHash,
         nextIndex,
-        remainingBalance: formatEther(newBalance),
-        remainingBalanceUsd: newBalanceUsd.toFixed(2),
+        remainingBalance: formatEther(remainingWethBalance),
+        remainingBalanceUsd: remainingBalanceUsd.toFixed(2),
+        sellAmount: formatEther(amountWei),
+        buyAmount: buyAmountWei > BigInt(0) ? formatEther(buyAmountWei) : null,
       })
     } catch (swapError: any) {
       console.error("❌ Swap execution failed:", swapError)

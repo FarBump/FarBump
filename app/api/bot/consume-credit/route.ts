@@ -42,9 +42,10 @@ export async function POST(request: NextRequest) {
 
     // Find all bot_wallet_credits records for this bot wallet
     // Note: A bot wallet may have received multiple distributions
+    // Use weth_balance_wei (WETH) instead of distributed_amount_wei (ETH)
     const { data: creditRecords, error: fetchError } = await supabase
       .from("bot_wallet_credits")
-      .select("id, distributed_amount_wei")
+      .select("id, weth_balance_wei, distributed_amount_wei")
       .eq("user_address", normalizedUserAddress)
       .eq("bot_wallet_address", normalizedBotWalletAddress)
       .order("created_at", { ascending: false }) // Most recent first
@@ -68,9 +69,11 @@ export async function POST(request: NextRequest) {
       })
     }
 
-    // Calculate total credit for this bot wallet
+    // Calculate total WETH credit for this bot wallet
+    // Use weth_balance_wei if available, otherwise fallback to distributed_amount_wei
     const totalCreditWei = creditRecords.reduce((sum, record) => {
-      return sum + BigInt(record.distributed_amount_wei || "0")
+      const amountWei = record.weth_balance_wei || record.distributed_amount_wei || "0"
+      return sum + BigInt(amountWei)
     }, BigInt(0))
 
     const consumedAmount = BigInt(consumedAmountWei)
@@ -83,11 +86,14 @@ export async function POST(request: NextRequest) {
       // Consume all available credit
       const remainingCredit = BigInt(0)
       
-      // Update all records to 0
+      // Update all records to 0 (both weth_balance_wei and distributed_amount_wei)
       for (const record of creditRecords) {
         await supabase
           .from("bot_wallet_credits")
-          .update({ distributed_amount_wei: "0" })
+          .update({ 
+            weth_balance_wei: "0",
+            distributed_amount_wei: "0", // Also update for backward compatibility
+          })
           .eq("id", record.id)
       }
 
@@ -106,13 +112,17 @@ export async function POST(request: NextRequest) {
     for (const record of creditRecords) {
       if (remainingToConsume <= BigInt(0)) break
 
-      const recordAmount = BigInt(record.distributed_amount_wei || "0")
+      // Use weth_balance_wei if available, otherwise fallback to distributed_amount_wei
+      const recordAmount = BigInt(record.weth_balance_wei || record.distributed_amount_wei || "0")
       
       if (recordAmount <= remainingToConsume) {
         // Consume entire record
         await supabase
           .from("bot_wallet_credits")
-          .update({ distributed_amount_wei: "0" })
+          .update({ 
+            weth_balance_wei: "0",
+            distributed_amount_wei: "0", // Also update for backward compatibility
+          })
           .eq("id", record.id)
         
         updatedRecords.push({ id: record.id, newAmount: "0" })
@@ -122,7 +132,10 @@ export async function POST(request: NextRequest) {
         const newAmount = recordAmount - remainingToConsume
         await supabase
           .from("bot_wallet_credits")
-          .update({ distributed_amount_wei: newAmount.toString() })
+          .update({ 
+            weth_balance_wei: newAmount.toString(),
+            distributed_amount_wei: newAmount.toString(), // Also update for backward compatibility
+          })
           .eq("id", record.id)
         
         updatedRecords.push({ id: record.id, newAmount: newAmount.toString() })
@@ -132,10 +145,10 @@ export async function POST(request: NextRequest) {
 
     const remainingCredit = totalCreditWei - consumedAmount
 
-    console.log(`✅ Credit consumed:`)
+    console.log(`✅ WETH credit consumed:`)
     console.log(`   Bot Wallet: ${normalizedBotWalletAddress}`)
-    console.log(`   Consumed: ${formatEther(consumedAmount)} ETH`)
-    console.log(`   Remaining: ${formatEther(remainingCredit)} ETH`)
+    console.log(`   Consumed: ${formatEther(consumedAmount)} WETH`)
+    console.log(`   Remaining: ${formatEther(remainingCredit)} WETH`)
     console.log(`   Updated ${updatedRecords.length} record(s)`)
 
     return NextResponse.json({

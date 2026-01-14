@@ -69,9 +69,11 @@ export function useCreditBalance(userAddress: string | null, options?: { enabled
         .single()
 
       // Fetch bot wallet credits from database
+      // Include both distributed_amount_wei (ETH) and weth_balance_wei (WETH)
+      // Total Credit = Native ETH + WETH (both are 1:1 equivalent)
       const { data: botCreditsData, error: botCreditsError } = await supabase
         .from("bot_wallet_credits")
-        .select("distributed_amount_wei")
+        .select("distributed_amount_wei, weth_balance_wei")
         .eq("user_address", userAddress.toLowerCase())
 
       // Handle errors gracefully
@@ -115,12 +117,17 @@ export function useCreditBalance(userAddress: string | null, options?: { enabled
       // Calculate main wallet credit
       const mainWalletCreditWei = mainCreditData?.balance_wei || "0"
       
-      // Calculate bot wallet credits (sum of all distributed amounts)
+      // Calculate bot wallet credits
+      // Use weth_balance_wei if available (new WETH-based distributions)
+      // Otherwise fall back to distributed_amount_wei (backward compatibility)
+      // Total Credit = Native ETH + WETH (both are 1:1 equivalent)
       const botWalletCreditsWei = botCreditsData?.reduce((sum, record) => {
-        return sum + BigInt(record.distributed_amount_wei || "0")
+        // Prefer weth_balance_wei (WETH), fallback to distributed_amount_wei (ETH)
+        const amountWei = record.weth_balance_wei || record.distributed_amount_wei || "0"
+        return sum + BigInt(amountWei)
       }, BigInt(0)) || BigInt(0)
       
-      // Total credit = Main wallet credit + Bot wallet credits
+      // Total credit = Main wallet credit + Bot wallet credits (ETH + WETH)
       const totalCreditWei = BigInt(mainWalletCreditWei) + botWalletCreditsWei
       const balanceWei = totalCreditWei.toString()
       const balanceEth = formatUnits(BigInt(balanceWei), 18)

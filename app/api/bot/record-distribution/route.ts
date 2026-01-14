@@ -15,7 +15,7 @@ export async function POST(request: NextRequest) {
     const body = await request.json()
     const { userAddress, distributions, txHash } = body as {
       userAddress: string
-      distributions: Array<{ botWalletAddress: string; amountWei: string }>
+      distributions: Array<{ botWalletAddress: string; amountWei: string; wethAmountWei?: string }>
       txHash: string
     }
 
@@ -37,10 +37,13 @@ export async function POST(request: NextRequest) {
     const normalizedUserAddress = userAddress.toLowerCase()
 
     // Insert distribution records for each bot wallet
+    // Note: distributed_amount_wei stores the original ETH amount (for backward compatibility)
+    // weth_balance_wei stores the WETH amount (same value, but explicitly tracked as WETH)
     const records = distributions.map((dist) => ({
       user_address: normalizedUserAddress,
       bot_wallet_address: dist.botWalletAddress.toLowerCase(),
-      distributed_amount_wei: dist.amountWei,
+      distributed_amount_wei: dist.amountWei, // Original ETH amount (for backward compatibility)
+      weth_balance_wei: dist.wethAmountWei || dist.amountWei, // WETH balance (1:1 with ETH)
       tx_hash: txHash,
     }))
 

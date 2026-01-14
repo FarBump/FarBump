@@ -3,8 +3,32 @@
 import { useState, useCallback } from "react"
 import { useSmartWallets } from "@privy-io/react-auth/smart-wallets"
 import { usePublicClient } from "wagmi"
-import { formatEther, getAddress, type Address, type Hex } from "viem"
+import { formatEther, getAddress, encodeFunctionData, type Address, type Hex } from "viem"
 import { toast } from "sonner"
+
+// WETH Contract Address (Base Network)
+const WETH_ADDRESS = "0x4200000000000000000000000000000000000006" as const
+
+// WETH ABI for deposit and transfer
+const WETH_ABI = [
+  {
+    inputs: [],
+    name: "deposit",
+    outputs: [],
+    stateMutability: "payable",
+    type: "function",
+  },
+  {
+    inputs: [
+      { name: "to", type: "address" },
+      { name: "amount", type: "uint256" },
+    ],
+    name: "transfer",
+    outputs: [{ name: "", type: "bool" }],
+    stateMutability: "nonpayable",
+    type: "function",
+  },
+] as const
 
 interface BotWallet {
   smartWalletAddress: string
@@ -114,46 +138,126 @@ export function useDistributeCredits() {
       const amountForFirstBot: bigint = amountPerBot + remainder
 
       console.log(`\n📦 Distribution per bot:`)
-      console.log(`   → Amount per bot: ${formatEther(amountPerBot)} ETH`)
+      console.log(`   → Amount per bot: ${formatEther(amountPerBot)} ETH (will be converted to WETH)`)
       if (remainder > BigInt(0)) {
         console.log(`   → First bot gets remainder: +${formatEther(remainder)} ETH`)
       }
 
       // =============================================
-      // Execute Individual Transactions (Like Withdraw Function)
+      // STEP 1: Deposit ETH to WETH
+      // Convert all ETH to WETH before distribution
+      // This ensures 100% gasless transactions and avoids Paymaster allowlist errors
+      // =============================================
+      setStatus("Depositing ETH to WETH...")
+      
+      console.log(`\n🔄 Converting ETH to WETH...`)
+      console.log(`   → WETH Contract: ${WETH_ADDRESS}`)
+      console.log(`   → Amount: ${formatEther(creditToDistribute)} ETH`)
+      console.log(`   → Strategy: Deposit ETH to WETH, then distribute WETH to bot wallets`)
+      console.log(`   → Bot Strategy: Bot wallets will hold WETH. Uniswap v4 can use WETH directly for swaps.`)
+      
+      /**
+       * STRATEGY: WETH-Based Credit Distribution
+       * 
+       * Why WETH instead of Native ETH?
+       * 1. Gasless Transactions: Paymaster Coinbase allows ERC20 (WETH) transfers to bot addresses
+       *    that were previously rejected for Native ETH transfers (allowlist restrictions).
+       * 2. Uniswap v4 Compatibility: Bot wallets hold WETH, which can be directly used in Uniswap v4
+       *    swaps without needing to unwrap back to Native ETH.
+       * 3. 1:1 Value: WETH maintains 1:1 value with ETH, so credit calculations remain accurate.
+       * 
+       * Bot Wallet Behavior:
+       * - Bot wallets now receive WETH instead of Native ETH
+       * - When bot performs swaps via Uniswap v4, it uses WETH directly
+       * - No unwrap operation needed (WETH → Token swap is more efficient)
+       * 
+       * Credit Display:
+       * - UI displays as "Total Credit" or "Total ETH" (1:1 equivalent)
+       * - Database tracks both distributed_amount_wei (ETH) and weth_balance_wei (WETH)
+       * - Total Credit = Native ETH (main wallet) + WETH (bot wallets)
+       */
+
+      let depositTxHash: `0x${string}` | null = null
+
+      try {
+        // Encode deposit function call (WETH.deposit())
+        const depositData = encodeFunctionData({
+          abi: WETH_ABI,
+          functionName: "deposit",
+          args: [],
+        })
+
+        // Send transaction to WETH contract with ETH value
+        // Privy automatically handles sponsorship via Dashboard configuration
+        depositTxHash = await smartWalletClient.sendTransaction({
+          to: WETH_ADDRESS,
+          value: creditToDistribute, // Send ETH to WETH contract
+          data: depositData,
+        }) as `0x${string}`
+
+        console.log(`   ✅ WETH deposit transaction submitted: ${depositTxHash}`)
+        
+        // Wait for deposit confirmation
+        setStatus("Waiting for WETH deposit confirmation...")
+        const depositReceipt = await publicClient.waitForTransactionReceipt({
+          hash: depositTxHash,
+          confirmations: 1,
+        })
+
+        if (depositReceipt.status !== "success") {
+          throw new Error("WETH deposit transaction failed on-chain")
+        }
+
+        console.log(`   ✅ WETH deposit confirmed!`)
+        console.log(`      → Block: ${depositReceipt.blockNumber}`)
+        console.log(`      → Gas used: ${depositReceipt.gasUsed.toString()}`)
+      } catch (depositError: any) {
+        console.error(`   ❌ WETH deposit failed:`, depositError.message)
+        throw new Error(`Failed to deposit ETH to WETH: ${depositError.message}`)
+      }
+
+      // =============================================
+      // STEP 2: Execute Individual WETH Transfers (Like Withdraw Function)
       // Privy automatically handles sponsorship via Dashboard configuration
       // Use individual transactions to avoid batch allowlist restrictions
       // =============================================
-      setStatus("Preparing individual transactions...")
+      setStatus("Preparing WETH distribution...")
       
-      console.log(`\n📤 Sending INDIVIDUAL transactions...`)
+      console.log(`\n📤 Sending INDIVIDUAL WETH transfers...`)
       console.log(`   → Smart Wallet: ${smartWalletAddress}`)
       console.log(`   → Total transfers: ${botWallets.length}`)
-      console.log(`   → Strategy: Individual transactions (like Withdraw) to avoid batch allowlist restrictions`)
+      console.log(`   → Strategy: Individual WETH (ERC20) transfers (like Withdraw $BUMP) to avoid batch allowlist restrictions`)
       console.log(`   → Privy will automatically handle sponsorship via Dashboard configuration`)
 
       const txHashes: `0x${string}`[] = []
 
-      // Execute individual transactions sequentially (like Withdraw function)
+      // Execute individual WETH transfers sequentially (like Withdraw function)
       // This avoids batch allowlist restrictions that Coinbase Paymaster may have
       for (let i = 0; i < botWallets.length; i++) {
         const wallet = botWallets[i]
         const amount: bigint = i === 0 ? amountForFirstBot : amountPerBot
         const checksumAddress = getAddress(wallet.smartWalletAddress)
         
-        setStatus(`Sending transfer ${i + 1}/${botWallets.length}...`)
+        setStatus(`Sending WETH transfer ${i + 1}/${botWallets.length}...`)
         
-        console.log(`\n   📤 Transfer ${i + 1}/${botWallets.length}:`)
+        console.log(`\n   📤 WETH Transfer ${i + 1}/${botWallets.length}:`)
         console.log(`      → To: ${checksumAddress}`)
-        console.log(`      → Amount: ${formatEther(amount)} ETH`)
+        console.log(`      → Amount: ${formatEther(amount)} WETH`)
 
         try {
-          // Execute individual transaction (same format as Withdraw)
+          // Encode WETH transfer function call (WETH.transfer(address, uint256))
+          const transferData = encodeFunctionData({
+            abi: WETH_ABI,
+            functionName: "transfer",
+            args: [checksumAddress as Address, amount],
+          })
+
+          // Execute individual WETH transfer (same pattern as Withdraw $BUMP)
           // Privy automatically handles sponsorship via Dashboard configuration
           const txHash = await smartWalletClient.sendTransaction({
-            to: checksumAddress as Address,
-            value: amount,
-            data: "0x" as Hex, // Empty data for simple ETH transfer
+            to: WETH_ADDRESS,
+            data: transferData,
+            value: BigInt(0), // ERC20 transfer, value is 0
           }) as `0x${string}`
 
           txHashes.push(txHash)
@@ -172,8 +276,8 @@ export function useDistributeCredits() {
         }
       }
 
-      // Use first transaction hash as primary
-      const txHash = txHashes.length > 0 ? txHashes[0] : null
+      // Use deposit transaction hash as primary (or first transfer if deposit failed)
+      const txHash = depositTxHash || (txHashes.length > 0 ? txHashes[0] : null)
 
       if (!txHash || txHashes.length === 0) {
         throw new Error("All individual transactions failed")
@@ -203,13 +307,15 @@ export function useDistributeCredits() {
       console.log(`   → Gas used: ${receipt.gasUsed.toString()}`)
 
       // Record distribution in database
+      // Note: We record as WETH balance, but display as "Credit" (1:1 with ETH)
       setStatus("Recording distribution...")
       
       const distributions = botWallets.map((wallet, index) => {
         const distAmount: bigint = index === 0 ? amountForFirstBot : amountPerBot
         return {
           botWalletAddress: wallet.smartWalletAddress,
-          amountWei: distAmount.toString(),
+          amountWei: distAmount.toString(), // Amount in wei (same value for ETH and WETH)
+          wethAmountWei: distAmount.toString(), // Explicitly record as WETH
         }
       })
 
@@ -231,8 +337,8 @@ export function useDistributeCredits() {
       setIsSuccess(true)
       setStatus("Distribution completed!")
       
-      toast.success("Successfully distributed credit to 5 bot wallets!", {
-        description: `Total: ${formatEther(creditToDistribute)} ETH`,
+      toast.success("Successfully distributed WETH credit to 5 bot wallets!", {
+        description: `Total: ${formatEther(creditToDistribute)} WETH (1:1 with ETH)`,
         action: {
           label: "View",
           onClick: () => window.open(`https://basescan.org/tx/${txHash}`, "_blank"),

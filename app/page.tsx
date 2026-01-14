@@ -833,26 +833,38 @@ export default function BumpBotDashboard() {
         const minAmountEth = MIN_AMOUNT_USD / ethPriceUsd
         const minAmountWei = BigInt(Math.floor(minAmountEth * 1e18))
         
-        // Check balances of all bot wallets
-        // CRITICAL: Check if each bot wallet has sufficient balance for the required amount per bump
+        // Check WETH balances of all bot wallets from database
+        // CRITICAL: Check if each bot wallet has sufficient WETH balance for the required amount per bump
         // Not just minimum amount, but the actual amount required for one swap
-        let totalBotBalanceWei = BigInt(0)
+        let totalBotWethBalanceWei = BigInt(0)
         let sufficientWallets = 0
         const botWalletBalances: Array<{ address: string; balance: bigint; sufficient: boolean }> = []
         
         for (const botWallet of existingBotWallets) {
           try {
-            const balance = await publicClient.getBalance({
-              address: botWallet.smartWalletAddress as `0x${string}`,
+            // Fetch WETH balance from database for this specific bot wallet
+            const walletBalanceResponse = await fetch("/api/bot/wallet-weth-balance", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ 
+                userAddress: privySmartWalletAddress,
+                botWalletAddress: botWallet.smartWalletAddress,
+              }),
             })
-            totalBotBalanceWei += balance
             
-            // Check if this wallet has sufficient balance for the required amount per bump
-            // Not just minimum amount, but the actual amount required for one swap
-            const hasSufficientBalance = balance >= requiredAmountWei
+            let wethBalance = BigInt(0)
+            if (walletBalanceResponse.ok) {
+              const walletBalanceData = await walletBalanceResponse.json()
+              wethBalance = BigInt(walletBalanceData.wethBalanceWei || "0")
+            }
+            
+            totalBotWethBalanceWei += wethBalance
+            
+            // Check if this wallet has sufficient WETH balance for the required amount per bump
+            const hasSufficientBalance = wethBalance >= requiredAmountWei
             botWalletBalances.push({
               address: botWallet.smartWalletAddress,
-              balance,
+              balance: wethBalance,
               sufficient: hasSufficientBalance,
             })
             
@@ -860,7 +872,7 @@ export default function BumpBotDashboard() {
               sufficientWallets++
             }
           } catch (error) {
-            console.error(`⚠️ Error checking balance for bot wallet ${botWallet.smartWalletAddress}:`, error)
+            console.error(`⚠️ Error checking WETH balance for bot wallet ${botWallet.smartWalletAddress}:`, error)
             botWalletBalances.push({
               address: botWallet.smartWalletAddress,
               balance: BigInt(0),
@@ -869,22 +881,22 @@ export default function BumpBotDashboard() {
           }
         }
         
-        const totalBotBalanceUsd = Number(formatEther(totalBotBalanceWei)) * ethPriceUsd
-        console.log(`💰 Total bot wallet balance: ${formatEther(totalBotBalanceWei)} ETH ($${totalBotBalanceUsd.toFixed(2)})`)
-        console.log(`💰 Required amount per bump: ${formatEther(requiredAmountWei)} ETH ($${amountUsdValue.toFixed(2)})`)
-        console.log(`💰 Wallets with sufficient balance: ${sufficientWallets}/5`)
+        const totalBotBalanceUsd = Number(formatEther(totalBotWethBalanceWei)) * ethPriceUsd
+        console.log(`💰 Total bot wallet WETH balance: ${formatEther(totalBotWethBalanceWei)} WETH ($${totalBotBalanceUsd.toFixed(2)})`)
+        console.log(`💰 Required amount per bump: ${formatEther(requiredAmountWei)} WETH ($${amountUsdValue.toFixed(2)})`)
+        console.log(`💰 Wallets with sufficient WETH balance: ${sufficientWallets}/5`)
         
         // Log individual wallet balances
         botWalletBalances.forEach((wallet, index) => {
           const walletBalanceUsd = Number(formatEther(wallet.balance)) * ethPriceUsd
-          console.log(`   Bot #${index + 1}: ${formatEther(wallet.balance)} ETH ($${walletBalanceUsd.toFixed(2)}) - ${wallet.sufficient ? "✅ Sufficient" : "❌ Insufficient"}`)
+          console.log(`   Bot #${index + 1}: ${formatEther(wallet.balance)} WETH ($${walletBalanceUsd.toFixed(2)}) - ${wallet.sufficient ? "✅ Sufficient" : "❌ Insufficient"}`)
         })
         
-        // STEP 2: Only distribute if bot wallets don't have sufficient balance for the required amount per bump
+        // STEP 2: Only distribute if bot wallets don't have sufficient WETH balance for the required amount per bump
         // Distribute if:
-        // 1. No wallets have sufficient balance, OR
-        // 2. Total balance is less than required amount (can't even do one swap)
-        const needsDistribution = sufficientWallets === 0 || totalBotBalanceWei < requiredAmountWei
+        // 1. No wallets have sufficient WETH balance, OR
+        // 2. Total WETH balance is less than required amount (can't even do one swap)
+        const needsDistribution = sufficientWallets === 0 || totalBotWethBalanceWei < requiredAmountWei
         
         if (needsDistribution) {
           console.log("💰 Bot wallets need funding. Distributing credits...")
