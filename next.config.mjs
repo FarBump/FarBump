@@ -41,6 +41,8 @@ const nextConfig = {
         crypto: false,
         stream: false,
         os: false,
+        // Fix MetaMask SDK build error - ignore async-storage
+        '@react-native-async-storage/async-storage': false,
       }
     }
     return config

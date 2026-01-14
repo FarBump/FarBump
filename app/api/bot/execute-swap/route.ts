@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
-import { formatEther, parseEther, isAddress, type Address, type Hex, createPublicClient, http, encodeFunctionData, readContract } from "viem"
+import { formatEther, parseEther, isAddress, type Address, type Hex, createPublicClient, http, encodeFunctionData } from "viem"
 import { base } from "viem/chains"
 import { createSupabaseServiceClient } from "@/lib/supabase"
 import { CdpClient } from "@coinbase/cdp-sdk"
@@ -185,7 +185,7 @@ export async function POST(request: NextRequest) {
 
     // Also check on-chain WETH balance for verification
     try {
-      const onChainWethBalance = await readContract(publicClient, {
+      const onChainWethBalance = await publicClient.readContract({
         address: WETH_ADDRESS,
         abi: WETH_ABI,
         functionName: "balanceOf",
@@ -535,7 +535,7 @@ export async function POST(request: NextRequest) {
     
     let needsApproval = false
     try {
-      const currentAllowance = await readContract(publicClient, {
+      const currentAllowance = await publicClient.readContract({
         address: WETH_ADDRESS,
         abi: WETH_ABI,
         functionName: "allowance",

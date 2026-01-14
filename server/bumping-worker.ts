@@ -184,9 +184,12 @@ async function getBotWalletWethBalance(userAddress: string, botWalletAddress: st
 
 /**
  * Get bot wallets for a user
+ * Fetches from wallets_data table which stores bot smart accounts
  */
 async function getBotWallets(userAddress: string): Promise<Array<{ smartWalletAddress: string; ownerAddress: string }>> {
   try {
+    // Fetch all bot wallets for this user
+    // Note: wallets_data table may have multiple records or a single record with array
     const { data: walletsData, error } = await supabase
       .from("wallets_data")
       .select("smart_account_address, owner_address")
@@ -203,10 +206,13 @@ async function getBotWallets(userAddress: string): Promise<Array<{ smartWalletAd
     }
 
     // Return array of bot wallets
-    return walletsData.map((wallet: any) => ({
-      smartWalletAddress: wallet.smart_account_address,
-      ownerAddress: wallet.owner_address,
-    }))
+    // Each record in wallets_data represents one bot wallet
+    return walletsData
+      .filter((wallet: any) => wallet.smart_account_address && wallet.owner_address)
+      .map((wallet: any) => ({
+        smartWalletAddress: wallet.smart_account_address,
+        ownerAddress: wallet.owner_address,
+      }))
   } catch (error: any) {
     console.error(`❌ Error in getBotWallets:`, error.message)
     return []
