@@ -144,12 +144,16 @@ export function useCreditBalance(userAddress: string | null, options?: { enabled
         // Don't throw - USD conversion is optional, but log for debugging
       }
 
-      return {
+      const result = {
         balanceWei,
         balanceEth,
         balanceUsd,
-        lastUpdated: mainCreditData?.last_updated || null,
+        lastUpdated: new Date().toISOString(),
       }
+      
+      console.log("💰 Credit Balance Final Result:", result)
+      
+      return result
     },
     enabled: enabled,
     // Fetch strategy: Only fetch when user opens/app opens the app (on mount)
