@@ -426,31 +426,16 @@ export function useDistributeCredits() {
         console.warn("⚠️ Failed to record distribution in database:", recordError)
       }
 
-      // Deduct credit from user_credits (main wallet)
-      // CRITICAL: This reduces balance_wei in user_credits after distribution
-      setStatus("Updating main wallet credit...")
-      console.log(`\n💰 Deducting credit from main wallet (user_credits)...`)
-      try {
-        const deductResponse = await fetch("/api/deduct-credit", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            userAddress: userAddress,
-            amountWei: creditToDistribute.toString(),
-          }),
-        })
-
-        if (!deductResponse.ok) {
-          const deductError = await deductResponse.json()
-          console.warn(`⚠️ Failed to deduct credit from main wallet: ${deductError.error || deductError.details}`)
-        } else {
-          console.log(`   ✅ Credit deducted from main wallet (user_credits)`)
-          console.log(`   → Amount deducted: ${formatEther(creditToDistribute)} ETH`)
-        }
-      } catch (deductError) {
-        console.warn("⚠️ Failed to deduct credit from main wallet:", deductError)
-        // Don't throw - distribution succeeded, just log warning
-      }
+      // =============================================
+      // IMPORTANT: No need to manually deduct from database
+      // Main wallet credit is now based on ACTUAL on-chain balance (ETH + WETH)
+      // When distributing, ETH/WETH moves from main wallet to bot wallets on-chain
+      // So main wallet balance decreases AUTOMATICALLY on-chain
+      // user_credits.balance_wei is kept for audit/history but NOT used for display
+      // =============================================
+      console.log(`\n💰 Main wallet credit will decrease automatically (on-chain balance)`)
+      console.log(`   → ETH/WETH has been transferred from main wallet to bot wallets`)
+      console.log(`   → Next time credit is fetched, it will reflect the reduced balance`)
 
       setIsSuccess(true)
       setStatus("Distribution completed!")
