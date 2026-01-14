@@ -180,7 +180,11 @@ export function useDistributeCredits() {
       const creditToDistribute: bigint = mainWalletCreditWei
 
       console.log(`   → Credit to distribute: ${formatEther(creditToDistribute)} ETH`)
-      console.log(`   → Will use: ${formatEther(Math.min(Number(wethBalance), Number(creditToDistribute)))} WETH + ${formatEther(Math.max(BigInt(0), creditToDistribute - wethBalance))} Native ETH`)
+      
+      // Calculate how much will come from WETH vs Native ETH (for logging)
+      const wethToUse = wethBalance >= creditToDistribute ? creditToDistribute : wethBalance
+      const ethToConvert = creditToDistribute > wethBalance ? creditToDistribute - wethBalance : BigInt(0)
+      console.log(`   → Will use: ${formatEther(wethToUse)} WETH + ${formatEther(ethToConvert)} Native ETH (to be converted)`)
 
       // Calculate amount per bot
       const amountPerBot: bigint = creditToDistribute / BigInt(5)
