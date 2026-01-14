@@ -268,17 +268,44 @@ export async function POST(request: NextRequest) {
     }
 
     // Record distributions in bot_wallet_credits
+    // IMPORTANT: Only 1 row per bot_wallet_address, only weth_balance_wei is used
+    // If record exists, add to existing weth_balance_wei
+    // If record doesn't exist, create new record with weth_balance_wei
     for (const transfer of transfers) {
-      await supabase
+      const botWalletAddress = transfer.botWalletAddress.toLowerCase()
+      const wethAmountWei = transfer.amountWei // WETH amount (1:1 with ETH)
+      
+      // Check if record exists
+      const { data: existingRecord } = await supabase
         .from("bot_wallet_credits")
-        .upsert({
-          user_address: normalizedUserAddress,
-          bot_wallet_address: transfer.botWalletAddress.toLowerCase(),
-          distributed_amount_wei: transfer.amountWei,
-          updated_at: new Date().toISOString(),
-        }, {
-          onConflict: "user_address,bot_wallet_address",
-        })
+        .select("weth_balance_wei")
+        .eq("user_address", normalizedUserAddress)
+        .eq("bot_wallet_address", botWalletAddress)
+        .single()
+      
+      if (existingRecord) {
+        // Update existing record: add to existing weth_balance_wei
+        const currentBalance = BigInt(existingRecord.weth_balance_wei || "0")
+        const newBalance = currentBalance + BigInt(wethAmountWei)
+        
+        await supabase
+          .from("bot_wallet_credits")
+          .update({
+            weth_balance_wei: newBalance.toString(),
+          })
+          .eq("user_address", normalizedUserAddress)
+          .eq("bot_wallet_address", botWalletAddress)
+      } else {
+        // Insert new record
+        await supabase
+          .from("bot_wallet_credits")
+          .insert({
+            user_address: normalizedUserAddress,
+            bot_wallet_address: botWalletAddress,
+            weth_balance_wei: wethAmountWei,
+            tx_hash: transfer.txHash,
+          })
+      }
     }
 
     // Record each transfer in bot_logs
