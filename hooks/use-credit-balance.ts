@@ -94,8 +94,20 @@ export function useCreditBalance(userAddress: string | null, options?: { enabled
       }
 
       const creditData = await creditResponse.json()
+      
+      // Debug: Log API response
+      console.log("💰 Credit Balance API Response:", creditData)
+      
       const balanceWei = creditData.balanceWei || "0"
       const balanceEth = creditData.balanceEth || "0"
+      
+      console.log("💰 Credit Balance Parsed:", {
+        balanceWei,
+        balanceEth,
+        mainWalletCreditWei: creditData.mainWalletCreditWei,
+        botWalletCreditsWei: creditData.botWalletCreditsWei,
+        debug: creditData.debug,
+      })
 
       // Fetch ETH price in USD from CoinGecko (real-time)
       // IMPORTANT: ETH price is fetched fresh every time to reflect current market price
