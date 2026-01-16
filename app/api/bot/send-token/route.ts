@@ -3,36 +3,13 @@ import { isAddress, type Address, type Hex, createPublicClient, http, encodeFunc
 import { base } from "viem/chains"
 import { createSupabaseServiceClient } from "@/lib/supabase"
 import { CdpClient } from "@coinbase/cdp-sdk"
-import "dotenv/config"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
 
-// Konfigurasi CDP SDK global (Gunakan variabel env yang sesuai di Railway/Vercel)
-CdpClient.configure({
-  apiKeyName: process.env.CDP_API_KEY_ID || "",
-  privateKey: (process.env.CDP_API_KEY_SECRET || "").replace(/\\n/g, "\n"),
-});
-
-// ERC20 ABI standar untuk cek saldo dan transfer
 const ERC20_ABI = [
-  {
-    constant: true,
-    inputs: [{ name: "_owner", type: "address" }],
-    name: "balanceOf",
-    outputs: [{ name: "balance", type: "uint256" }],
-    type: "function",
-  },
-  {
-    constant: false,
-    inputs: [
-      { name: "_to", type: "address" },
-      { name: "_value", type: "uint256" },
-    ],
-    name: "transfer",
-    outputs: [{ name: "", type: "bool" }],
-    type: "function",
-  },
+  { constant: true, inputs: [{ name: "_owner", type: "address" }], name: "balanceOf", outputs: [{ name: "balance", type: "uint256" }], type: "function" },
+  { constant: false, inputs: [{ name: "_to", type: "address" }, { name: "_value", type: "uint256" }], name: "transfer", outputs: [{ name: "", type: "bool" }], type: "function" },
 ] as const
 
 const publicClient = createPublicClient({
@@ -42,37 +19,34 @@ const publicClient = createPublicClient({
 
 export async function POST(request: NextRequest) {
   try {
+    // 1. Validasi Variabel Lingkungan di dalam POST
+    const apiKeyName = process.env.CDP_API_KEY_ID;
+    const privateKey = process.env.CDP_API_KEY_SECRET?.replace(/\\n/g, "\n");
+
+    if (!apiKeyName || !privateKey) {
+      console.error("❌ CDP SDK not configured: Missing env variables");
+      return NextResponse.json({ error: "Server configuration error" }, { status: 500 });
+    }
+
+    /** * Update Cara Konfigurasi: 
+     * Beberapa versi CDP menggunakan CdpClient.configure, 
+     * yang lain menggunakan konfigurasi saat inisialisasi.
+     */
+    try {
+      if (typeof (CdpClient as any).configure === 'function') {
+        (CdpClient as any).configure({ apiKeyName, privateKey });
+      }
+    } catch (e) {
+      console.warn("CDP Manual config failed, proceeding with instance config");
+    }
+
     const body = await request.json()
-    const {
-      botWalletAddress,
-      tokenAddress,
-      recipientAddress,
-      amountWei,
-      symbol,
-    } = body as {
-      botWalletAddress: string
-      tokenAddress: string
-      recipientAddress: string
-      amountWei: string
-      symbol: string
-    }
+    const { botWalletAddress, tokenAddress, recipientAddress, amountWei, symbol } = body
 
-    // 1. Validasi Input Dasar
     if (!botWalletAddress || !tokenAddress || !recipientAddress || !amountWei) {
-      return NextResponse.json(
-        { error: "Missing required fields" },
-        { status: 400 }
-      )
+      return NextResponse.json({ error: "Missing required fields" }, { status: 400 })
     }
 
-    if (!isAddress(botWalletAddress) || !isAddress(tokenAddress) || !isAddress(recipientAddress)) {
-      return NextResponse.json(
-        { error: "Invalid Ethereum address format" },
-        { status: 400 }
-      )
-    }
-
-    // 2. Verifikasi Wallet di Database (Gunakan Service Role untuk bypass RLS jika perlu)
     const supabase = createSupabaseServiceClient()
     const { data: botWallet, error: walletError } = await supabase
       .from("wallets_data")
@@ -80,73 +54,41 @@ export async function POST(request: NextRequest) {
       .eq("smart_account_address", botWalletAddress.toLowerCase())
       .single()
 
-    if (walletError || !botWallet) {
-      return NextResponse.json({ error: "Bot wallet not found" }, { status: 404 })
-    }
+    if (walletError || !botWallet) return NextResponse.json({ error: "Wallet not found" }, { status: 404 })
 
-    const smartAccountAddress = botWallet.smart_account_address as Address
-    const ownerAddress = botWallet.owner_address as Address
-
-    // 3. Cek Saldo On-Chain sebelum mencoba transaksi
-    const balance = await publicClient.readContract({
-      address: tokenAddress as Address,
-      abi: ERC20_ABI,
-      functionName: "balanceOf",
-      args: [smartAccountAddress],
-    })
-
-    if (BigInt(balance) < BigInt(amountWei)) {
-      return NextResponse.json({ error: "Insufficient balance on-chain" }, { status: 400 })
-    }
-
-    // 4. Eksekusi via CDP Smart Account (Gasless)
-    const cdp = new CdpClient()
-    const ownerAccount = await cdp.evm.getAccount({ address: ownerAddress })
-    
+    // 2. Inisialisasi Client
+    const cdp = new CdpClient({ apiKeyName, privateKey });
+    const ownerAccount = await cdp.evm.getAccount({ address: botWallet.owner_address as Address })
     const smartAccount = await cdp.evm.getSmartAccount({
       owner: ownerAccount,
-      address: smartAccountAddress,
+      address: botWallet.smart_account_address as Address,
     })
 
-    // Encode data transfer ERC20
     const transferData = encodeFunctionData({
       abi: ERC20_ABI,
       functionName: "transfer",
       args: [recipientAddress as Address, BigInt(amountWei)],
     })
 
-    console.log(`🚀 Sending UserOp for ${symbol} from ${smartAccountAddress}`)
-
-    // Kirim User Operation dengan Sponsorship (Paymaster)
     const userOpHash = await (smartAccount as any).sendUserOperation({
       network: "base",
-      calls: [{
-        to: tokenAddress as Address,
-        data: transferData as Hex,
-        value: BigInt(0),
-      }],
-      isSponsored: true, 
+      calls: [{ to: tokenAddress as Address, data: transferData as Hex, value: BigInt(0) }],
+      isSponsored: true,
     })
 
-    // 5. Tunggu Konfirmasi & Ambil Tx Hash
     const userOpReceipt = await (smartAccount as any).waitForUserOperation({
       network: "base",
       hash: userOpHash,
     })
 
-    const txHash = userOpReceipt?.transactionHash || userOpReceipt?.hash || userOpHash
-
     return NextResponse.json({
       success: true,
-      txHash,
-      message: `Successfully sent ${symbol} to ${recipientAddress}`,
+      txHash: userOpReceipt?.transactionHash || userOpHash,
+      message: `Sent ${symbol} to ${recipientAddress}`,
     })
 
   } catch (error: any) {
-    console.error("❌ Send Token Error:", error)
-    return NextResponse.json(
-      { error: "Transaction failed", details: error.message },
-      { status: 500 }
-    )
+    console.error("❌ Error:", error)
+    return NextResponse.json({ error: error.message }, { status: 500 })
   }
 }
