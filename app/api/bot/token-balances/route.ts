@@ -6,6 +6,7 @@ export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
 
 const BASESCAN_API_URL = "https://api.basescan.org/api"
+const WETH_BASE = "0x4200000000000000000000000000000000000006"
 
 const ERC20_ABI = [
   { inputs: [{ name: "_owner", type: "address" }], name: "balanceOf", outputs: [{ name: "balance", type: "uint256" }], type: "function" },
@@ -19,91 +20,77 @@ const publicClient = createPublicClient({
   transport: http(process.env.NEXT_PUBLIC_BASE_RPC_URL),
 })
 
-async function fetchTokenListFromBaseScan(address: string): Promise<string[]> {
+async function fetchTokenList(address: string): Promise<string[]> {
   try {
-    const apiKey = process.env.BASESCAN_API_KEY || ""
-    // Penting: Gunakan action=tokentx untuk mendapatkan daftar ERC20 yang pernah berinteraksi
+    const apiKey = process.env.BASESCAN_API_KEY
+    if (!apiKey) return []
     const url = `${BASESCAN_API_URL}?module=account&action=tokentx&address=${address}&startblock=0&endblock=99999999&sort=desc&apikey=${apiKey}`
-    
     const response = await fetch(url, { next: { revalidate: 0 } })
     const data = await response.json()
-    
     if (data.status !== "1" || !Array.isArray(data.result)) return []
-    
-    // Ambil unique contract addresses saja
-    return Array.from(new Set(data.result.map((tx: any) => tx.contractAddress.toLowerCase())))
-  } catch (error) {
+    return data.result.map((tx: any) => tx.contractAddress.toLowerCase())
+  } catch {
     return []
-  }
-}
-
-async function fetchTokenDetails(tokenAddress: string, walletAddresses: string[]): Promise<any | null> {
-  try {
-    const address = tokenAddress as Address;
-
-    // Gunakan multicall jika RPC mendukung, atau Promise.all untuk efisiensi
-    const [symbol, name, decimals] = await Promise.all([
-      publicClient.readContract({ address, abi: ERC20_ABI, functionName: "symbol" }).catch(() => "???"),
-      publicClient.readContract({ address, abi: ERC20_ABI, functionName: "name" }).catch(() => "Unknown"),
-      publicClient.readContract({ address, abi: ERC20_ABI, functionName: "decimals" }).catch(() => 18),
-    ])
-
-    let totalBalance = BigInt(0)
-    for (const wallet of walletAddresses) {
-      const bal = await publicClient.readContract({
-        address,
-        abi: ERC20_ABI,
-        functionName: "balanceOf",
-        args: [wallet as Address],
-      }).catch(() => BigInt(0))
-      totalBalance += bal
-    }
-
-    if (totalBalance === BigInt(0)) return null
-
-    const formatted = formatUnits(totalBalance, Number(decimals))
-
-    return {
-      contractAddress: tokenAddress,
-      address: tokenAddress,
-      symbol,
-      name,
-      decimals: Number(decimals),
-      balance: totalBalance.toString(),
-      balanceFormatted: formatted
-    }
-  } catch (e) {
-    return null
   }
 }
 
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json()
-    const { botWalletAddress, botWallets } = body
-    const walletAddresses = botWalletAddress ? [botWalletAddress] : (botWallets || [])
-
-    if (walletAddresses.length === 0) {
-      return NextResponse.json({ error: "No wallet address provided" }, { status: 400 })
+    const { botWallets } = await request.json()
+    if (!botWallets || botWallets.length === 0) {
+      return NextResponse.json({ tokens: [] })
     }
 
-    // 1. Dapatkan semua kontrak token dari BaseScan
-    const tokenDiscoveryPromises = walletAddresses.map(addr => fetchTokenListFromBaseScan(addr))
-    const results = await Promise.all(tokenDiscoveryPromises)
-    const uniqueTokens = Array.from(new Set(results.flat()))
+    // 1. Discovery: Cari token dari history + sertakan WETH untuk dicek
+    const discoveryResults = await Promise.all(botWallets.map((addr: string) => fetchTokenList(addr)))
+    const uniqueTokens = Array.from(new Set([...discoveryResults.flat(), WETH_BASE.toLowerCase()]))
 
-    // 2. Ambil detail saldo secara paralel
-    const detailsPromises = uniqueTokens.map(token => fetchTokenDetails(token, walletAddresses))
-    const tokens = (await Promise.all(detailsPromises)).filter(t => t !== null)
+    const tokenDetails = await Promise.all(
+      uniqueTokens.map(async (tokenAddr) => {
+        const address = tokenAddr as Address
+        try {
+          // Cek saldo di 5 wallet secara paralel
+          const balances = await Promise.all(
+            botWallets.map((wallet: string) =>
+              publicClient.readContract({
+                address,
+                abi: ERC20_ABI,
+                functionName: "balanceOf",
+                args: [wallet as Address],
+              }).catch(() => BigInt(0))
+            )
+          )
 
-    // 3. Sortir (Saldo terbesar di atas)
-    tokens.sort((a, b) => parseFloat(b.balanceFormatted) - parseFloat(a.balanceFormatted))
+          const totalBalance = balances.reduce((acc, curr) => acc + curr, BigInt(0))
+          if (totalBalance === BigInt(0)) return null
 
-    return NextResponse.json({
-      success: true,
-      tokens,
-      count: tokens.length
-    })
+          const [symbol, name, decimals] = await Promise.all([
+            publicClient.readContract({ address, abi: ERC20_ABI, functionName: "symbol" }).catch(() => "???"),
+            publicClient.readContract({ address, abi: ERC20_ABI, functionName: "name" }).catch(() => "Unknown"),
+            publicClient.readContract({ address, abi: ERC20_ABI, functionName: "decimals" }).catch(() => 18),
+          ])
+
+          return {
+            address: tokenAddr,
+            symbol,
+            name,
+            decimals: Number(decimals),
+            balanceWei: totalBalance.toString(),
+            balanceFormatted: formatUnits(totalBalance, Number(decimals)),
+            // Simpan rincian saldo per wallet untuk memudahkan looping saat kirim
+            walletBalances: botWallets.map((w: string, i: number) => ({
+              address: w,
+              balance: balances[i].toString()
+            }))
+          }
+        } catch {
+          return null
+        }
+      })
+    )
+
+    const filteredTokens = tokenDetails.filter((t) => t !== null)
+    return NextResponse.json({ success: true, tokens: filteredTokens })
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 })
   }
