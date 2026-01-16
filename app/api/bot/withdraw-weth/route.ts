@@ -39,10 +39,7 @@ export async function POST(request: NextRequest) {
           .ilike("smart_account_address", address)
           .single()
 
-        if (!bot) {
-          results.push({ address, status: "failed", error: "Wallet not found in DB" })
-          continue
-        }
+        if (!bot) continue
 
         const ownerAccount = await cdp.evm.getAccount({ address: bot.owner_address as Address })
         const smartAccount = await cdp.evm.getSmartAccount({ 
@@ -50,6 +47,7 @@ export async function POST(request: NextRequest) {
           address: address as Address 
         })
 
+        // 1. Cek Saldo Token On-Chain
         const sellBalanceWei = await publicClient.readContract({
           address: tokenAddress as Address,
           abi: WETH_ABI,
@@ -58,7 +56,7 @@ export async function POST(request: NextRequest) {
         })
 
         if (sellBalanceWei > 0n) {
-          // --- FIX 1: Menggunakan WHATWG URL API (Menghindari Deprecation Warning) ---
+          // --- PERBAIKAN: Menggunakan standar URL modern & Header V2 ---
           const url = new URL("https://api.0x.org/gasless/quote")
           url.searchParams.append("chainId", "8453")
           url.searchParams.append("sellToken", tokenAddress.toLowerCase())
@@ -69,11 +67,12 @@ export async function POST(request: NextRequest) {
           const quoteRes = await fetch(url.toString(), {
             headers: { 
               "0x-api-key": process.env.ZEROX_API_KEY || "",
-              "Accept": "application/json" // Memaksa respons JSON
+              "0x-version": "v2", // Wajib untuk /gasless
+              "Accept": "application/json"
             }
           })
           
-          // --- FIX 2: Penanganan Error Non-JSON (Menghindari "Unexpected token U") ---
+          // --- PERBAIKAN: Penanganan Error Non-JSON ---
           const contentType = quoteRes.headers.get("content-type")
           if (!quoteRes.ok || !contentType || !contentType.includes("application/json")) {
             const errorText = await quoteRes.text()
@@ -100,6 +99,7 @@ export async function POST(request: NextRequest) {
             }
           ]
 
+          // Eksekusi Batch Swap via CDP Sponsored
           const swapOp = await (smartAccount as any).sendUserOperation({
             network: "base",
             calls: calls,
@@ -108,7 +108,7 @@ export async function POST(request: NextRequest) {
           await swapOp.wait()
         }
 
-        // --- SINKRONISASI SALDO: Mengambil TOTAL WETH (Hasil swap + saldo lama) ---
+        // 2. Ambil Total WETH Akhir (Hasil swap + saldo sisa lama)
         const finalWethBalance = await publicClient.readContract({
           address: WETH_ADDRESS,
           abi: WETH_ABI,
@@ -116,6 +116,7 @@ export async function POST(request: NextRequest) {
           args: [address as Address],
         })
 
+        // 3. Kirim SEMUA WETH ke Recipient
         if (finalWethBalance > 0n) {
           const transferData = encodeFunctionData({
             abi: WETH_ABI,
@@ -131,7 +132,7 @@ export async function POST(request: NextRequest) {
           await transferOp.wait()
         }
 
-        // Sinkronisasi Database (Reset ke 0)
+        // 4. Sinkronisasi Database
         await supabase.from("bot_wallet_credits").update({ weth_balance_wei: "0" }).eq("bot_wallet_address", address.toLowerCase())
         await supabase.from("wallets_data").update({ last_balance_update: new Date().toISOString() }).eq("smart_account_address", address)
 
