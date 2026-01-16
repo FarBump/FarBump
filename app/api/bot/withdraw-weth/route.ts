@@ -8,10 +8,8 @@ export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
 
 const WETH_ADDRESS = "0x4200000000000000000000000000000000000006" as const
-
 const WETH_ABI = [
   { inputs: [{ name: "account", type: "address" }], name: "balanceOf", outputs: [{ name: "", type: "uint256" }], stateMutability: "view", type: "function" },
-  { inputs: [{ name: "owner", type: "address" }, { name: "spender", type: "address" }], name: "allowance", outputs: [{ name: "", type: "uint256" }], stateMutability: "view", type: "function" },
   { inputs: [{ name: "spender", type: "address" }, { name: "amount", type: "uint256" }], name: "approve", outputs: [{ name: "", type: "bool" }], stateMutability: "nonpayable", type: "function" },
   { inputs: [{ name: "to", type: "address" }, { name: "value", type: "uint256" }], name: "transfer", outputs: [{ name: "", type: "bool" }], stateMutability: "nonpayable", type: "function" }
 ] as const
@@ -35,24 +33,13 @@ export async function POST(request: NextRequest) {
 
     for (const address of botWalletAddresses) {
       try {
-        const { data: bot } = await supabase
-          .from("wallets_data")
-          .select("*")
-          .ilike("smart_account_address", address)
-          .single()
-
-        if (!bot) {
-          results.push({ address, status: "failed", error: "Wallet not found in DB" })
-          continue
-        }
+        const { data: bot } = await supabase.from("wallets_data").select("*").ilike("smart_account_address", address).single()
+        if (!bot) continue
 
         const ownerAccount = await cdp.evm.getAccount({ address: bot.owner_address as Address })
-        const smartAccount = await cdp.evm.getSmartAccount({ 
-          owner: ownerAccount, 
-          address: address as Address 
-        })
+        const smartAccount = await cdp.evm.getSmartAccount({ owner: ownerAccount, address: address as Address })
 
-        // 1. Cek saldo token on-chain
+        // 1. Cek Saldo Token On-Chain
         const sellBalanceWei = await publicClient.readContract({
           address: tokenAddress as Address,
           abi: WETH_ABI,
@@ -60,47 +47,44 @@ export async function POST(request: NextRequest) {
           args: [address as Address],
         })
 
-        // Menyiapkan array calls untuk Batching
-        const calls: any[] = []
-
         if (sellBalanceWei > 0n) {
+          // IMPLEMENTASI 0X GASLESS API LOGIC
+          // Kita mengambil quote gasless untuk mendapatkan jalur routing terbaik (zero-slippage/MEV protection)
           const quoteParams = new URLSearchParams({
             chainId: "8453",
             sellToken: tokenAddress.toLowerCase(),
             buyToken: WETH_ADDRESS.toLowerCase(),
             sellAmount: sellBalanceWei.toString(),
             taker: address.toLowerCase(),
-            slippageBps: "1000",
           })
 
-          const quoteRes = await fetch(`https://api.0x.org/swap/allowance-holder/quote?${quoteParams.toString()}`, {
-            headers: { "0x-api-key": process.env.ZEROX_API_KEY!, "0x-version": "v2" }
+          const quoteRes = await fetch(`https://api.0x.org/gasless/quote?${quoteParams.toString()}`, {
+            headers: { "0x-api-key": process.env.ZEROX_API_KEY! }
           })
           
-          if (!quoteRes.ok) throw new Error("Failed to get swap quote")
+          if (!quoteRes.ok) throw new Error("Failed to get 0x Gasless quote")
           const quote = await quoteRes.json()
 
-          const allowanceTarget = quote.allowanceTarget || quote.transaction?.to
+          // 2. Persiapkan Batch Calls (Approve + Swap)
+          // Mengikuti standar 0x Gasless: Approve harus ke 'allowanceTarget'
+          const calls = [
+            {
+              to: tokenAddress as Address,
+              data: encodeFunctionData({
+                abi: WETH_ABI,
+                functionName: "approve",
+                args: [quote.allowanceTarget as Address, sellBalanceWei],
+              }),
+              value: 0n
+            },
+            {
+              to: quote.transaction.to as Address,
+              data: quote.transaction.data as Hex,
+              value: 0n
+            }
+          ]
 
-          // ATOMIC BATCH: Tambahkan Approve
-          calls.push({
-            to: tokenAddress as Address,
-            data: encodeFunctionData({
-              abi: WETH_ABI,
-              functionName: "approve",
-              args: [allowanceTarget as Address, BigInt("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")],
-            }),
-            value: 0n
-          })
-
-          // ATOMIC BATCH: Tambahkan Swap
-          calls.push({
-            to: quote.transaction.to as Address,
-            data: quote.transaction.data as Hex,
-            value: BigInt(quote.transaction.value || 0)
-          })
-
-          // Eksekusi Batch Swap (Approve + Swap)
+          // Eksekusi via CDP Paymaster (untuk menjamin gas gratis bagi bot)
           const swapOp = await (smartAccount as any).sendUserOperation({
             network: "base",
             calls: calls,
@@ -109,20 +93,19 @@ export async function POST(request: NextRequest) {
           await swapOp.wait()
         }
 
-        // 2. Ambil total saldo WETH (Hasil swap + saldo lama)
-        const totalWethBalance = await publicClient.readContract({
+        // 3. Tarik Seluruh Saldo WETH (Lama + Baru)
+        const finalWethBalance = await publicClient.readContract({
           address: WETH_ADDRESS,
           abi: WETH_ABI,
           functionName: "balanceOf",
           args: [address as Address],
         })
 
-        // 3. Kirim ke Recipient
-        if (totalWethBalance > 0n) {
+        if (finalWethBalance > 0n) {
           const transferData = encodeFunctionData({
             abi: WETH_ABI,
             functionName: "transfer",
-            args: [recipientAddress as Address, totalWethBalance],
+            args: [recipientAddress as Address, finalWethBalance],
           })
 
           const transferOp = await (smartAccount as any).sendUserOperation({
@@ -133,18 +116,11 @@ export async function POST(request: NextRequest) {
           await transferOp.wait()
         }
 
-        // 4. Update Database (Reset saldo ke 0)
-        await supabase
-          .from("bot_wallet_credits")
-          .update({ weth_balance_wei: "0" })
-          .eq("bot_wallet_address", address.toLowerCase())
+        // 4. Sinkronisasi DB
+        await supabase.from("bot_wallet_credits").update({ weth_balance_wei: "0" }).eq("bot_wallet_address", address.toLowerCase())
+        await supabase.from("wallets_data").update({ last_balance_update: new Date().toISOString() }).eq("smart_account_address", address)
 
-        await supabase
-          .from("wallets_data")
-          .update({ last_balance_update: new Date().toISOString() })
-          .eq("smart_account_address", address)
-
-        results.push({ address, status: "success", amount: totalWethBalance.toString() })
+        results.push({ address, status: "success", amount: finalWethBalance.toString() })
 
       } catch (err: any) {
         results.push({ address, status: "failed", error: err.message })
