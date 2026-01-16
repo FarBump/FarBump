@@ -47,7 +47,7 @@ export async function POST(request: NextRequest) {
           address: address as Address 
         })
 
-        // 1. Cek Saldo Token On-Chain
+        // 1. Cek Saldo Token
         const sellBalanceWei = await publicClient.readContract({
           address: tokenAddress as Address,
           abi: WETH_ABI,
@@ -56,7 +56,7 @@ export async function POST(request: NextRequest) {
         })
 
         if (sellBalanceWei > 0n) {
-          // --- PERBAIKAN: Menggunakan standar URL modern & Header V2 ---
+          // Request quote dengan header v2 sesuai saran 0x AI
           const url = new URL("https://api.0x.org/gasless/quote")
           url.searchParams.append("chainId", "8453")
           url.searchParams.append("sellToken", tokenAddress.toLowerCase())
@@ -67,39 +67,44 @@ export async function POST(request: NextRequest) {
           const quoteRes = await fetch(url.toString(), {
             headers: { 
               "0x-api-key": process.env.ZEROX_API_KEY || "",
-              "0x-version": "v2", // Wajib untuk /gasless
+              "0x-version": "v2", 
               "Accept": "application/json"
             }
           })
           
-          // --- PERBAIKAN: Penanganan Error Non-JSON ---
-          const contentType = quoteRes.headers.get("content-type")
-          if (!quoteRes.ok || !contentType || !contentType.includes("application/json")) {
+          if (!quoteRes.ok) {
             const errorText = await quoteRes.text()
             throw new Error(`0x API Error (${quoteRes.status}): ${errorText}`)
           }
           
           const quote = await quoteRes.json()
-          const allowanceTarget = quote.allowanceTarget as Address
 
-          const calls = [
-            {
-              to: tokenAddress as Address,
-              data: encodeFunctionData({
-                abi: WETH_ABI,
-                functionName: "approve",
-                args: [allowanceTarget, sellBalanceWei],
-              }),
-              value: 0n
-            },
-            {
-              to: quote.transaction.to as Address,
-              data: quote.transaction.data as Hex,
-              value: BigInt(quote.transaction.value || 0)
-            }
-          ]
+          // 2. Tentukan Spender (Allowance Target) dari 'issues' sesuai saran 0x AI
+          const approvalTarget = quote.issues?.allowance?.spender || quote.allowanceTarget as Address
 
-          // Eksekusi Batch Swap via CDP Sponsored
+          const calls: any[] = []
+
+          // Tambahkan Approve Call ke dalam Batch
+          calls.push({
+            to: tokenAddress as Address,
+            data: encodeFunctionData({
+              abi: WETH_ABI,
+              functionName: "approve",
+              args: [approvalTarget, sellBalanceWei],
+            }),
+            value: 0n
+          })
+
+          // Tambahkan Swap Call
+          // Catatan: Karena kita menggunakan Smart Wallet dengan Paymaster (isSponsored), 
+          // kita tidak perlu melakukan append signature EIP-712 manual jika 0x menyediakan 'transaction' object.
+          // Smart Wallet akan melakukan otorisasi transaksi secara on-chain.
+          calls.push({
+            to: quote.transaction.to as Address,
+            data: quote.transaction.data as Hex,
+            value: BigInt(quote.transaction.value || 0)
+          })
+
           const swapOp = await (smartAccount as any).sendUserOperation({
             network: "base",
             calls: calls,
@@ -108,7 +113,7 @@ export async function POST(request: NextRequest) {
           await swapOp.wait()
         }
 
-        // 2. Ambil Total WETH Akhir (Hasil swap + saldo sisa lama)
+        // 3. Ambil TOTAL WETH dan Kirim ke Recipient
         const finalWethBalance = await publicClient.readContract({
           address: WETH_ADDRESS,
           abi: WETH_ABI,
@@ -116,23 +121,24 @@ export async function POST(request: NextRequest) {
           args: [address as Address],
         })
 
-        // 3. Kirim SEMUA WETH ke Recipient
         if (finalWethBalance > 0n) {
-          const transferData = encodeFunctionData({
-            abi: WETH_ABI,
-            functionName: "transfer",
-            args: [recipientAddress as Address, finalWethBalance],
-          })
-
           const transferOp = await (smartAccount as any).sendUserOperation({
             network: "base",
-            calls: [{ to: WETH_ADDRESS, data: transferData, value: 0n }],
+            calls: [{ 
+              to: WETH_ADDRESS, 
+              data: encodeFunctionData({
+                abi: WETH_ABI,
+                functionName: "transfer",
+                args: [recipientAddress as Address, finalWethBalance],
+              }), 
+              value: 0n 
+            }],
             isSponsored: true
           })
           await transferOp.wait()
         }
 
-        // 4. Sinkronisasi Database
+        // 4. Update Database
         await supabase.from("bot_wallet_credits").update({ weth_balance_wei: "0" }).eq("bot_wallet_address", address.toLowerCase())
         await supabase.from("wallets_data").update({ last_balance_update: new Date().toISOString() }).eq("smart_account_address", address)
 
