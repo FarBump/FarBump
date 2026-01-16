@@ -47,7 +47,6 @@ export async function POST(request: NextRequest) {
           address: address as Address 
         })
 
-        // 1. Cek Saldo Token
         const sellBalanceWei = await publicClient.readContract({
           address: tokenAddress as Address,
           abi: WETH_ABI,
@@ -56,7 +55,6 @@ export async function POST(request: NextRequest) {
         })
 
         if (sellBalanceWei > 0n) {
-          // Request quote dengan header v2 sesuai saran 0x AI
           const url = new URL("https://api.0x.org/gasless/quote")
           url.searchParams.append("chainId", "8453")
           url.searchParams.append("sellToken", tokenAddress.toLowerCase())
@@ -67,43 +65,45 @@ export async function POST(request: NextRequest) {
           const quoteRes = await fetch(url.toString(), {
             headers: { 
               "0x-api-key": process.env.ZEROX_API_KEY || "",
-              "0x-version": "v2", 
+              "0x-version": "v2",
               "Accept": "application/json"
             }
           })
           
           if (!quoteRes.ok) {
             const errorText = await quoteRes.text()
-            throw new Error(`0x API Error (${quoteRes.status}): ${errorText}`)
+            throw new Error(`0x API Error: ${errorText}`)
           }
           
           const quote = await quoteRes.json()
 
-          // 2. Tentukan Spender (Allowance Target) dari 'issues' sesuai saran 0x AI
-          const approvalTarget = quote.issues?.allowance?.spender || quote.allowanceTarget as Address
+          // --- LOGIKA AKSES PROPERTI V2 YANG DINAMIS ---
+          // v2 bisa mengembalikan transaction di root atau di dalam trade
+          const transaction = quote.transaction || quote.trade?.transaction;
+          const approvalTarget = quote.issues?.allowance?.spender || quote.allowanceTarget;
 
-          const calls: any[] = []
+          if (!transaction || !transaction.to) {
+            // Jika masih gagal, kita log seluruh respons untuk debugging
+            console.error("Full 0x Quote Response:", JSON.stringify(quote));
+            throw new Error("Invalid 0x response: 'transaction.to' not found. Check server logs.");
+          }
 
-          // Tambahkan Approve Call ke dalam Batch
-          calls.push({
-            to: tokenAddress as Address,
-            data: encodeFunctionData({
-              abi: WETH_ABI,
-              functionName: "approve",
-              args: [approvalTarget, sellBalanceWei],
-            }),
-            value: 0n
-          })
-
-          // Tambahkan Swap Call
-          // Catatan: Karena kita menggunakan Smart Wallet dengan Paymaster (isSponsored), 
-          // kita tidak perlu melakukan append signature EIP-712 manual jika 0x menyediakan 'transaction' object.
-          // Smart Wallet akan melakukan otorisasi transaksi secara on-chain.
-          calls.push({
-            to: quote.transaction.to as Address,
-            data: quote.transaction.data as Hex,
-            value: BigInt(quote.transaction.value || 0)
-          })
+          const calls = [
+            {
+              to: tokenAddress as Address,
+              data: encodeFunctionData({
+                abi: WETH_ABI,
+                functionName: "approve",
+                args: [approvalTarget as Address, sellBalanceWei],
+              }),
+              value: 0n
+            },
+            {
+              to: transaction.to as Address,
+              data: transaction.data as Hex,
+              value: BigInt(transaction.value || 0)
+            }
+          ]
 
           const swapOp = await (smartAccount as any).sendUserOperation({
             network: "base",
@@ -113,7 +113,7 @@ export async function POST(request: NextRequest) {
           await swapOp.wait()
         }
 
-        // 3. Ambil TOTAL WETH dan Kirim ke Recipient
+        // Sinkronisasi WETH & Transfer
         const finalWethBalance = await publicClient.readContract({
           address: WETH_ADDRESS,
           abi: WETH_ABI,
@@ -138,7 +138,6 @@ export async function POST(request: NextRequest) {
           await transferOp.wait()
         }
 
-        // 4. Update Database
         await supabase.from("bot_wallet_credits").update({ weth_balance_wei: "0" }).eq("bot_wallet_address", address.toLowerCase())
         await supabase.from("wallets_data").update({ last_balance_update: new Date().toISOString() }).eq("smart_account_address", address)
 
