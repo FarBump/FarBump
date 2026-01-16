@@ -7,47 +7,13 @@ import { CdpClient } from "@coinbase/cdp-sdk"
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
 
-// Constants
 const WETH_ADDRESS = "0x4200000000000000000000000000000000000006" as const
 
 const WETH_ABI = [
-  {
-    inputs: [{ name: "account", type: "address" }],
-    name: "balanceOf",
-    outputs: [{ name: "", type: "uint256" }],
-    stateMutability: "view",
-    type: "function",
-  },
-  {
-    inputs: [
-      { name: "owner", type: "address" },
-      { name: "spender", type: "address" },
-    ],
-    name: "allowance",
-    outputs: [{ name: "", type: "uint256" }],
-    stateMutability: "view",
-    type: "function",
-  },
-  {
-    inputs: [
-      { name: "spender", type: "address" },
-      { name: "amount", type: "uint256" },
-    ],
-    name: "approve",
-    outputs: [{ name: "", type: "bool" }],
-    stateMutability: "nonpayable",
-    type: "function",
-  },
-  {
-    inputs: [
-      { name: "to", type: "address" },
-      { name: "value", type: "uint256" },
-    ],
-    name: "transfer",
-    outputs: [{ name: "", type: "bool" }],
-    stateMutability: "nonpayable",
-    type: "function",
-  }
+  { inputs: [{ name: "account", type: "address" }], name: "balanceOf", outputs: [{ name: "", type: "uint256" }], stateMutability: "view", type: "function" },
+  { inputs: [{ name: "owner", type: "address" }, { name: "spender", type: "address" }], name: "allowance", outputs: [{ name: "", type: "uint256" }], stateMutability: "view", type: "function" },
+  { inputs: [{ name: "spender", type: "address" }, { name: "amount", type: "uint256" }], name: "approve", outputs: [{ name: "", type: "bool" }], stateMutability: "nonpayable", type: "function" },
+  { inputs: [{ name: "to", type: "address" }, { name: "value", type: "uint256" }], name: "transfer", outputs: [{ name: "", type: "bool" }], stateMutability: "nonpayable", type: "function" }
 ] as const
 
 const publicClient = createPublicClient({
@@ -69,7 +35,6 @@ export async function POST(request: NextRequest) {
 
     for (const address of botWalletAddresses) {
       try {
-        // 1. Ambil data bot dari DB
         const { data: bot } = await supabase
           .from("wallets_data")
           .select("*")
@@ -87,7 +52,7 @@ export async function POST(request: NextRequest) {
           address: address as Address 
         })
 
-        // 2. Cek saldo token yang akan di-swap secara on-chain
+        // 1. Cek saldo token on-chain
         const sellBalanceWei = await publicClient.readContract({
           address: tokenAddress as Address,
           abi: WETH_ABI,
@@ -95,30 +60,23 @@ export async function POST(request: NextRequest) {
           args: [address as Address],
         })
 
-        // Jika saldo token > 0, lakukan SWAP ke WETH
         if (sellBalanceWei > 0n) {
-          console.log(`🔄 Swapping ${sellBalanceWei.toString()} tokens for ${address}...`)
-          
           const quoteParams = new URLSearchParams({
             chainId: "8453",
             sellToken: tokenAddress.toLowerCase(),
             buyToken: WETH_ADDRESS.toLowerCase(),
             sellAmount: sellBalanceWei.toString(),
             taker: address.toLowerCase(),
-            slippageBps: "1000", // 10% untuk likuiditas tipis (Uniswap v4)
+            slippageBps: "1000",
           })
 
           const quoteRes = await fetch(`https://api.0x.org/swap/allowance-holder/quote?${quoteParams.toString()}`, {
-            headers: { 
-              "0x-api-key": process.env.ZEROX_API_KEY!, 
-              "0x-version": "v2" 
-            }
+            headers: { "0x-api-key": process.env.ZEROX_API_KEY!, "0x-version": "v2" }
           })
           
-          if (!quoteRes.ok) throw new Error("Failed to get swap quote from 0x")
+          if (!quoteRes.ok) throw new Error("Failed to get swap quote")
           const quote = await quoteRes.json()
 
-          // Approval WETH ke 0x AllowanceHolder
           const allowanceTarget = quote.allowanceTarget || quote.transaction?.to
           const currentAllowance = await publicClient.readContract({
             address: tokenAddress as Address,
@@ -127,6 +85,7 @@ export async function POST(request: NextRequest) {
             args: [address as Address, allowanceTarget as Address],
           })
 
+          // Update: Ditambahkan "network" di dalam payload sendUserOperation
           if (currentAllowance < sellBalanceWei) {
             const approveData = encodeFunctionData({
               abi: WETH_ABI,
@@ -134,14 +93,15 @@ export async function POST(request: NextRequest) {
               args: [allowanceTarget as Address, BigInt("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")],
             })
             const approveOp = await (smartAccount as any).sendUserOperation({
+              network: "base", // <--- PERBAIKAN: Network ditambahkan di sini
               calls: [{ to: tokenAddress as Address, data: approveData, value: 0n }],
               isSponsored: true
             })
             await approveOp.wait()
           }
 
-          // Eksekusi Swap via Smart Account
           const swapOp = await (smartAccount as any).sendUserOperation({
+            network: "base", // <--- PERBAIKAN: Network ditambahkan di sini
             calls: [{ 
               to: quote.transaction.to as Address, 
               data: quote.transaction.data as Hex, 
@@ -150,10 +110,9 @@ export async function POST(request: NextRequest) {
             isSponsored: true
           })
           await swapOp.wait()
-          console.log(`✅ Swap complete for ${address}`)
         }
 
-        // 3. Ambil TOTAL SALDO WETH (Hasil swap + sisa saldo WETH sebelumnya)
+        // 2. Ambil total saldo WETH
         const totalWethBalance = await publicClient.readContract({
           address: WETH_ADDRESS,
           abi: WETH_ABI,
@@ -161,9 +120,8 @@ export async function POST(request: NextRequest) {
           args: [address as Address],
         })
 
-        // 4. Kirim SEMUA WETH ke Recipient
+        // 3. Kirim ke Recipient
         if (totalWethBalance > 0n) {
-          console.log(`🚀 Sending total ${totalWethBalance.toString()} WETH to recipient...`)
           const transferData = encodeFunctionData({
             abi: WETH_ABI,
             functionName: "transfer",
@@ -171,36 +129,33 @@ export async function POST(request: NextRequest) {
           })
 
           const transferOp = await (smartAccount as any).sendUserOperation({
+            network: "base", // <--- PERBAIKAN: Network ditambahkan di sini
             calls: [{ to: WETH_ADDRESS, data: transferData, value: 0n }],
             isSponsored: true
           })
           await transferOp.wait()
         }
 
-        // 5. SINKRONISASI DATABASE (Penting agar tidak ada nilai sisa di UI)
-        // Reset saldo kredit WETH di DB menjadi 0
+        // 4. Update Database
         await supabase
           .from("bot_wallet_credits")
           .update({ weth_balance_wei: "0" })
           .eq("bot_wallet_address", address.toLowerCase())
 
-        // Update timestamp pada wallets_data
         await supabase
           .from("wallets_data")
           .update({ last_balance_update: new Date().toISOString() })
           .eq("smart_account_address", address)
 
-        results.push({ address, status: "success", amountWithdrawn: totalWethBalance.toString() })
+        results.push({ address, status: "success", amount: totalWethBalance.toString() })
 
       } catch (err: any) {
-        console.error(`❌ Error with bot ${address}:`, err.message)
         results.push({ address, status: "failed", error: err.message })
       }
     }
 
     return NextResponse.json({ success: true, details: results })
   } catch (error: any) {
-    console.error("❌ Withdraw API Error:", error)
     return NextResponse.json({ error: error.message }, { status: 500 })
   }
 }
