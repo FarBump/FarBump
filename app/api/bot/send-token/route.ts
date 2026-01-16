@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server"
-import { type Address, type Hex, createPublicClient, http, encodeFunctionData } from "viem"
+import { formatEther, parseEther, isAddress, type Address, type Hex, createPublicClient, http, encodeFunctionData } from "viem"
 import { base } from "viem/chains"
 import { createSupabaseServiceClient } from "@/lib/supabase"
 import { CdpClient } from "@coinbase/cdp-sdk"
+import "dotenv/config"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
