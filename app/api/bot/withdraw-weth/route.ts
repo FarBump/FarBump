@@ -33,11 +33,19 @@ export async function POST(request: NextRequest) {
 
     for (const address of botWalletAddresses) {
       try {
-        const { data: bot } = await supabase.from("wallets_data").select("*").ilike("smart_account_address", address).single()
+        const { data: bot } = await supabase
+          .from("wallets_data")
+          .select("*")
+          .ilike("smart_account_address", address)
+          .single()
+
         if (!bot) continue
 
         const ownerAccount = await cdp.evm.getAccount({ address: bot.owner_address as Address })
-        const smartAccount = await cdp.evm.getSmartAccount({ owner: ownerAccount, address: address as Address })
+        const smartAccount = await cdp.evm.getSmartAccount({ 
+          owner: ownerAccount, 
+          address: address as Address 
+        })
 
         // 1. Cek Saldo Token On-Chain
         const sellBalanceWei = await publicClient.readContract({
@@ -48,9 +56,8 @@ export async function POST(request: NextRequest) {
         })
 
         if (sellBalanceWei > 0n) {
-          // IMPLEMENTASI 0X GASLESS API LOGIC
-          // Kita mengambil quote gasless untuk mendapatkan jalur routing terbaik (zero-slippage/MEV protection)
-          const quoteParams = new URLSearchParams({
+          // Ambil Quote dari 0x Gasless API
+          const params = new URLSearchParams({
             chainId: "8453",
             sellToken: tokenAddress.toLowerCase(),
             buyToken: WETH_ADDRESS.toLowerCase(),
@@ -58,33 +65,40 @@ export async function POST(request: NextRequest) {
             taker: address.toLowerCase(),
           })
 
-          const quoteRes = await fetch(`https://api.0x.org/gasless/quote?${quoteParams.toString()}`, {
+          const quoteRes = await fetch(`https://api.0x.org/gasless/quote?${params.toString()}`, {
             headers: { "0x-api-key": process.env.ZEROX_API_KEY! }
           })
           
-          if (!quoteRes.ok) throw new Error("Failed to get 0x Gasless quote")
+          if (!quoteRes.ok) {
+            const err = await quoteRes.json()
+            throw new Error(`0x API Error: ${err.reason || 'Failed to get quote'}`)
+          }
+          
           const quote = await quoteRes.json()
 
-          // 2. Persiapkan Batch Calls (Approve + Swap)
-          // Mengikuti standar 0x Gasless: Approve harus ke 'allowanceTarget'
+          // --- PENYESUAIAN ALLOWANCE BERDASARKAN DOKUMENTASI ---
+          // Kita menggunakan allowanceTarget yang diberikan oleh quote secara dinamis
+          const allowanceTarget = quote.allowanceTarget as Address;
+
           const calls = [
             {
               to: tokenAddress as Address,
               data: encodeFunctionData({
                 abi: WETH_ABI,
                 functionName: "approve",
-                args: [quote.allowanceTarget as Address, sellBalanceWei],
+                // Menggunakan jumlah spesifik (sellBalanceWei) sesuai anjuran 0x untuk keamanan batch
+                args: [allowanceTarget, sellBalanceWei],
               }),
               value: 0n
             },
             {
               to: quote.transaction.to as Address,
               data: quote.transaction.data as Hex,
-              value: 0n
+              value: BigInt(quote.transaction.value || 0)
             }
           ]
 
-          // Eksekusi via CDP Paymaster (untuk menjamin gas gratis bagi bot)
+          // Eksekusi Batch Swap via CDP Sponsored
           const swapOp = await (smartAccount as any).sendUserOperation({
             network: "base",
             calls: calls,
@@ -93,7 +107,8 @@ export async function POST(request: NextRequest) {
           await swapOp.wait()
         }
 
-        // 3. Tarik Seluruh Saldo WETH (Lama + Baru)
+        // 2. Ambil Total WETH (Hasil swap + saldo sisa di wallet)
+        // Menjamin sinkronisasi saldo seperti instruksi sebelumnya
         const finalWethBalance = await publicClient.readContract({
           address: WETH_ADDRESS,
           abi: WETH_ABI,
@@ -101,6 +116,7 @@ export async function POST(request: NextRequest) {
           args: [address as Address],
         })
 
+        // 3. Kirim SEMUA WETH ke Recipient
         if (finalWethBalance > 0n) {
           const transferData = encodeFunctionData({
             abi: WETH_ABI,
@@ -116,7 +132,7 @@ export async function POST(request: NextRequest) {
           await transferOp.wait()
         }
 
-        // 4. Sinkronisasi DB
+        // 4. Sinkronisasi Database
         await supabase.from("bot_wallet_credits").update({ weth_balance_wei: "0" }).eq("bot_wallet_address", address.toLowerCase())
         await supabase.from("wallets_data").update({ last_balance_update: new Date().toISOString() }).eq("smart_account_address", address)
 
