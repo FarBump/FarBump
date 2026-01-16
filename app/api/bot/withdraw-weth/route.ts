@@ -66,7 +66,7 @@ export async function POST(request: NextRequest) {
           })
 
           const quoteRes = await fetch(`https://api.0x.org/gasless/quote?${params.toString()}`, {
-            headers: { "0x-api-key": process.env.ZEROX_API_KEY! }
+            headers: { "0x-api-key": process.env.ZEROX_API_KEY }
           })
           
           if (!quoteRes.ok) {
