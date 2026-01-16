@@ -24,47 +24,62 @@ export async function POST(request: NextRequest) {
     const body = await request.json()
     const { botWalletAddresses, tokenAddress, recipientAddress } = body
     
-    // Validasi input awal
-    if (!botWalletAddresses || !tokenAddress || !recipientAddress) {
-      return NextResponse.json({ error: "Missing required fields" }, { status: 400 })
+    // 1. Validasi Input Dasar
+    if (!botWalletAddresses || !Array.isArray(botWalletAddresses)) {
+      return NextResponse.json({ error: "botWalletAddresses must be an array" }, { status: 400 })
+    }
+
+    if (!tokenAddress || typeof tokenAddress !== 'string') {
+      return NextResponse.json({ error: "tokenAddress is required and must be a string" }, { status: 400 })
     }
 
     const supabase = createSupabaseServiceClient()
     const cdp = new CdpClient()
     const results = []
 
+    // Cache string yang sering digunakan untuk menghindari pemanggilan berulang
+    const sellTokenSafe = tokenAddress.trim().toLowerCase()
+    const buyTokenSafe = WETH_ADDRESS.toLowerCase()
+
     for (const address of botWalletAddresses) {
       try {
-        // Proteksi: Pastikan address dan tokenAddress ada sebelum toLowerCase()
-        if (!address || !tokenAddress) {
-          throw new Error("Invalid address or tokenAddress in loop");
+        // 2. Proteksi Loop: Pastikan alamat wallet ada dan valid
+        if (!address || typeof address !== 'string') {
+          results.push({ address: "invalid", status: "failed", error: "Wallet address is missing or not a string" })
+          continue
         }
+
+        const currentWalletAddr = address.trim()
+        const currentWalletLower = currentWalletAddr.toLowerCase()
 
         const { data: bot } = await supabase
           .from("wallets_data")
           .select("*")
-          .ilike("smart_account_address", address)
+          .ilike("smart_account_address", currentWalletAddr)
           .single()
 
-        if (!bot) continue
+        if (!bot) {
+          results.push({ address: currentWalletAddr, status: "failed", error: "Wallet not found in database" })
+          continue
+        }
 
         const ownerAccount = await cdp.evm.getAccount({ address: bot.owner_address as Address })
-        const smartAccount = await cdp.evm.getSmartAccount({ owner: ownerAccount, address: address as Address })
+        const smartAccount = await cdp.evm.getSmartAccount({ owner: ownerAccount, address: currentWalletAddr as Address })
 
         const sellBalanceWei = await publicClient.readContract({
-          address: tokenAddress as Address,
+          address: sellTokenSafe as Address,
           abi: WETH_ABI,
           functionName: "balanceOf",
-          args: [address as Address],
+          args: [currentWalletAddr as Address],
         })
 
         if (sellBalanceWei > 0n) {
           const url = new URL("https://api.0x.org/gasless/quote")
           url.searchParams.append("chainId", "8453")
-          url.searchParams.append("sellToken", String(tokenAddress).toLowerCase())
-          url.searchParams.append("buyToken", WETH_ADDRESS.toLowerCase())
+          url.searchParams.append("sellToken", sellTokenSafe)
+          url.searchParams.append("buyToken", buyTokenSafe)
           url.searchParams.append("sellAmount", sellBalanceWei.toString())
-          url.searchParams.append("taker", String(address).toLowerCase())
+          url.searchParams.append("taker", currentWalletLower)
 
           const quoteRes = await fetch(url.toString(), {
             headers: { 
@@ -73,6 +88,11 @@ export async function POST(request: NextRequest) {
             }
           })
           
+          if (!quoteRes.ok) {
+            const errData = await quoteRes.text()
+            throw new Error(`0x API Error: ${errData}`)
+          }
+
           const quote = await quoteRes.json()
 
           const spender = quote.issues?.allowance?.spender || quote.allowanceTarget
@@ -90,7 +110,7 @@ export async function POST(request: NextRequest) {
 
           const calls = [
             {
-              to: tokenAddress as Address,
+              to: sellTokenSafe as Address,
               data: encodeFunctionData({
                 abi: WETH_ABI,
                 functionName: "approve",
@@ -111,6 +131,9 @@ export async function POST(request: NextRequest) {
             isSponsored: true
           })
           await swapOp.wait()
+          
+          // Beri waktu sejenak agar state blockchain terupdate di RPC
+          await new Promise(r => setTimeout(r, 1000))
         }
 
         // Withdraw WETH sisa
@@ -118,7 +141,7 @@ export async function POST(request: NextRequest) {
           address: WETH_ADDRESS,
           abi: WETH_ABI,
           functionName: "balanceOf",
-          args: [address as Address],
+          args: [currentWalletAddr as Address],
         })
 
         if (finalBalance > 0n) {
@@ -138,11 +161,11 @@ export async function POST(request: NextRequest) {
           await transferOp.wait()
         }
 
-        await supabase.from("bot_wallet_credits").update({ weth_balance_wei: "0" }).eq("bot_wallet_address", String(address).toLowerCase())
-        results.push({ address, status: "success" })
+        await supabase.from("bot_wallet_credits").update({ weth_balance_wei: "0" }).eq("bot_wallet_address", currentWalletLower)
+        results.push({ address: currentWalletAddr, status: "success" })
 
       } catch (err: any) {
-        results.push({ address, status: "failed", error: err.message })
+        results.push({ address: address || "unknown", status: "failed", error: err.message })
       }
     }
     return NextResponse.json({ success: true, details: results })
