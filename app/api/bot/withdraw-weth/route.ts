@@ -39,7 +39,10 @@ export async function POST(request: NextRequest) {
           .ilike("smart_account_address", address)
           .single()
 
-        if (!bot) continue
+        if (!bot) {
+          results.push({ address, status: "failed", error: "Wallet not found in DB" })
+          continue
+        }
 
         const ownerAccount = await cdp.evm.getAccount({ address: bot.owner_address as Address })
         const smartAccount = await cdp.evm.getSmartAccount({ 
@@ -47,7 +50,6 @@ export async function POST(request: NextRequest) {
           address: address as Address 
         })
 
-        // 1. Cek Saldo Token On-Chain
         const sellBalanceWei = await publicClient.readContract({
           address: tokenAddress as Address,
           abi: WETH_ABI,
@@ -56,29 +58,30 @@ export async function POST(request: NextRequest) {
         })
 
         if (sellBalanceWei > 0n) {
-          // Ambil Quote dari 0x Gasless API
-          const params = new URLSearchParams({
-            chainId: "8453",
-            sellToken: tokenAddress.toLowerCase(),
-            buyToken: WETH_ADDRESS.toLowerCase(),
-            sellAmount: sellBalanceWei.toString(),
-            taker: address.toLowerCase(),
-          })
+          // --- FIX 1: Menggunakan WHATWG URL API (Menghindari Deprecation Warning) ---
+          const url = new URL("https://api.0x.org/gasless/quote")
+          url.searchParams.append("chainId", "8453")
+          url.searchParams.append("sellToken", tokenAddress.toLowerCase())
+          url.searchParams.append("buyToken", WETH_ADDRESS.toLowerCase())
+          url.searchParams.append("sellAmount", sellBalanceWei.toString())
+          url.searchParams.append("taker", address.toLowerCase())
 
-          const quoteRes = await fetch(`https://api.0x.org/gasless/quote?${params.toString()}`, {
-            headers: { "0x-api-key": process.env.ZEROX_API_KEY }
+          const quoteRes = await fetch(url.toString(), {
+            headers: { 
+              "0x-api-key": process.env.ZEROX_API_KEY || "",
+              "Accept": "application/json" // Memaksa respons JSON
+            }
           })
           
-          if (!quoteRes.ok) {
-            const err = await quoteRes.json()
-            throw new Error(`0x API Error: ${err.reason || 'Failed to get quote'}`)
+          // --- FIX 2: Penanganan Error Non-JSON (Menghindari "Unexpected token U") ---
+          const contentType = quoteRes.headers.get("content-type")
+          if (!quoteRes.ok || !contentType || !contentType.includes("application/json")) {
+            const errorText = await quoteRes.text()
+            throw new Error(`0x API Error (${quoteRes.status}): ${errorText}`)
           }
           
           const quote = await quoteRes.json()
-
-          // --- PENYESUAIAN ALLOWANCE BERDASARKAN DOKUMENTASI ---
-          // Kita menggunakan allowanceTarget yang diberikan oleh quote secara dinamis
-          const allowanceTarget = quote.allowanceTarget as Address;
+          const allowanceTarget = quote.allowanceTarget as Address
 
           const calls = [
             {
@@ -86,7 +89,6 @@ export async function POST(request: NextRequest) {
               data: encodeFunctionData({
                 abi: WETH_ABI,
                 functionName: "approve",
-                // Menggunakan jumlah spesifik (sellBalanceWei) sesuai anjuran 0x untuk keamanan batch
                 args: [allowanceTarget, sellBalanceWei],
               }),
               value: 0n
@@ -98,7 +100,6 @@ export async function POST(request: NextRequest) {
             }
           ]
 
-          // Eksekusi Batch Swap via CDP Sponsored
           const swapOp = await (smartAccount as any).sendUserOperation({
             network: "base",
             calls: calls,
@@ -107,8 +108,7 @@ export async function POST(request: NextRequest) {
           await swapOp.wait()
         }
 
-        // 2. Ambil Total WETH (Hasil swap + saldo sisa di wallet)
-        // Menjamin sinkronisasi saldo seperti instruksi sebelumnya
+        // --- SINKRONISASI SALDO: Mengambil TOTAL WETH (Hasil swap + saldo lama) ---
         const finalWethBalance = await publicClient.readContract({
           address: WETH_ADDRESS,
           abi: WETH_ABI,
@@ -116,7 +116,6 @@ export async function POST(request: NextRequest) {
           args: [address as Address],
         })
 
-        // 3. Kirim SEMUA WETH ke Recipient
         if (finalWethBalance > 0n) {
           const transferData = encodeFunctionData({
             abi: WETH_ABI,
@@ -132,7 +131,7 @@ export async function POST(request: NextRequest) {
           await transferOp.wait()
         }
 
-        // 4. Sinkronisasi Database
+        // Sinkronisasi Database (Reset ke 0)
         await supabase.from("bot_wallet_credits").update({ weth_balance_wei: "0" }).eq("bot_wallet_address", address.toLowerCase())
         await supabase.from("wallets_data").update({ last_balance_update: new Date().toISOString() }).eq("smart_account_address", address)
 
