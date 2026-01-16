@@ -22,30 +22,17 @@ const publicClient = createPublicClient({
 export async function POST(request: NextRequest) {
   try {
     const { botWalletAddresses, tokenAddress, recipientAddress } = await request.json()
-    
-    if (!botWalletAddresses || !tokenAddress || !recipientAddress) {
-      return NextResponse.json({ error: "Missing required fields" }, { status: 400 })
-    }
-
     const supabase = createSupabaseServiceClient()
     const cdp = new CdpClient()
     const results = []
 
     for (const address of botWalletAddresses) {
       try {
-        const { data: bot } = await supabase
-          .from("wallets_data")
-          .select("*")
-          .ilike("smart_account_address", address)
-          .single()
-
+        const { data: bot } = await supabase.from("wallets_data").select("*").ilike("smart_account_address", address).single()
         if (!bot) continue
 
         const ownerAccount = await cdp.evm.getAccount({ address: bot.owner_address as Address })
-        const smartAccount = await cdp.evm.getSmartAccount({ 
-          owner: ownerAccount, 
-          address: address as Address 
-        })
+        const smartAccount = await cdp.evm.getSmartAccount({ owner: ownerAccount, address: address as Address })
 
         const sellBalanceWei = await publicClient.readContract({
           address: tokenAddress as Address,
@@ -64,29 +51,27 @@ export async function POST(request: NextRequest) {
 
           const quoteRes = await fetch(url.toString(), {
             headers: { 
-              "0x-api-key": process.env.ZEROX_API_KEY || "",
-              "0x-version": "v2",
-              "Accept": "application/json"
+              "0x-api-key": process.env.ZEROX_API_KEY || "", 
+              "0x-version": "v2" 
             }
           })
           
-          if (!quoteRes.ok) {
-            const errorText = await quoteRes.text()
-            throw new Error(`0x API Error: ${errorText}`)
-          }
-          
           const quote = await quoteRes.json()
 
-          // --- LOGIKA AKSES PROPERTI V2 YANG DINAMIS ---
-          // v2 bisa mengembalikan transaction di root atau di dalam trade
-          const transaction = quote.transaction || quote.trade?.transaction;
-          const approvalTarget = quote.issues?.allowance?.spender || quote.allowanceTarget;
+          // 1. Ambil Spender (Permit2)
+          const spender = quote.issues?.allowance?.spender || quote.allowanceTarget
 
-          if (!transaction || !transaction.to) {
-            // Jika masih gagal, kita log seluruh respons untuk debugging
-            console.error("Full 0x Quote Response:", JSON.stringify(quote));
-            throw new Error("Invalid 0x response: 'transaction.to' not found. Check server logs.");
-          }
+          // 2. Buat Signature untuk Permit2 (EIP-712)
+          // Berdasarkan log Anda, data ada di quote.trade.eip712
+          const eip712Data = quote.trade?.eip712
+          if (!eip712Data) throw new Error("No EIP712 data found in quote")
+
+          const signature = await (smartAccount as any).signTypedData(eip712Data)
+
+          // 3. Gabungkan Signature ke Data Transaksi (Mekanisme Settler 0x)
+          // Format Settler: [Original Data] + [Signature Length (32 bytes)] + [Signature]
+          const sigLengthHex = (signature.length / 2 - 1).toString(16).padStart(64, '0')
+          const finalData = (quote.trade.transaction?.data || quote.transaction?.data) + sigLengthHex + signature.replace('0x', '')
 
           const calls = [
             {
@@ -94,44 +79,40 @@ export async function POST(request: NextRequest) {
               data: encodeFunctionData({
                 abi: WETH_ABI,
                 functionName: "approve",
-                args: [approvalTarget as Address, sellBalanceWei],
+                args: [spender as Address, sellBalanceWei],
               }),
               value: 0n
             },
             {
-              to: transaction.to as Address,
-              data: transaction.data as Hex,
-              value: BigInt(transaction.value || 0)
+              to: quote.target as Address, // Alamat target Settler dari log
+              data: finalData as Hex,
+              value: 0n
             }
           ]
 
           const swapOp = await (smartAccount as any).sendUserOperation({
             network: "base",
-            calls: calls,
+            calls,
             isSponsored: true
           })
           await swapOp.wait()
         }
 
-        // Sinkronisasi WETH & Transfer
-        const finalWethBalance = await publicClient.readContract({
+        // --- Proses Withdraw WETH Akhir ---
+        const finalBalance = await publicClient.readContract({
           address: WETH_ADDRESS,
           abi: WETH_ABI,
           functionName: "balanceOf",
           args: [address as Address],
         })
 
-        if (finalWethBalance > 0n) {
+        if (finalBalance > 0n) {
           const transferOp = await (smartAccount as any).sendUserOperation({
             network: "base",
-            calls: [{ 
-              to: WETH_ADDRESS, 
-              data: encodeFunctionData({
-                abi: WETH_ABI,
-                functionName: "transfer",
-                args: [recipientAddress as Address, finalWethBalance],
-              }), 
-              value: 0n 
+            calls: [{
+              to: WETH_ADDRESS,
+              data: encodeFunctionData({ abi: WETH_ABI, functionName: "transfer", args: [recipientAddress as Address, finalBalance] }),
+              value: 0n
             }],
             isSponsored: true
           })
@@ -139,15 +120,12 @@ export async function POST(request: NextRequest) {
         }
 
         await supabase.from("bot_wallet_credits").update({ weth_balance_wei: "0" }).eq("bot_wallet_address", address.toLowerCase())
-        await supabase.from("wallets_data").update({ last_balance_update: new Date().toISOString() }).eq("smart_account_address", address)
-
-        results.push({ address, status: "success", amount: finalWethBalance.toString() })
+        results.push({ address, status: "success" })
 
       } catch (err: any) {
         results.push({ address, status: "failed", error: err.message })
       }
     }
-
     return NextResponse.json({ success: true, details: results })
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 })
