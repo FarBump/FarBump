@@ -60,6 +60,9 @@ export async function POST(request: NextRequest) {
           args: [address as Address],
         })
 
+        // Menyiapkan array calls untuk Batching
+        const calls: any[] = []
+
         if (sellBalanceWei > 0n) {
           const quoteParams = new URLSearchParams({
             chainId: "8453",
@@ -78,41 +81,35 @@ export async function POST(request: NextRequest) {
           const quote = await quoteRes.json()
 
           const allowanceTarget = quote.allowanceTarget || quote.transaction?.to
-          const currentAllowance = await publicClient.readContract({
-            address: tokenAddress as Address,
-            abi: WETH_ABI,
-            functionName: "allowance",
-            args: [address as Address, allowanceTarget as Address],
-          })
 
-          // Update: Ditambahkan "network" di dalam payload sendUserOperation
-          if (currentAllowance < sellBalanceWei) {
-            const approveData = encodeFunctionData({
+          // ATOMIC BATCH: Tambahkan Approve
+          calls.push({
+            to: tokenAddress as Address,
+            data: encodeFunctionData({
               abi: WETH_ABI,
               functionName: "approve",
               args: [allowanceTarget as Address, BigInt("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")],
-            })
-            const approveOp = await (smartAccount as any).sendUserOperation({
-              network: "base", // <--- PERBAIKAN: Network ditambahkan di sini
-              calls: [{ to: tokenAddress as Address, data: approveData, value: 0n }],
-              isSponsored: true
-            })
-            await approveOp.wait()
-          }
+            }),
+            value: 0n
+          })
 
+          // ATOMIC BATCH: Tambahkan Swap
+          calls.push({
+            to: quote.transaction.to as Address,
+            data: quote.transaction.data as Hex,
+            value: BigInt(quote.transaction.value || 0)
+          })
+
+          // Eksekusi Batch Swap (Approve + Swap)
           const swapOp = await (smartAccount as any).sendUserOperation({
-            network: "base", // <--- PERBAIKAN: Network ditambahkan di sini
-            calls: [{ 
-              to: quote.transaction.to as Address, 
-              data: quote.transaction.data as Hex, 
-              value: BigInt(quote.transaction.value || 0) 
-            }],
+            network: "base",
+            calls: calls,
             isSponsored: true
           })
           await swapOp.wait()
         }
 
-        // 2. Ambil total saldo WETH
+        // 2. Ambil total saldo WETH (Hasil swap + saldo lama)
         const totalWethBalance = await publicClient.readContract({
           address: WETH_ADDRESS,
           abi: WETH_ABI,
@@ -129,14 +126,14 @@ export async function POST(request: NextRequest) {
           })
 
           const transferOp = await (smartAccount as any).sendUserOperation({
-            network: "base", // <--- PERBAIKAN: Network ditambahkan di sini
+            network: "base",
             calls: [{ to: WETH_ADDRESS, data: transferData, value: 0n }],
             isSponsored: true
           })
           await transferOp.wait()
         }
 
-        // 4. Update Database
+        // 4. Update Database (Reset saldo ke 0)
         await supabase
           .from("bot_wallet_credits")
           .update({ weth_balance_wei: "0" })
