@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
-import { isAddress, type Address, type Hex, createPublicClient, http, encodeFunctionData } from "viem"
+import { type Address, type Hex, createPublicClient, http, encodeFunctionData } from "viem"
 import { base } from "viem/chains"
 import { createSupabaseServiceClient } from "@/lib/supabase"
 import { CdpClient } from "@coinbase/cdp-sdk"
@@ -19,76 +19,87 @@ const publicClient = createPublicClient({
 
 export async function POST(request: NextRequest) {
   try {
-    // 1. Validasi Variabel Lingkungan di dalam POST
     const apiKeyName = process.env.CDP_API_KEY_ID;
     const privateKey = process.env.CDP_API_KEY_SECRET?.replace(/\\n/g, "\n");
 
     if (!apiKeyName || !privateKey) {
-      console.error("❌ CDP SDK not configured: Missing env variables");
       return NextResponse.json({ error: "Server configuration error" }, { status: 500 });
     }
 
-    /** * Update Cara Konfigurasi: 
-     * Beberapa versi CDP menggunakan CdpClient.configure, 
-     * yang lain menggunakan konfigurasi saat inisialisasi.
-     */
-    try {
-      if (typeof (CdpClient as any).configure === 'function') {
-        (CdpClient as any).configure({ apiKeyName, privateKey });
-      }
-    } catch (e) {
-      console.warn("CDP Manual config failed, proceeding with instance config");
-    }
-
     const body = await request.json()
-    const { botWalletAddress, tokenAddress, recipientAddress, amountWei, symbol } = body
+    // SEKARANG MENERIMA ARRAY botWalletAddresses
+    const { botWalletAddresses, tokenAddress, recipientAddress, symbol } = body
 
-    if (!botWalletAddress || !tokenAddress || !recipientAddress || !amountWei) {
-      return NextResponse.json({ error: "Missing required fields" }, { status: 400 })
+    if (!Array.isArray(botWalletAddresses) || botWalletAddresses.length === 0 || !tokenAddress || !recipientAddress) {
+      return NextResponse.json({ error: "Missing required fields or bot list" }, { status: 400 })
     }
 
     const supabase = createSupabaseServiceClient()
-    const { data: botWallet, error: walletError } = await supabase
-      .from("wallets_data")
-      .select("smart_account_address, owner_address")
-      .eq("smart_account_address", botWalletAddress.toLowerCase())
-      .single()
-
-    if (walletError || !botWallet) return NextResponse.json({ error: "Wallet not found" }, { status: 404 })
-
-    // 2. Inisialisasi Client
     const cdp = new CdpClient({ apiKeyName, privateKey });
-    const ownerAccount = await cdp.evm.getAccount({ address: botWallet.owner_address as Address })
-    const smartAccount = await cdp.evm.getSmartAccount({
-      owner: ownerAccount,
-      address: botWallet.smart_account_address as Address,
-    })
+    const results = [];
 
-    const transferData = encodeFunctionData({
-      abi: ERC20_ABI,
-      functionName: "transfer",
-      args: [recipientAddress as Address, BigInt(amountWei)],
-    })
+    // LOOPING UNTUK MEMPROSES SEMUA BOT (5 BOT)
+    for (const address of botWalletAddresses) {
+      try {
+        // 1. Ambil data per bot
+        const { data: botWallet } = await supabase
+          .from("wallets_data")
+          .select("smart_account_address, owner_address")
+          .ilike("smart_account_address", address)
+          .single()
 
-    const userOpHash = await (smartAccount as any).sendUserOperation({
-      network: "base",
-      calls: [{ to: tokenAddress as Address, data: transferData as Hex, value: BigInt(0) }],
-      isSponsored: true,
-    })
+        if (!botWallet) {
+          results.push({ address, status: "error", message: "Wallet not found" });
+          continue;
+        }
 
-    const userOpReceipt = await (smartAccount as any).waitForUserOperation({
-      network: "base",
-      hash: userOpHash,
-    })
+        // 2. Cek Saldo Max
+        const currentBalance = await publicClient.readContract({
+          address: tokenAddress as Address,
+          abi: ERC20_ABI,
+          functionName: 'balanceOf',
+          args: [botWallet.smart_account_address as Address],
+        });
+
+        if (BigInt(currentBalance) === 0n) {
+          results.push({ address, status: "skipped", message: "Zero balance" });
+          continue;
+        }
+
+        // 3. Inisialisasi Smart Account CDP
+        const ownerAccount = await cdp.evm.getAccount({ address: botWallet.owner_address as Address })
+        const smartAccount = await cdp.evm.getSmartAccount({
+          owner: ownerAccount,
+          address: botWallet.smart_account_address as Address,
+        })
+
+        // 4. Kirim Gasless
+        const transferData = encodeFunctionData({
+          abi: ERC20_ABI,
+          functionName: "transfer",
+          args: [recipientAddress as Address, currentBalance],
+        })
+
+        const userOpHash = await (smartAccount as any).sendUserOperation({
+          network: "base",
+          calls: [{ to: tokenAddress as Address, data: transferData as Hex, value: 0n }],
+          isSponsored: true,
+        })
+
+        results.push({ address, status: "success", hash: userOpHash });
+
+      } catch (err: any) {
+        results.push({ address, status: "failed", error: err.message });
+      }
+    }
 
     return NextResponse.json({
       success: true,
-      txHash: userOpReceipt?.transactionHash || userOpHash,
-      message: `Sent ${symbol} to ${recipientAddress}`,
+      processed: results.length,
+      details: results
     })
 
   } catch (error: any) {
-    console.error("❌ Error:", error)
     return NextResponse.json({ error: error.message }, { status: 500 })
   }
 }
