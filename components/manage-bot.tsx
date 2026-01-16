@@ -75,33 +75,44 @@ export function ManageBot({ userAddress, botWallets }: ManageBotProps) {
     }
 
     setIsSending(true)
-    let successCount = 0
 
     try {
-      for (const wb of selectedTokenInfo.walletBalances) {
-        if (BigInt(wb.balance) > BigInt(0)) {
-          const res = await fetch("/api/bot/send-token", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              botWalletAddress: wb.address,
-              tokenAddress: selectedTokenInfo.address,
-              recipientAddress: recipientAddress,
-              amountWei: wb.balance,
-              symbol: selectedTokenInfo.symbol,
-            }),
-          })
-          if (res.ok) successCount++
-        }
+      // 1. Filter hanya wallet yang punya saldo > 0
+      const activeBotAddresses = selectedTokenInfo.walletBalances
+        .filter(wb => BigInt(wb.balance) > 0n)
+        .map(wb => wb.address)
+
+      if (activeBotAddresses.length === 0) {
+        toast.error("No balance to send")
+        setIsSending(false)
+        return
       }
 
-      if (successCount > 0) {
-        toast.success(`Success`, { description: `Sent from ${successCount} wallets.` })
+      // 2. Panggil API (Sekaligus semua bot)
+      const res = await fetch("/api/bot/send-token", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          botWalletAddresses: activeBotAddresses,
+          tokenAddress: selectedTokenInfo.address,
+          recipientAddress: recipientAddress,
+          symbol: selectedTokenInfo.symbol,
+        }),
+      })
+
+      const data = await res.json()
+
+      if (data.success) {
+        const successCount = data.details.filter((d: any) => d.status === "success").length
+        toast.success(`Success`, { description: `Successfully sent from ${successCount} wallets.` })
         setSelectedToken("")
         setRecipientAddress("")
         fetchTokenBalances()
+      } else {
+        toast.error(data.error || "Transaction failed")
       }
     } catch (error) {
+      console.error("Send Error:", error)
       toast.error("Transaction failed")
     } finally {
       setIsSending(false)
@@ -114,18 +125,16 @@ export function ManageBot({ userAddress, botWallets }: ManageBotProps) {
         <h3 className="text-sm font-semibold flex items-center gap-2">
           <Wallet className="h-4 w-4" /> Manage Bot
         </h3>
-        <Button
-          variant="ghost"
-          size="sm"
+        <button
           onClick={fetchTokenBalances}
           disabled={isLoadingTokens}
+          className="text-muted-foreground hover:text-white transition-colors disabled:opacity-50"
         >
           <RefreshCw className={`h-4 w-4 ${isLoadingTokens ? "animate-spin" : ""}`} />
-        </Button>
+        </button>
       </div>
 
       <div className="space-y-4">
-        {/* Dropdown */}
         <div className="space-y-2">
           <Label className="text-xs text-muted-foreground">Select Token</Label>
           <Select value={selectedToken} onValueChange={setSelectedToken} disabled={isLoadingTokens || isSending}>
@@ -146,7 +155,6 @@ export function ManageBot({ userAddress, botWallets }: ManageBotProps) {
           </Select>
         </div>
 
-        {/* Recipient - Manual */}
         <div className="space-y-2">
           <Label className="text-xs text-muted-foreground">Recipient Address</Label>
           <Input
@@ -158,9 +166,8 @@ export function ManageBot({ userAddress, botWallets }: ManageBotProps) {
           />
         </div>
 
-        {/* Amount - Auto Max */}
         <div className="space-y-2">
-          <Label className="text-xs text-muted-foreground">Total Amount</Label>
+          <Label className="text-xs text-muted-foreground">Total Amount (Max)</Label>
           <Input
             readOnly
             value={selectedTokenInfo ? `${selectedTokenInfo.balanceFormatted} ${selectedTokenInfo.symbol}` : "0.00"}
@@ -168,7 +175,6 @@ export function ManageBot({ userAddress, botWallets }: ManageBotProps) {
           />
         </div>
 
-        {/* Button - Emerald Color #10b981 */}
         <Button
           onClick={handleSend}
           disabled={isSending || !selectedToken || !recipientAddress}
@@ -178,12 +184,12 @@ export function ManageBot({ userAddress, botWallets }: ManageBotProps) {
           {isSending ? (
             <>
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              Sending...
+              Sending from Bots...
             </>
           ) : (
             <>
               <Send className="mr-2 h-4 w-4" />
-              Send
+              Send All
             </>
           )}
         </Button>
