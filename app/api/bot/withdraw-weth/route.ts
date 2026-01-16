@@ -24,93 +24,77 @@ export async function POST(request: NextRequest) {
     const body = await request.json()
     const { botWalletAddresses, tokenAddress, recipientAddress } = body
     
-    // 1. Validasi Input Dasar
-    if (!botWalletAddresses || !Array.isArray(botWalletAddresses)) {
-      return NextResponse.json({ error: "botWalletAddresses must be an array" }, { status: 400 })
-    }
-
-    if (!tokenAddress || typeof tokenAddress !== 'string') {
-      return NextResponse.json({ error: "tokenAddress is required and must be a string" }, { status: 400 })
+    // Validasi input awal (Defensive)
+    if (!botWalletAddresses || !tokenAddress || !recipientAddress) {
+      return NextResponse.json({ error: "Missing required fields" }, { status: 400 })
     }
 
     const supabase = createSupabaseServiceClient()
     const cdp = new CdpClient()
     const results = []
 
-    // Cache string yang sering digunakan untuk menghindari pemanggilan berulang
-    const sellTokenSafe = tokenAddress.trim().toLowerCase()
-    const buyTokenSafe = WETH_ADDRESS.toLowerCase()
-
     for (const address of botWalletAddresses) {
       try {
-        // 2. Proteksi Loop: Pastikan alamat wallet ada dan valid
-        if (!address || typeof address !== 'string') {
-          results.push({ address: "invalid", status: "failed", error: "Wallet address is missing or not a string" })
-          continue
-        }
+        // Pastikan address & tokenAddress adalah string sebelum manipulasi
+        const safeAddress = String(address || "").trim()
+        const safeToken = String(tokenAddress || "").trim()
 
-        const currentWalletAddr = address.trim()
-        const currentWalletLower = currentWalletAddr.toLowerCase()
+        if (!safeAddress || !safeToken) {
+          throw new Error("Invalid address or tokenAddress data type")
+        }
 
         const { data: bot } = await supabase
           .from("wallets_data")
           .select("*")
-          .ilike("smart_account_address", currentWalletAddr)
+          .ilike("smart_account_address", safeAddress)
           .single()
 
-        if (!bot) {
-          results.push({ address: currentWalletAddr, status: "failed", error: "Wallet not found in database" })
-          continue
-        }
+        if (!bot) continue
 
         const ownerAccount = await cdp.evm.getAccount({ address: bot.owner_address as Address })
-        const smartAccount = await cdp.evm.getSmartAccount({ owner: ownerAccount, address: currentWalletAddr as Address })
+        const smartAccount = await cdp.evm.getSmartAccount({ owner: ownerAccount, address: safeAddress as Address })
 
         const sellBalanceWei = await publicClient.readContract({
-          address: sellTokenSafe as Address,
+          address: safeToken as Address,
           abi: WETH_ABI,
           functionName: "balanceOf",
-          args: [currentWalletAddr as Address],
+          args: [safeAddress as Address],
         })
 
         if (sellBalanceWei > 0n) {
-          const url = new URL("https://api.0x.org/gasless/quote")
-          url.searchParams.append("chainId", "8453")
-          url.searchParams.append("sellToken", sellTokenSafe)
-          url.searchParams.append("buyToken", buyTokenSafe)
-          url.searchParams.append("sellAmount", sellBalanceWei.toString())
-          url.searchParams.append("taker", currentWalletLower)
+          // --- PERBAIKAN URL: Menggunakan WHATWG URL API Secara Penuh ---
+          const zeroxUrl = new URL("https://api.0x.org/gasless/quote")
+          zeroxUrl.searchParams.set("chainId", "8453")
+          zeroxUrl.searchParams.set("sellToken", safeToken.toLowerCase())
+          zeroxUrl.searchParams.set("buyToken", WETH_ADDRESS.toLowerCase())
+          zeroxUrl.searchParams.set("sellAmount", sellBalanceWei.toString())
+          zeroxUrl.searchParams.set("taker", safeAddress.toLowerCase())
 
-          const quoteRes = await fetch(url.toString(), {
+          const quoteRes = await fetch(zeroxUrl.toString(), {
             headers: { 
               "0x-api-key": process.env.ZEROX_API_KEY || "", 
-              "0x-version": "v2" 
+              "0x-version": "v2",
+              "Accept": "application/json"
             }
           })
           
-          if (!quoteRes.ok) {
-            const errData = await quoteRes.text()
-            throw new Error(`0x API Error: ${errData}`)
-          }
-
           const quote = await quoteRes.json()
 
+          // Akses properti v2 yang dinamis
           const spender = quote.issues?.allowance?.spender || quote.allowanceTarget
           const eip712Data = quote.trade?.eip712
           
-          if (!eip712Data) throw new Error("No EIP712 data found in quote")
+          if (!eip712Data) throw new Error("No EIP712 data found in 0x quote")
 
-          // Sign message EIP-712
           const signature = await (smartAccount as any).signTypedData(eip712Data)
 
-          // Append signature ke data transaksi Settler
           const sigLengthHex = (signature.length / 2 - 1).toString(16).padStart(64, '0')
           const baseData = quote.trade.transaction?.data || quote.transaction?.data || ""
           const finalData = (baseData + sigLengthHex + signature.replace('0x', '')) as Hex
 
           const calls = [
             {
-              to: sellTokenSafe as Address,
+              to: safeToken as Address,
               data: encodeFunctionData({
                 abi: WETH_ABI,
                 functionName: "approve",
@@ -131,17 +115,14 @@ export async function POST(request: NextRequest) {
             isSponsored: true
           })
           await swapOp.wait()
-          
-          // Beri waktu sejenak agar state blockchain terupdate di RPC
-          await new Promise(r => setTimeout(r, 1000))
         }
 
-        // Withdraw WETH sisa
+        // Sisa transfer WETH
         const finalBalance = await publicClient.readContract({
           address: WETH_ADDRESS,
           abi: WETH_ABI,
           functionName: "balanceOf",
-          args: [currentWalletAddr as Address],
+          args: [safeAddress as Address],
         })
 
         if (finalBalance > 0n) {
@@ -161,8 +142,8 @@ export async function POST(request: NextRequest) {
           await transferOp.wait()
         }
 
-        await supabase.from("bot_wallet_credits").update({ weth_balance_wei: "0" }).eq("bot_wallet_address", currentWalletLower)
-        results.push({ address: currentWalletAddr, status: "success" })
+        await supabase.from("bot_wallet_credits").update({ weth_balance_wei: "0" }).eq("bot_wallet_address", safeAddress.toLowerCase())
+        results.push({ address: safeAddress, status: "success" })
 
       } catch (err: any) {
         results.push({ address: address || "unknown", status: "failed", error: err.message })
