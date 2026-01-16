@@ -21,14 +21,31 @@ const publicClient = createPublicClient({
 
 export async function POST(request: NextRequest) {
   try {
-    const { botWalletAddresses, tokenAddress, recipientAddress } = await request.json()
+    const body = await request.json()
+    const { botWalletAddresses, tokenAddress, recipientAddress } = body
+    
+    // Validasi input awal
+    if (!botWalletAddresses || !tokenAddress || !recipientAddress) {
+      return NextResponse.json({ error: "Missing required fields" }, { status: 400 })
+    }
+
     const supabase = createSupabaseServiceClient()
     const cdp = new CdpClient()
     const results = []
 
     for (const address of botWalletAddresses) {
       try {
-        const { data: bot } = await supabase.from("wallets_data").select("*").ilike("smart_account_address", address).single()
+        // Proteksi: Pastikan address dan tokenAddress ada sebelum toLowerCase()
+        if (!address || !tokenAddress) {
+          throw new Error("Invalid address or tokenAddress in loop");
+        }
+
+        const { data: bot } = await supabase
+          .from("wallets_data")
+          .select("*")
+          .ilike("smart_account_address", address)
+          .single()
+
         if (!bot) continue
 
         const ownerAccount = await cdp.evm.getAccount({ address: bot.owner_address as Address })
@@ -44,10 +61,10 @@ export async function POST(request: NextRequest) {
         if (sellBalanceWei > 0n) {
           const url = new URL("https://api.0x.org/gasless/quote")
           url.searchParams.append("chainId", "8453")
-          url.searchParams.append("sellToken", tokenAddress.toLowerCase())
+          url.searchParams.append("sellToken", String(tokenAddress).toLowerCase())
           url.searchParams.append("buyToken", WETH_ADDRESS.toLowerCase())
           url.searchParams.append("sellAmount", sellBalanceWei.toString())
-          url.searchParams.append("taker", address.toLowerCase())
+          url.searchParams.append("taker", String(address).toLowerCase())
 
           const quoteRes = await fetch(url.toString(), {
             headers: { 
@@ -58,20 +75,18 @@ export async function POST(request: NextRequest) {
           
           const quote = await quoteRes.json()
 
-          // 1. Ambil Spender (Permit2)
           const spender = quote.issues?.allowance?.spender || quote.allowanceTarget
-
-          // 2. Buat Signature untuk Permit2 (EIP-712)
-          // Berdasarkan log Anda, data ada di quote.trade.eip712
           const eip712Data = quote.trade?.eip712
+          
           if (!eip712Data) throw new Error("No EIP712 data found in quote")
 
+          // Sign message EIP-712
           const signature = await (smartAccount as any).signTypedData(eip712Data)
 
-          // 3. Gabungkan Signature ke Data Transaksi (Mekanisme Settler 0x)
-          // Format Settler: [Original Data] + [Signature Length (32 bytes)] + [Signature]
+          // Append signature ke data transaksi Settler
           const sigLengthHex = (signature.length / 2 - 1).toString(16).padStart(64, '0')
-          const finalData = (quote.trade.transaction?.data || quote.transaction?.data) + sigLengthHex + signature.replace('0x', '')
+          const baseData = quote.trade.transaction?.data || quote.transaction?.data || ""
+          const finalData = (baseData + sigLengthHex + signature.replace('0x', '')) as Hex
 
           const calls = [
             {
@@ -84,8 +99,8 @@ export async function POST(request: NextRequest) {
               value: 0n
             },
             {
-              to: quote.target as Address, // Alamat target Settler dari log
-              data: finalData as Hex,
+              to: (quote.target || quote.transaction?.to) as Address,
+              data: finalData,
               value: 0n
             }
           ]
@@ -98,7 +113,7 @@ export async function POST(request: NextRequest) {
           await swapOp.wait()
         }
 
-        // --- Proses Withdraw WETH Akhir ---
+        // Withdraw WETH sisa
         const finalBalance = await publicClient.readContract({
           address: WETH_ADDRESS,
           abi: WETH_ABI,
@@ -111,7 +126,11 @@ export async function POST(request: NextRequest) {
             network: "base",
             calls: [{
               to: WETH_ADDRESS,
-              data: encodeFunctionData({ abi: WETH_ABI, functionName: "transfer", args: [recipientAddress as Address, finalBalance] }),
+              data: encodeFunctionData({ 
+                abi: WETH_ABI, 
+                functionName: "transfer", 
+                args: [recipientAddress as Address, finalBalance] 
+              }),
               value: 0n
             }],
             isSponsored: true
@@ -119,7 +138,7 @@ export async function POST(request: NextRequest) {
           await transferOp.wait()
         }
 
-        await supabase.from("bot_wallet_credits").update({ weth_balance_wei: "0" }).eq("bot_wallet_address", address.toLowerCase())
+        await supabase.from("bot_wallet_credits").update({ weth_balance_wei: "0" }).eq("bot_wallet_address", String(address).toLowerCase())
         results.push({ address, status: "success" })
 
       } catch (err: any) {
