@@ -108,7 +108,7 @@ export async function POST(request: NextRequest) {
           sellToken: tokenAddress.toLowerCase(),
           buyToken: WETH_ADDRESS.toLowerCase(),
           sellAmount: balance.toString(),
-          taker: botWallet.smart_account_address.toLowerCase(),
+          taker: botWallet.smart_account_address.toString(),
           slippageBps: "500", // Default 5%
           skipValidation: "true",
           enableSlippageProtection: "false",
