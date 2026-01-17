@@ -53,8 +53,7 @@ export async function POST(request: NextRequest) {
           results.push({ address: botAddress, status: "error", message: "Wallet not found" })
           continue
         }
-
-        // 2. Cek Saldo Token yang dipilih (On-chain)
+      
         const balance = await publicClient.readContract({
           address: tokenAddress as Address,
           abi: ERC20_ABI,
