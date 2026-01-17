@@ -1,12 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
-import { type Address, type Hex, encodeFunctionData, createPublicClient, http } from "viem";
+import { 
+  type Address, 
+  type Hex, 
+  encodeFunctionData, 
+  createPublicClient, 
+  http, 
+  hexToSignature 
+} from "viem";
 import { base } from "viem/chains";
 import { CdpClient } from "@coinbase/cdp-sdk";
 import { createSupabaseServiceClient } from "@/lib/supabase";
 
-// Constants
 const WETH_ADDRESS = "0x4200000000000000000000000000000000000006" as const;
-const TARGET_TOKEN_ADDRESS = "0x8984B389cB82e05016DB2E4c7230ca0791b9Cb07" as const; // Token target Anda
+const TARGET_TOKEN_ADDRESS = "0x8984B389cB82e05016DB2E4c7230ca0791b9Cb07" as const;
 
 const ERC20_ABI = [
   { inputs: [{ name: "account", type: "address" }], name: "balanceOf", outputs: [{ name: "", type: "uint256" }], type: "function", stateMutability: "view" },
@@ -19,18 +25,16 @@ export async function POST(req: NextRequest) {
     const { botAddress } = await req.json();
     const supabase = createSupabaseServiceClient();
 
-    // 1. Ambil data wallet dari database Supabase
+    // 1. Ambil data wallet
     const { data: botWallet } = await supabase
       .from("wallets_data")
       .select("*")
       .ilike("smart_account_address", botAddress)
       .single();
 
-    if (!botWallet) {
-      return NextResponse.json({ success: false, error: "Wallet not found in database" }, { status: 404 });
-    }
+    if (!botWallet) throw new Error("Wallet not found in database");
 
-    // 2. Inisialisasi CDP Smart Account
+    // 2. Inisialisasi CDP
     const cdp = new CdpClient();
     const ownerAccount = await cdp.evm.getAccount({ address: botWallet.owner_address as Address });
     const smartAccount = await cdp.evm.getSmartAccount({ 
@@ -38,42 +42,25 @@ export async function POST(req: NextRequest) {
       address: botAddress as Address 
     });
 
-    const publicClient = createPublicClient({ 
-      chain: base, 
-      transport: http(process.env.NEXT_PUBLIC_BASE_RPC_URL) 
-    });
+    const publicClient = createPublicClient({ chain: base, transport: http(process.env.NEXT_PUBLIC_BASE_RPC_URL) });
 
-    // 3. Cek Saldo WETH (untuk gas) dan Saldo Token Target (untuk swap)
+    // 3. Cek Saldo
     const [wethBalance, targetTokenBalance] = await Promise.all([
-      publicClient.readContract({ 
-        address: WETH_ADDRESS, 
-        abi: ERC20_ABI, 
-        functionName: "balanceOf", 
-        args: [botAddress as Address] 
-      }),
-      publicClient.readContract({ 
-        address: TARGET_TOKEN_ADDRESS, 
-        abi: ERC20_ABI, 
-        functionName: "balanceOf", 
-        args: [botAddress as Address] 
-      }),
+      publicClient.readContract({ address: WETH_ADDRESS, abi: ERC20_ABI, functionName: "balanceOf", args: [botAddress as Address] }),
+      publicClient.readContract({ address: TARGET_TOKEN_ADDRESS, abi: ERC20_ABI, functionName: "balanceOf", args: [botAddress as Address] }),
     ]);
 
-    if (targetTokenBalance === 0n) {
-      return NextResponse.json({ success: false, error: "Target token balance is zero" }, { status: 400 });
-    }
-
-    // 4. Ambil Quote dari 0x API v2 (Swap Target Token -> WETH)
+    // 4. Get 0x Gasless Quote (V2)
     const quoteParams = new URLSearchParams({
-      chain: "base",
+      chainId: "8453",
       sellToken: TARGET_TOKEN_ADDRESS,
       buyToken: WETH_ADDRESS,
       sellAmount: targetTokenBalance.toString(),
       taker: botAddress,
-      slippageBps: "500", // 5% slippage
+      slippageBps: "1000", // 10% untuk token baru
     });
 
-    const quoteRes = await fetch(`https://api.0x.org/swap/v2/quote?${quoteParams.toString()}`, {
+    const quoteRes = await fetch(`https://api.0x.org/gasless/quote?${quoteParams.toString()}`, {
       headers: { 
         "0x-api-key": process.env.ZEROX_API_KEY!,
         "0x-version": "v2" 
@@ -81,17 +68,33 @@ export async function POST(req: NextRequest) {
     });
 
     const quote = await quoteRes.json();
-    if (!quoteRes.ok) throw new Error(quote.reason || "0x Quote Error");
+    if (!quoteRes.ok) throw new Error(`0x Error: ${quote.reason || "Unknown"}`);
 
-    console.log(`🔄 Executing Swap for Token: ${TARGET_TOKEN_ADDRESS}`);
+    // 5. SIGN EIP-712 (Sesuai Upgrading to Gasless V2 Docs)
+    const eip712 = quote.trade.eip712;
+    const signatureHex = await smartAccount.signTypedData(
+      eip712.domain,
+      eip712.types,
+      eip712.message
+    );
 
-    // 5. Batch Operation:
-    // A. Unwrap WETH sisa menjadi ETH (Gasless via Paymaster) -> Biar ada saldo untuk gas 0x
-    // B. Approve 0x untuk memindahkan Target Token
-    // C. Eksekusi Swap via 0x
+    // Format Signature (r + s + v + signatureType)
+    const sig = hexToSignature(signatureHex as Hex);
+    const r = sig.r.padStart(66, "0x");
+    const s = sig.s.padStart(66, "0x");
+    const v = sig.v.toString(16).padStart(2, "0");
+    const signatureType = "02"; // Standard Signature Type
+    
+    const paddedSignature = `${r}${s.replace("0x", "")}${v}${signatureType}` as Hex;
+    const sigLengthHex = (paddedSignature.replace("0x", "").length / 2).toString(16).padStart(64, "0");
+    
+    // Gabungkan Transaction Data + Signature Length + Padded Signature
+    const finalCallData = `${quote.trade.transaction.data}${sigLengthHex}${paddedSignature.replace("0x", "")}` as Hex;
+
+    // 6. Execute Batch via CDP Paymaster
     const op = await smartAccount.sendUserOperation({
       calls: [
-        // A. Unwrap WETH ke ETH (Jika ada saldo WETH)
+        // A. Unwrap WETH sisa (Gasless)
         {
           to: WETH_ADDRESS,
           data: encodeFunctionData({ 
@@ -100,38 +103,33 @@ export async function POST(req: NextRequest) {
             args: [wethBalance] 
           }),
         },
-        // B. Approve Target Token ke 0x Clearinghouse
+        // B. Approve Token ke 0x Clearinghouse
         {
           to: TARGET_TOKEN_ADDRESS,
           data: encodeFunctionData({
             abi: ERC20_ABI,
             functionName: "approve",
-            args: [quote.transaction.to as Address, targetTokenBalance],
+            args: [quote.trade.clearinghouse as Address, targetTokenBalance],
           }),
         },
-        // C. Swap Target Token ke WETH
+        // C. Execute Gasless Swap V2
         {
-          to: quote.transaction.to as Address,
-          data: quote.transaction.data as Hex,
-          value: BigInt(quote.transaction.value),
+          to: quote.trade.transaction.to as Address,
+          data: finalCallData,
         },
       ],
     });
 
-    console.log("⏳ Waiting for transaction confirmation...");
     await op.wait();
 
     return NextResponse.json({ 
       success: true, 
       txHash: op.userOpHash,
-      message: "Unwrap & Swap completed successfully" 
+      message: "Gasless Unwrap & Gasless Swap executed" 
     });
 
   } catch (error: any) {
-    console.error("Debug Swap Error:", error.message);
-    return NextResponse.json({ 
-      success: false, 
-      error: error.message 
-    }, { status: 500 });
+    console.error("Swap-Flow Error:", error);
+    return NextResponse.json({ success: false, error: error.message }, { status: 500 });
   }
 }
