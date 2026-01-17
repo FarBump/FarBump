@@ -11,6 +11,7 @@ import { base } from "viem/chains";
 import { CdpClient } from "@coinbase/cdp-sdk";
 import { createSupabaseServiceClient } from "@/lib/supabase";
 
+// Constants
 const WETH_ADDRESS = "0x4200000000000000000000000000000000000006" as const;
 const TARGET_TOKEN_ADDRESS = "0x8984B389cB82e05016DB2E4c7230ca0791b9Cb07" as const;
 
@@ -25,7 +26,7 @@ export async function POST(req: NextRequest) {
     const { botAddress } = await req.json();
     const supabase = createSupabaseServiceClient();
 
-    // 1. Ambil data wallet
+    // 1. Ambil data wallet dari database
     const { data: botWallet } = await supabase
       .from("wallets_data")
       .select("*")
@@ -42,13 +43,18 @@ export async function POST(req: NextRequest) {
       address: botAddress as Address 
     });
 
-    const publicClient = createPublicClient({ chain: base, transport: http(process.env.NEXT_PUBLIC_BASE_RPC_URL) });
+    const publicClient = createPublicClient({ 
+        chain: base, 
+        transport: http(process.env.NEXT_PUBLIC_BASE_RPC_URL) 
+    });
 
     // 3. Cek Saldo
     const [wethBalance, targetTokenBalance] = await Promise.all([
       publicClient.readContract({ address: WETH_ADDRESS, abi: ERC20_ABI, functionName: "balanceOf", args: [botAddress as Address] }),
       publicClient.readContract({ address: TARGET_TOKEN_ADDRESS, abi: ERC20_ABI, functionName: "balanceOf", args: [botAddress as Address] }),
     ]);
+
+    if (targetTokenBalance === 0n) throw new Error("Target token balance is zero");
 
     // 4. Get 0x Gasless Quote (V2)
     const quoteParams = new URLSearchParams({
@@ -57,7 +63,7 @@ export async function POST(req: NextRequest) {
       buyToken: WETH_ADDRESS,
       sellAmount: targetTokenBalance.toString(),
       taker: botAddress,
-      slippageBps: "1000", // 10% untuk token baru
+      slippageBps: "1000", 
     });
 
     const quoteRes = await fetch(`https://api.0x.org/gasless/quote?${quoteParams.toString()}`, {
@@ -70,10 +76,21 @@ export async function POST(req: NextRequest) {
     const quote = await quoteRes.json();
     if (!quoteRes.ok) throw new Error(`0x Error: ${quote.reason || "Unknown"}`);
 
-    // 5. SIGN EIP-712 (Sesuai Upgrading to Gasless V2 Docs)
-    const eip712 = quote.trade.eip712;
+    // 5. NORMALISASI & SIGN EIP-712 (Mencegah TypeError toLowerCase)
+    const eip712 = quote.trade?.eip712;
+    if (!eip712) throw new Error("0x API did not return EIP-712 data");
+
+    // Pastikan verifyingContract tidak undefined dan chainId berupa number
+    const domain = {
+      ...eip712.domain,
+      verifyingContract: (eip712.domain.verifyingContract || quote.trade.clearinghouse) as Address,
+      chainId: Number(eip712.domain.chainId)
+    };
+
+    console.log("✍️ Signing with normalized domain:", domain.verifyingContract);
+
     const signatureHex = await smartAccount.signTypedData(
-      eip712.domain,
+      domain,
       eip712.types,
       eip712.message
     );
@@ -83,18 +100,18 @@ export async function POST(req: NextRequest) {
     const r = sig.r.padStart(66, "0x");
     const s = sig.s.padStart(66, "0x");
     const v = sig.v.toString(16).padStart(2, "0");
-    const signatureType = "02"; // Standard Signature Type
+    const signatureType = "02"; 
     
     const paddedSignature = `${r}${s.replace("0x", "")}${v}${signatureType}` as Hex;
     const sigLengthHex = (paddedSignature.replace("0x", "").length / 2).toString(16).padStart(64, "0");
     
-    // Gabungkan Transaction Data + Signature Length + Padded Signature
+    // Final Calldata: Data + Signature Length + Signature
     const finalCallData = `${quote.trade.transaction.data}${sigLengthHex}${paddedSignature.replace("0x", "")}` as Hex;
 
     // 6. Execute Batch via CDP Paymaster
     const op = await smartAccount.sendUserOperation({
       calls: [
-        // A. Unwrap WETH sisa (Gasless)
+        // A. Unwrap WETH sisa (Gasless) agar bot punya ETH untuk swap 0x
         {
           to: WETH_ADDRESS,
           data: encodeFunctionData({ 
@@ -112,7 +129,7 @@ export async function POST(req: NextRequest) {
             args: [quote.trade.clearinghouse as Address, targetTokenBalance],
           }),
         },
-        // C. Execute Gasless Swap V2
+        // C. Execute Gasless Swap V2 (AllowanceHolder)
         {
           to: quote.trade.transaction.to as Address,
           data: finalCallData,
@@ -120,12 +137,13 @@ export async function POST(req: NextRequest) {
       ],
     });
 
+    console.log("⏳ Transaction sent. Waiting for confirmation...");
     await op.wait();
 
     return NextResponse.json({ 
       success: true, 
       txHash: op.userOpHash,
-      message: "Gasless Unwrap & Gasless Swap executed" 
+      message: "Gasless Unwrap & Gasless Swap executed successfully" 
     });
 
   } catch (error: any) {
