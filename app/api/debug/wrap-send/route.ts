@@ -13,19 +13,40 @@ const ERC20_ABI = [
 export async function POST(req: NextRequest) {
   try {
     const { botAddress, recipient } = await req.json();
-    const supabase = createSupabaseServiceClient();
 
-    const { data: botWallet } = await supabase.from("wallets_data").select("*").ilike("smart_account_address", botAddress).single();
-    if (!botWallet) throw new Error("Wallet not found");
+    if (!botAddress || !recipient) {
+      throw new Error("botAddress and recipient are required");
+    }
+
+    const supabase = createSupabaseServiceClient();
+    const { data: botWallet } = await supabase
+      .from("wallets_data")
+      .select("*")
+      .ilike("smart_account_address", botAddress)
+      .single();
+
+    if (!botWallet) throw new Error("Wallet not found in database");
 
     const cdp = new CdpClient();
     const ownerAccount = await cdp.evm.getAccount({ address: botWallet.owner_address as Address });
-    const smartAccount = await cdp.evm.getSmartAccount({ owner: ownerAccount, address: botAddress as Address });
+    const smartAccount = await cdp.evm.getSmartAccount({ 
+      owner: ownerAccount, 
+      address: botAddress as Address 
+    });
 
-    const publicClient = createPublicClient({ chain: base, transport: http() });
+    const publicClient = createPublicClient({ 
+      chain: base, 
+      transport: http(process.env.NEXT_PUBLIC_BASE_RPC_URL) 
+    });
+    
     const ethBalance = await publicClient.getBalance({ address: botAddress as Address });
 
-    if (ethBalance === 0n) throw new Error("No ETH balance to wrap");
+    // Cek apakah saldo ETH tersedia untuk dibungkus
+    if (ethBalance === 0n) {
+      throw new Error("No ETH balance available to wrap. Perform swap-flow first.");
+    }
+
+    console.log(`🎁 Wrapping ${ethBalance.toString()} ETH and sending to ${recipient}`);
 
     // Eksekusi Full Gasless via Paymaster
     const op = await smartAccount.sendUserOperation({
@@ -33,18 +54,30 @@ export async function POST(req: NextRequest) {
         {
           to: WETH_ADDRESS,
           data: encodeFunctionData({ abi: ERC20_ABI, functionName: "deposit", args: [] }),
-          value: ethBalance,
+          value: ethBalance, // Membungkus semua saldo ETH menjadi WETH
         },
         {
           to: WETH_ADDRESS,
-          data: encodeFunctionData({ abi: ERC20_ABI, functionName: "transfer", args: [recipient as Address, ethBalance] }),
+          data: encodeFunctionData({ 
+            abi: ERC20_ABI, 
+            functionName: "transfer", 
+            args: [recipient as Address, ethBalance] 
+          }),
         },
       ],
     });
 
+    console.log("⏳ Wrap-Send UserOp sent:", op.userOpHash);
     await op.wait();
-    return NextResponse.json({ success: true, txHash: op.userOpHash });
+
+    return NextResponse.json({ 
+      success: true, 
+      txHash: op.userOpHash,
+      message: "Successfully wrapped ETH and sent WETH to recipient"
+    });
+
   } catch (error: any) {
+    console.error("❌ Wrap-Send Error:", error.message);
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });
   }
 }
