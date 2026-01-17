@@ -14,6 +14,14 @@ const WETH_ABI = [
   { inputs: [{ name: "to", type: "address" }, { name: "value", type: "uint256" }], name: "transfer", outputs: [{ name: "", type: "bool" }], stateMutability: "nonpayable", type: "function" }
 ] as const
 
+// Helper to prevent 'toLowerCase' on undefined/null
+function ensureAddress(addr: any, fieldName: string): Address {
+  if (!addr || typeof addr !== 'string' || addr === "undefined") {
+    throw new Error(`Critical Error: ${fieldName} is missing or undefined`);
+  }
+  return addr.trim() as Address;
+}
+
 const publicClient = createPublicClient({
   chain: base,
   transport: http(process.env.NEXT_PUBLIC_BASE_RPC_URL),
@@ -21,111 +29,114 @@ const publicClient = createPublicClient({
 
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json()
-    const { botWalletAddresses, tokenAddress, recipientAddress } = body
-    
-    // Validasi input awal (Defensive)
-    if (!botWalletAddresses || !tokenAddress || !recipientAddress) {
-      return NextResponse.json({ error: "Missing required fields" }, { status: 400 })
+    const body = await request.json();
+    const { botWalletAddresses, tokenAddress, recipientAddress } = body;
+
+    // Initial validation
+    if (!botWalletAddresses || !Array.isArray(botWalletAddresses)) {
+      return NextResponse.json({ success: false, error: "botWalletAddresses must be an array" }, { status: 400 });
     }
 
-    const supabase = createSupabaseServiceClient()
-    const cdp = new CdpClient()
-    const results = []
+    const supabase = createSupabaseServiceClient();
+    const cdp = new CdpClient();
+    const results = [];
 
-    for (const address of botWalletAddresses) {
+    // Pre-validate token and recipient before entering the loop
+    const safeToken = ensureAddress(tokenAddress, "tokenAddress");
+    const safeRecipient = ensureAddress(recipientAddress, "recipientAddress");
+
+    for (const rawAddress of botWalletAddresses) {
       try {
-        // Pastikan address & tokenAddress adalah string sebelum manipulasi
-        const safeAddress = String(address || "").trim()
-        const safeToken = String(tokenAddress || "").trim()
+        const safeBotAddress = ensureAddress(rawAddress, "botWalletAddress");
 
-        if (!safeAddress || !safeToken) {
-          throw new Error("Invalid address or tokenAddress data type")
-        }
-
-        const { data: bot } = await supabase
+        // Fetch bot data from Supabase
+        const { data: bot, error: dbError } = await supabase
           .from("wallets_data")
           .select("*")
-          .ilike("smart_account_address", safeAddress)
-          .single()
+          .ilike("smart_account_address", safeBotAddress)
+          .single();
 
-        if (!bot) continue
+        if (dbError || !bot) throw new Error(`Bot record not found in database for ${safeBotAddress}`);
+        if (!bot.owner_address) throw new Error(`Owner address missing for bot ${safeBotAddress}`);
 
-        const ownerAccount = await cdp.evm.getAccount({ address: bot.owner_address as Address })
-        const smartAccount = await cdp.evm.getSmartAccount({ owner: ownerAccount, address: safeAddress as Address })
+        // Initialize CDP Smart Account
+        const ownerAccount = await cdp.evm.getAccount({ address: bot.owner_address as Address });
+        const smartAccount = await cdp.evm.getSmartAccount({ owner: ownerAccount, address: safeBotAddress as Address });
 
-        const sellBalanceWei = await publicClient.readContract({
-          address: safeToken as Address,
+        // 1. Check current token balance
+        const balanceWei = await publicClient.readContract({
+          address: safeToken,
           abi: WETH_ABI,
           functionName: "balanceOf",
-          args: [safeAddress as Address],
-        })
+          args: [safeBotAddress],
+        });
 
-        if (sellBalanceWei > 0n) {
-          // --- PERBAIKAN URL: Menggunakan WHATWG URL API Secara Penuh ---
-          const zeroxUrl = new URL("https://api.0x.org/gasless/quote")
-          zeroxUrl.searchParams.set("chainId", "8453")
-          zeroxUrl.searchParams.set("sellToken", safeToken.toLowerCase())
-          zeroxUrl.searchParams.set("buyToken", WETH_ADDRESS.toLowerCase())
-          zeroxUrl.searchParams.set("sellAmount", sellBalanceWei.toString())
-          zeroxUrl.searchParams.set("taker", safeAddress.toLowerCase())
+        if (balanceWei > 0n) {
+          // 2. Fetch Gasless Quote from 0x v2
+          const query = new URLSearchParams({
+            chainId: "8453",
+            sellToken: safeToken.toLowerCase(),
+            buyToken: WETH_ADDRESS.toLowerCase(),
+            sellAmount: balanceWei.toString(),
+            taker: safeBotAddress.toLowerCase(),
+          });
 
-          const quoteRes = await fetch(zeroxUrl.toString(), {
+          const quoteRes = await fetch(`https://api.0x.org/gasless/quote?${query.toString()}`, {
             headers: { 
               "0x-api-key": process.env.ZEROX_API_KEY || "", 
-              "0x-version": "v2",
-              "Accept": "application/json"
+              "0x-version": "v2" 
             }
-          })
+          });
+
+          const quote = await quoteRes.json();
+          if (!quoteRes.ok) throw new Error(`0x Error: ${quote.reason || "Failed to fetch quote"}`);
+          if (!quote.trade?.eip712) throw new Error("0x response missing trade EIP712 data");
+
+          // 3. Sign EIP-712 Data
+          const signature = await (smartAccount as any).signTypedData(quote.trade.eip712);
           
-          const quote = await quoteRes.json()
+          // 4. Construct Final Data for Settler (Append Sig Length + Sig)
+          const sigHex = signature.startsWith('0x') ? signature.slice(2) : signature;
+          const sigLengthHex = (sigHex.length / 2).toString(16).padStart(64, '0');
+          const transactionData = quote.trade.transaction.data;
+          const finalCallData = `${transactionData}${sigLengthHex}${sigHex}` as Hex;
 
-          // Akses properti v2 yang dinamis
-          const spender = quote.issues?.allowance?.spender || quote.allowanceTarget
-          const eip712Data = quote.trade?.eip712
-          
-          if (!eip712Data) throw new Error("No EIP712 data found in 0x quote")
-
-          const signature = await (smartAccount as any).signTypedData(eip712Data)
-
-          const sigLengthHex = (signature.length / 2 - 1).toString(16).padStart(64, '0')
-          const baseData = quote.trade.transaction?.data || quote.transaction?.data || ""
-          const finalData = (baseData + sigLengthHex + signature.replace('0x', '')) as Hex
-
-          const calls = [
-            {
-              to: safeToken as Address,
-              data: encodeFunctionData({
-                abi: WETH_ABI,
-                functionName: "approve",
-                args: [spender as Address, sellBalanceWei],
-              }),
-              value: 0n
-            },
-            {
-              to: (quote.target || quote.transaction?.to) as Address,
-              data: finalData,
-              value: 0n
-            }
-          ]
-
+          // 5. Execute Swap (Approve + Call)
           const swapOp = await (smartAccount as any).sendUserOperation({
             network: "base",
-            calls,
+            calls: [
+              {
+                to: safeToken,
+                data: encodeFunctionData({
+                  abi: WETH_ABI,
+                  functionName: "approve",
+                  args: [quote.trade.clearinghouse as Address, balanceWei],
+                }),
+                value: 0n
+              },
+              {
+                to: quote.trade.transaction.to as Address,
+                data: finalCallData,
+                value: 0n
+              }
+            ],
             isSponsored: true
-          })
-          await swapOp.wait()
+          });
+          await swapOp.wait();
+          
+          // Wait for state sync
+          await new Promise(r => setTimeout(r, 2000));
         }
 
-        // Sisa transfer WETH
-        const finalBalance = await publicClient.readContract({
+        // 6. Final Transfer of WETH to Main Wallet
+        const finalWethBalance = await publicClient.readContract({
           address: WETH_ADDRESS,
           abi: WETH_ABI,
           functionName: "balanceOf",
-          args: [safeAddress as Address],
-        })
+          args: [safeBotAddress],
+        });
 
-        if (finalBalance > 0n) {
+        if (finalWethBalance > 0n) {
           const transferOp = await (smartAccount as any).sendUserOperation({
             network: "base",
             calls: [{
@@ -133,24 +144,30 @@ export async function POST(request: NextRequest) {
               data: encodeFunctionData({ 
                 abi: WETH_ABI, 
                 functionName: "transfer", 
-                args: [recipientAddress as Address, finalBalance] 
+                args: [safeRecipient, finalWethBalance] 
               }),
               value: 0n
             }],
             isSponsored: true
-          })
-          await transferOp.wait()
+          });
+          await transferOp.wait();
         }
 
-        await supabase.from("bot_wallet_credits").update({ weth_balance_wei: "0" }).eq("bot_wallet_address", safeAddress.toLowerCase())
-        results.push({ address: safeAddress, status: "success" })
+        // 7. Update Credits in Database
+        await supabase
+          .from("bot_wallet_credits")
+          .update({ weth_balance_wei: "0" })
+          .eq("bot_wallet_address", safeBotAddress.toLowerCase());
+
+        results.push({ address: safeBotAddress, status: "success" });
 
       } catch (err: any) {
-        results.push({ address: address || "unknown", status: "failed", error: err.message })
+        console.error(`Withdraw Error for ${rawAddress}:`, err.message);
+        results.push({ address: rawAddress || "unknown", status: "failed", error: err.message });
       }
     }
-    return NextResponse.json({ success: true, details: results })
+    return NextResponse.json({ success: true, details: results });
   } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 })
+    return NextResponse.json({ success: false, error: (error as Error).message }, { status: 500 });
   }
 }
