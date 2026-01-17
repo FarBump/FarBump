@@ -105,8 +105,8 @@ export async function POST(request: NextRequest) {
         // 4. Get 0x API v2 Quote
         const params = new URLSearchParams({
           chainId: "8453",
-          sellToken: tokenAddress.toLowerCase(),
-          buyToken: WETH_ADDRESS.toLowerCase(),
+          sellToken: tokenAddress,
+          buyToken: WETH_ADDRESS,
           sellAmount: balance.toString(),
           taker: botWallet.smart_account_address.toString(),
           slippageBps: "500", // Default 5%
