@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from "next/server"
 import { type Address, type Hex, encodeFunctionData, createPublicClient, http, hexToSignature } from "viem"
 import { base } from "viem/chains"
 import { createSupabaseServiceClient } from "@/lib/supabase"
-import { Coinbase } from "@coinbase/cdp-sdk"
+// PERBAIKAN: Menggunakan Namespace Import agar semua sub-modul terdeteksi saat build
+import * as CDP from "@coinbase/cdp-sdk"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
@@ -12,7 +13,8 @@ const privateKey = process.env.CDP_API_KEY_PRIVATE_KEY
   ? process.env.CDP_API_KEY_PRIVATE_KEY.replace(/\\n/g, '\n')
   : "";
 
-Coinbase.configure({
+// Menggunakan CDP.Coinbase untuk menghindari error export
+CDP.Coinbase.configure({
   apiKeyName: process.env.CDP_API_KEY_NAME || "",
   privateKey: privateKey,
 });
@@ -54,8 +56,8 @@ export async function POST(request: NextRequest) {
         if (dbError || !bot) throw new Error(`Bot record not found for ${rawAddress}`);
         console.log(`- DB Check: Found Owner Wallet ID ${bot.id}`);
 
-        // 2. Fetch Owner Wallet
-        const ownerWallet = await Coinbase.Wallet.fetch(bot.id);
+        // 2. Fetch Owner Wallet menggunakan namespace CDP
+        const ownerWallet = await CDP.Wallet.fetch(bot.id);
         console.log("- CDP Check: Owner Wallet instance fetched successfully");
         
         // 3. Inisialisasi Smart Account
