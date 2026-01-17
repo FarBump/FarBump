@@ -23,25 +23,26 @@ const publicClient = createPublicClient({
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
-    // 'tokenAddress' berasal dari Select Token di Manage Bot
-    const { smart_account_address, tokenAddress } = body as { 
-      smart_account_address: string[], 
-      tokenAddress: string 
-    }
+    // Kita terima array botWalletAddresses agar bisa sekaligus
+    const { botWalletAddresses, tokenAddress, recipientAddress, symbol } = body
 
-    if (!smart_account_address || !tokenAddress) {
-      return NextResponse.json({ error: "Missing smart_account_address or tokenAddress" }, { status: 400 })
-    }
+    if (!botWalletAddresses || !Array.isArray(botWalletAddresses) || !tokenAddress || !recipientAddress) {
+      return NextResponse.json({ error: "Missing required fields" }, { status: 400 })
 
     const supabase = createSupabaseServiceClient()
-    const cdp = new CdpClient() // V2 Client
+    
+    // Inisialisasi CDP (mengikuti pola execute-swap)
+    const apiKeyId = process.env.CDP_API_KEY_ID
+    const apiKeySecret = process.env.CDP_API_KEY_SECRET
+    if (!apiKeyId || !apiKeySecret) {
+      return NextResponse.json({ error: "CDP credentials missing" }, { status: 500 })
+    }
+    const cdp = new CdpClient()
+
     const results = []
 
     console.log(`🔄 Starting Swap to WETH for Token: ${tokenAddress}`)
-
-    for (const botAddress of smart_account_address) {
-      try {
-        // 1. Fetch data wallet dari database
+    // 1. Ambil data owner dari wallets_data
         const { data: botWallet } = await supabase
           .from("wallets_data")
           .select("*")
@@ -58,7 +59,7 @@ export async function POST(request: NextRequest) {
           address: tokenAddress as Address,
           abi: ERC20_ABI,
           functionName: "balanceOf",
-          args: [botWallet.smart_account_address as Address],
+          args: [botWallet.botWalletAddresses as Address],
         })
 
         if (balance === 0n) {
@@ -70,7 +71,7 @@ export async function POST(request: NextRequest) {
         const ownerAccount = await cdp.evm.getAccount({ address: botWallet.owner_address as Address })
         const smartAccount = await cdp.evm.getSmartAccount({
           owner: ownerAccount,
-          address: botWallet.smart_account_address as Address,
+          address: botWallet.botWalletAddresses as Address,
         })
 
         // 4. Get 0x API v2 Quote (Optimized for Thin Liquidity)
@@ -79,7 +80,7 @@ export async function POST(request: NextRequest) {
           sellToken: tokenAddress.toLowerCase(),
           buyToken: WETH_ADDRESS.toLowerCase(),
           sellAmount: balance.toString(),
-          taker: smart_account_address.toLowerCase(),
+          taker: botWalletAddresses.toLowerCase(),
           slippageBps: attempt === 1 ? "500" : "1000", // 5% = 500 bps, 10% = 1000 bps
           skipValidation: "true",
           enableSlippageProtection: "false"
