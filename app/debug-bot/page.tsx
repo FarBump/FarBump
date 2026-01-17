@@ -1,109 +1,440 @@
-"use client";
-import { useState } from "react";
+import { NextRequest, NextResponse } from "next/server"
+import { formatEther, parseEther, isAddress, type Address, type Hex, createPublicClient, http, encodeFunctionData } from "viem"
+import { base } from "viem/chains"
+import { createSupabaseServiceClient } from "@/lib/supabase"
+import { CdpClient } from "@coinbase/cdp-sdk"
+import "dotenv/config"
 
-export default function DebugBotPage() {
-  const [botAddress, setBotAddress] = useState(""); 
-  const [recipient, setRecipient] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [status, setStatus] = useState("");
+export const dynamic = "force-dynamic"
+export const runtime = "nodejs"
 
-  // Alamat token target sesuai permintaan sebelumnya
-  const TARGET_TOKEN = "0x8984B389cB82e05016DB2E4c7230ca0791b9Cb07";
+// Constants
+const WETH_ADDRESS = "0x4200000000000000000000000000000000000006" as const
+const BUMP_TOKEN_ADDRESS = "0x8984B389cB82e05016DB2E4c7230ca0791b9Cb07" as const
 
-  const handleProcess = async (endpoint: string, body: object) => {
-    setLoading(true);
-    setStatus(`Executing ${endpoint}...`);
-    try {
-      const res = await fetch(`/api/debug/${endpoint}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      
-      const data = await res.json();
-      
-      if (data.success) {
-        setStatus(`✅ Success! Hash: ${data.txHash}`);
-      } else {
-        setStatus(`❌ Error: ${data.error}`);
-        console.error("Backend Error Details:", data);
-      }
-    } catch (e) {
-      setStatus("🚨 Request failed. Check browser console.");
-      console.error("Fetch Error:", e);
-    } finally {
-      setLoading(false);
+// ERC20 ABI for balance, approval, and transfer
+const ERC20_ABI = [
+  {
+    inputs: [{ name: "account", type: "address" }],
+    name: "balanceOf",
+    outputs: [{ name: "", type: "uint256" }],
+    stateMutability: "view",
+    type: "function",
+  },
+  {
+    inputs: [
+      { name: "owner", type: "address" },
+      { name: "spender", type: "address" },
+    ],
+    name: "allowance",
+    outputs: [{ name: "", type: "uint256" }],
+    stateMutability: "view",
+    type: "function",
+  },
+  {
+    inputs: [
+      { name: "spender", type: "address" },
+      { name: "amount", type: "uint256" },
+    ],
+    name: "approve",
+    outputs: [{ name: "", type: "bool" }],
+    stateMutability: "nonpayable",
+    type: "function",
+  },
+] as const
+
+// Public client for balance checks
+const publicClient = createPublicClient({
+  chain: base,
+  transport: http(process.env.NEXT_PUBLIC_BASE_RPC_URL),
+})
+
+/**
+ * API Route: Liquidate $BUMP Token to WETH
+ * 
+ * Flow:
+ * 1. Get Bot Smart Account address and Owner Account
+ * 2. Check $BUMP token balance
+ * 3. Get swap quote from 0x API v2 ($BUMP → WETH)
+ * 4. Approve $BUMP token to AllowanceHolder (if needed)
+ * 5. Execute swap transaction (gasless via CDP Paymaster)
+ * 6. Return transaction hash
+ */
+export async function POST(request: NextRequest) {
+  try {
+    const body = await request.json()
+    const { botAddress } = body as { botAddress: string }
+
+    if (!botAddress || !isAddress(botAddress)) {
+      return NextResponse.json(
+        { success: false, error: "Invalid or missing botAddress" },
+        { status: 400 }
+      )
     }
-  };
 
-  return (
-    <div className="max-w-2xl mx-auto p-10 space-y-8 bg-gray-50 text-black min-h-screen">
-      <div className="bg-white p-8 rounded-xl shadow-sm border border-gray-200 space-y-6">
-        <h1 className="text-2xl font-bold border-b pb-4 text-gray-800">
-          CDP Bot Debugger <span className="text-sm font-normal text-gray-500">v2.0 (Gasless Flow)</span>
-        </h1>
+    console.log(`🤖 [Liquidate Bot] Starting liquidation for Bot: ${botAddress}`)
 
-        {/* Step 1: Wallet Address */}
-        <div className="space-y-3">
-          <label className="text-sm font-semibold text-gray-700">Step 1: Bot Smart Account</label>
-          <input
-            placeholder="0x... (Smart Account Address)"
-            className="w-full p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none transition-all"
-            value={botAddress}
-            onChange={(e) => setBotAddress(e.target.value)}
-          />
-          <p className="text-[10px] text-gray-400 italic">Target Token: {TARGET_TOKEN}</p>
-        </div>
+    // Step 1: Initialize CDP Client
+    console.log("🔧 Initializing Coinbase CDP SDK V2...")
+    
+    const apiKeyId = process.env.CDP_API_KEY_ID
+    const apiKeySecret = process.env.CDP_API_KEY_SECRET
+    const zeroXApiKey = process.env.ZEROX_API_KEY
 
-        {/* Actions Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {/* Action A */}
-          <div className="p-5 border rounded-xl bg-blue-50/50 border-blue-100 space-y-4">
-            <h3 className="font-bold text-blue-800 italic text-sm">A. Liquidate Token</h3>
-            <p className="text-xs text-gray-600 leading-relaxed">
-              1. Unwrap sisa WETH (Gasless)<br/>
-              2. Swap $BUMP ke WETH (Gasless via 0x V2)
-            </p>
-            <button
-              onClick={() => handleProcess("swap-flow", { botAddress })}
-              disabled={loading || !botAddress}
-              className="w-full bg-blue-600 text-white py-2.5 rounded-lg font-medium hover:bg-blue-700 disabled:bg-gray-300 transition-colors shadow-sm"
-            >
-              Run Liquidation
-            </button>
-          </div>
+    if (!apiKeyId || !apiKeySecret) {
+      console.error("❌ Missing CDP credentials")
+      return NextResponse.json(
+        { success: false, error: "CDP credentials not configured" },
+        { status: 500 }
+      )
+    }
 
-          {/* Action B */}
-          <div className="p-5 border rounded-xl bg-green-50/50 border-green-100 space-y-4">
-            <h3 className="font-bold text-green-800 italic text-sm">B. Exit Strategy</h3>
-            <input
-              placeholder="Recipient Address (0x...)"
-              className="w-full p-2.5 border text-sm rounded-lg focus:ring-2 focus:ring-green-500 outline-none"
-              value={recipient}
-              onChange={(e) => setRecipient(e.target.value)}
-            />
-            <button
-              onClick={() => handleProcess("wrap-send", { botAddress, recipient })}
-              disabled={loading || !botAddress || !recipient}
-              className="w-full bg-green-600 text-white py-2.5 rounded-lg font-medium hover:bg-green-700 disabled:bg-gray-300 transition-colors shadow-sm"
-            >
-              Wrap & Send All
-            </button>
-          </div>
-        </div>
+    if (!zeroXApiKey) {
+      console.error("❌ Missing 0x API key")
+      return NextResponse.json(
+        { success: false, error: "0x API key not configured" },
+        { status: 500 }
+      )
+    }
 
-        {/* Console / Status Area */}
-        <div className="mt-6 space-y-2">
-          <label className="text-[10px] font-bold uppercase text-gray-400 tracking-widest">Transaction Log</label>
-          <div className="p-4 bg-gray-900 rounded-lg font-mono text-xs text-green-400 min-h-[60px] break-all border border-gray-800">
-            <span className="text-gray-500 select-none">$ </span>{status || "Ready for execution..."}
-          </div>
-        </div>
-      </div>
+    const cdp = new CdpClient()
+    console.log(`✅ CDP Client V2 initialized`)
+
+    // Step 2: Fetch bot wallet data from database
+    console.log(`📊 Fetching bot wallet data...`)
+    
+    const supabase = createSupabaseServiceClient()
+    const { data: botWallet, error: walletError } = await supabase
+      .from("wallets_data")
+      .select("*")
+      .eq("smart_account_address", botAddress.toLowerCase())
+      .single()
+
+    if (walletError || !botWallet) {
+      console.error("❌ Bot wallet not found in database:", walletError)
+      return NextResponse.json(
+        { success: false, error: "Bot wallet not found in database" },
+        { status: 404 }
+      )
+    }
+
+    const smartAccountAddress = botWallet.smart_account_address as Address
+    const ownerAddress = botWallet.owner_address as Address
+
+    console.log(`✅ Bot Wallet found:`)
+    console.log(`   Smart Account: ${smartAccountAddress}`)
+    console.log(`   Owner Account: ${ownerAddress}`)
+
+    // Step 3: Check $BUMP token balance
+    console.log(`💰 Checking $BUMP token balance...`)
+    
+    let bumpBalanceWei: bigint
+    try {
+      bumpBalanceWei = await publicClient.readContract({
+        address: BUMP_TOKEN_ADDRESS,
+        abi: ERC20_ABI,
+        functionName: "balanceOf",
+        args: [smartAccountAddress],
+      }) as bigint
+
+      console.log(`   $BUMP Balance: ${formatEther(bumpBalanceWei)} BUMP`)
+    } catch (balanceError: any) {
+      console.error(`❌ Failed to check $BUMP balance: ${balanceError.message}`)
+      return NextResponse.json(
+        { success: false, error: `Failed to check $BUMP balance: ${balanceError.message}` },
+        { status: 500 }
+      )
+    }
+
+    // Check if balance is zero
+    if (bumpBalanceWei === BigInt(0)) {
+      console.log(`⚠️ Bot has no $BUMP tokens - Nothing to liquidate`)
+      return NextResponse.json({
+        success: false,
+        error: "No $BUMP tokens to liquidate",
+        balance: "0",
+      })
+    }
+
+    // Step 4: Get swap quote from 0x API v2 ($BUMP → WETH)
+    console.log(`📊 Fetching swap quote from 0x API v2 ($BUMP → WETH)...`)
+    
+    let quote: any = null
+    let quoteError: any = null
+    let requestId: string | null = null
+    let attempt = 1
+    const maxAttempts = 2
+
+    while (attempt <= maxAttempts && !quote) {
+      console.log(`\n🔄 Attempt ${attempt}/${maxAttempts} - Getting 0x API v2 quote...`)
       
-      <p className="text-center text-xs text-gray-400 font-light">
-        Note: Ensure the Paymaster has sufficient balance in CDP Dashboard.
-      </p>
-    </div>
-  );
+      const quoteParams = new URLSearchParams({
+        chainId: "8453", // Base Mainnet
+        sellToken: BUMP_TOKEN_ADDRESS.toLowerCase(), // $BUMP token
+        buyToken: WETH_ADDRESS.toLowerCase(), // WETH
+        sellAmount: bumpBalanceWei.toString(), // Sell all $BUMP
+        taker: smartAccountAddress.toLowerCase(),
+        slippageBps: attempt === 1 ? "500" : "1000", // 5% or 10% slippage
+      })
+
+      const quoteUrl = `https://api.0x.org/swap/allowance-holder/quote?${quoteParams.toString()}`
+      console.log(`   Endpoint: /swap/allowance-holder/quote ($BUMP → WETH)`)
+      console.log(`   Sell Amount: ${formatEther(bumpBalanceWei)} BUMP`)
+      console.log(`   Slippage: ${attempt === 1 ? "5%" : "10%"}`)
+
+      const quoteResponse = await fetch(quoteUrl, {
+        headers: {
+          "0x-api-key": zeroXApiKey,
+          "0x-version": "v2",
+          "Accept": "application/json",
+        },
+      })
+
+      if (!quoteResponse.ok) {
+        try {
+          quoteError = await quoteResponse.json()
+          requestId = quoteError.request_id || quoteError.requestId || null
+        } catch (e) {
+          quoteError = { message: quoteResponse.statusText }
+        }
+        
+        console.warn(`⚠️ Attempt ${attempt} failed:`, quoteError)
+        
+        if (quoteError.message && 
+            (quoteError.message.includes("no Route matched") || 
+             quoteError.message.includes("No route found") ||
+             quoteError.message.includes("INSUFFICIENT_ASSET_LIQUIDITY")) &&
+            attempt < maxAttempts) {
+          console.log(`   → Retrying with higher slippage...`)
+          attempt++
+          continue
+        } else {
+          break
+        }
+      } else {
+        quote = await quoteResponse.json()
+        console.log(`✅ Got swap quote on attempt ${attempt}:`)
+        const transaction = quote.transaction || quote
+        console.log(`   To: ${transaction.to}`)
+        console.log(`   Buy Amount (WETH): ${quote.buyAmount ? formatEther(BigInt(quote.buyAmount)) : 'N/A'} WETH`)
+        console.log(`   Allowance Target: ${quote.allowanceTarget || 'N/A'}`)
+        console.log(`   Price: ${quote.price || 'N/A'}`)
+        break
+      }
+    }
+
+    if (!quote) {
+      const errorMessage = quoteError?.message || "Unknown error"
+      console.error("❌ Failed to get swap quote:", quoteError)
+      return NextResponse.json({
+        success: false,
+        error: `Failed to get swap quote: ${errorMessage}`,
+        details: quoteError,
+        request_id: requestId,
+      }, { status: 400 })
+    }
+
+    // Step 5: Check $BUMP approval for AllowanceHolder
+    const allowanceTarget = quote.allowanceTarget || quote.transaction?.to
+    
+    if (!allowanceTarget) {
+      console.error(`❌ No allowance target found in quote response`)
+      return NextResponse.json({
+        success: false,
+        error: "Invalid quote response: missing allowanceTarget",
+      }, { status: 500 })
+    }
+    
+    console.log(`🔐 Checking $BUMP approval for AllowanceHolder...`)
+    console.log(`   AllowanceHolder: ${allowanceTarget}`)
+    
+    let needsApproval = false
+    try {
+      const currentAllowance = await publicClient.readContract({
+        address: BUMP_TOKEN_ADDRESS,
+        abi: ERC20_ABI,
+        functionName: "allowance",
+        args: [smartAccountAddress, allowanceTarget as Address],
+      }) as bigint
+
+      console.log(`   Current allowance: ${formatEther(currentAllowance)} BUMP`)
+      console.log(`   Required amount: ${formatEther(bumpBalanceWei)} BUMP`)
+
+      if (currentAllowance < bumpBalanceWei) {
+        needsApproval = true
+        console.log(`   ⚠️ Insufficient allowance. Need to approve $BUMP.`)
+      } else {
+        console.log(`   ✅ Sufficient allowance.`)
+      }
+    } catch (approvalCheckError: any) {
+      console.warn(`   ⚠️ Failed to check allowance: ${approvalCheckError.message}`)
+      needsApproval = true
+    }
+
+    // Step 6: Approve $BUMP if needed
+    if (needsApproval) {
+      console.log(`🔐 Approving $BUMP for AllowanceHolder...`)
+      
+      try {
+        const ownerAccount = await cdp.evm.getAccount({ address: ownerAddress })
+        if (!ownerAccount) {
+          throw new Error("Failed to get Owner Account from CDP")
+        }
+
+        const smartAccount = await cdp.evm.getSmartAccount({ 
+          owner: ownerAccount,
+          address: smartAccountAddress 
+        })
+        if (!smartAccount) {
+          throw new Error("Failed to get Smart Account from CDP")
+        }
+
+        const maxApproval = BigInt("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
+        const approveData = encodeFunctionData({
+          abi: ERC20_ABI,
+          functionName: "approve",
+          args: [allowanceTarget as Address, maxApproval],
+        })
+
+        const approveCall = {
+          to: BUMP_TOKEN_ADDRESS,
+          data: approveData,
+          value: BigInt(0),
+        }
+
+        console.log(`   → Executing approval transaction...`)
+        const approveUserOpHash = await (smartAccount as any).sendUserOperation({
+          network: "base",
+          calls: [approveCall],
+          isSponsored: true, // Gasless via CDP Paymaster
+        })
+
+        const approveUserOpHashStr = typeof approveUserOpHash === 'string' 
+          ? approveUserOpHash 
+          : (approveUserOpHash?.hash || approveUserOpHash?.userOpHash || String(approveUserOpHash))
+
+        console.log(`   → Approval submitted: ${approveUserOpHashStr}`)
+
+        // Wait for approval confirmation
+        if (typeof (smartAccount as any).waitForUserOperation === 'function') {
+          await (smartAccount as any).waitForUserOperation({
+            userOpHash: approveUserOpHashStr,
+            network: "base",
+          })
+          console.log(`   ✅ $BUMP approval confirmed`)
+        } else {
+          await new Promise(resolve => setTimeout(resolve, 5000))
+          console.log(`   ✅ $BUMP approval submitted (waiting 5s)`)
+        }
+      } catch (approvalError: any) {
+        console.error(`   ❌ Approval failed: ${approvalError.message}`)
+        return NextResponse.json({
+          success: false,
+          error: `Failed to approve $BUMP: ${approvalError.message}`,
+        }, { status: 500 })
+      }
+    }
+
+    // Step 7: Execute swap transaction
+    console.log(`🚀 Executing swap ($BUMP → WETH) with gasless transaction...`)
+    
+    try {
+      const ownerAccount = await cdp.evm.getAccount({ address: ownerAddress })
+      if (!ownerAccount) {
+        throw new Error("Failed to get Owner Account from CDP")
+      }
+
+      const smartAccount = await cdp.evm.getSmartAccount({ 
+        owner: ownerAccount,
+        address: smartAccountAddress 
+      })
+      if (!smartAccount) {
+        throw new Error("Failed to get Smart Account from CDP")
+      }
+
+      const transaction = quote.transaction || quote
+      
+      if (!transaction.to || !transaction.data) {
+        throw new Error("Invalid quote response: missing transaction.to or transaction.data")
+      }
+
+      const transactionCall = {
+        to: transaction.to as Address,
+        data: transaction.data as Hex,
+        value: BigInt(0), // ERC20 swap, value is 0
+      }
+
+      console.log(`   → Executing swap transaction...`)
+      console.log(`   → To: ${transactionCall.to}`)
+      
+      const userOpHash = await (smartAccount as any).sendUserOperation({
+        network: "base",
+        calls: [transactionCall],
+        isSponsored: true, // Gasless via CDP Paymaster
+      })
+
+      const userOpHashStr = typeof userOpHash === 'string' 
+        ? userOpHash 
+        : (userOpHash?.hash || userOpHash?.userOpHash || String(userOpHash))
+
+      console.log(`   ✅ Swap transaction submitted: ${userOpHashStr}`)
+
+      // Wait for transaction confirmation
+      if (typeof (smartAccount as any).waitForUserOperation === 'function') {
+        await (smartAccount as any).waitForUserOperation({
+          userOpHash: userOpHashStr,
+          network: "base",
+        })
+        console.log(`   ✅ Swap confirmed!`)
+      }
+
+      // Log to database
+      await supabase.from("bot_logs").insert({
+        user_address: botWallet.user_address.toLowerCase(),
+        wallet_address: smartAccountAddress,
+        token_address: BUMP_TOKEN_ADDRESS,
+        amount_wei: bumpBalanceWei.toString(),
+        action: "liquidate_bump_to_weth",
+        message: `[Liquidation] Swapped ${formatEther(bumpBalanceWei)} BUMP to WETH (Gasless)`,
+        status: "success",
+        created_at: new Date().toISOString(),
+      })
+
+      return NextResponse.json({
+        success: true,
+        txHash: userOpHashStr,
+        message: `Successfully liquidated ${formatEther(bumpBalanceWei)} BUMP to WETH`,
+        sellAmount: formatEther(bumpBalanceWei),
+        buyAmount: quote.buyAmount ? formatEther(BigInt(quote.buyAmount)) : "unknown",
+      })
+
+    } catch (swapError: any) {
+      console.error(`❌ Swap execution failed: ${swapError.message}`)
+      
+      await supabase.from("bot_logs").insert({
+        user_address: botWallet.user_address.toLowerCase(),
+        wallet_address: smartAccountAddress,
+        token_address: BUMP_TOKEN_ADDRESS,
+        amount_wei: bumpBalanceWei.toString(),
+        action: "liquidate_bump_to_weth",
+        message: `[Liquidation] Failed: ${swapError.message}`,
+        status: "error",
+        error_details: { error: swapError.message },
+        created_at: new Date().toISOString(),
+      })
+
+      return NextResponse.json({
+        success: false,
+        error: `Swap execution failed: ${swapError.message}`,
+      }, { status: 500 })
+    }
+
+  } catch (error: any) {
+    console.error("❌ Unexpected error:", error)
+    return NextResponse.json({
+      success: false,
+      error: error.message,
+      stack: error.stack,
+    }, { status: 500 })
+  }
 }
