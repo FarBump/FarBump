@@ -120,56 +120,7 @@ export async function POST(request: NextRequest) {
             "0x-version": "v2",
           },
         });
-
-        const quote = await quoteRes.json();
-        if (!quoteRes.ok) throw new Error(quote.reason || "0x Quote Failed");
-
-        // 5. Signing EIP-712
-        const eip712 = quote.trade.eip712;
-        const signatureHex = await smartAccount.signTypedData(
-          eip712.domain,
-          eip712.types,
-          eip712.message
-        );
-
-        const sig = hexToSignature(signatureHex as Hex);
-        const r = sig.r.padStart(66, "0x");
-        const s = sig.s.padStart(66, "0x");
-        const v = sig.v.toString(16).padStart(2, "0");
-        const signatureType = "02";
-
-        const paddedSignature = `${r}${s.replace("0x", "")}${v}${signatureType}` as Hex;
-        const sigLengthHex = (paddedSignature.replace("0x", "").length / 2).toString(16).padStart(64, "0");
-        const finalCallData = `${quote.trade.transaction.data}${sigLengthHex}${paddedSignature.replace("0x", "")}` as Hex;
-
-        // 6. Execute Batch Operation
-        const swapOp = await smartAccount.sendUserOperation({
-          calls: [
-            {
-              to: tokenAddress as Address,
-              data: encodeFunctionData({
-                abi: ERC20_ABI,
-                functionName: "approve",
-                args: [quote.trade.clearinghouse as Address, balance],
-              }),
-            },
-            {
-              to: quote.trade.transaction.to as Address,
-              data: finalCallData,
-            },
-          ],
-        });
-
-        await swapOp.wait();
-        results.push({ address: botAddress, status: "success", txHash: swapOp.userOpHash });
-        console.log(`✅ Success swap for ${botAddress}`);
-        
-      } catch (err: any) {
-        console.error(`❌ Error for ${botAddress}:`, err.message);
-        results.push({ address: botAddress, status: "failed", error: err.message });
-      }
-    }
-
+       
     return NextResponse.json({ success: true, details: results });
   } catch (error: any) {
     console.error("Critical Error:", error.message);
