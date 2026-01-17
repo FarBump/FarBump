@@ -32,7 +32,6 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const { botWalletAddresses, tokenAddress, recipientAddress } = body;
 
-    // Initial validation
     if (!botWalletAddresses || !Array.isArray(botWalletAddresses)) {
       return NextResponse.json({ success: false, error: "botWalletAddresses must be an array" }, { status: 400 });
     }
@@ -41,7 +40,6 @@ export async function POST(request: NextRequest) {
     const cdp = new CdpClient();
     const results = [];
 
-    // Pre-validate token and recipient before entering the loop
     const safeToken = ensureAddress(tokenAddress, "tokenAddress");
     const safeRecipient = ensureAddress(recipientAddress, "recipientAddress");
 
@@ -49,7 +47,6 @@ export async function POST(request: NextRequest) {
       try {
         const safeBotAddress = ensureAddress(rawAddress, "botWalletAddress");
 
-        // Fetch bot data from Supabase
         const { data: bot, error: dbError } = await supabase
           .from("wallets_data")
           .select("*")
@@ -59,25 +56,27 @@ export async function POST(request: NextRequest) {
         if (dbError || !bot) throw new Error(`Bot record not found in database for ${safeBotAddress}`);
         if (!bot.owner_address) throw new Error(`Owner address missing for bot ${safeBotAddress}`);
 
-        // Initialize CDP Smart Account
         const ownerAccount = await cdp.evm.getAccount({ address: bot.owner_address as Address });
         const smartAccount = await cdp.evm.getSmartAccount({ owner: ownerAccount, address: safeBotAddress as Address });
 
-        // 1. Check current token balance
-        const balanceWei = await publicClient.readContract({
+        // 1. Check current token balance & Ensure Integer (No Decimals)
+        const rawBalanceWei = await publicClient.readContract({
           address: safeToken,
           abi: WETH_ABI,
           functionName: "balanceOf",
           args: [safeBotAddress],
         });
 
-        if (balanceWei > 0n) {
+        // Convert to string and split by dot to remove any decimals, then back to BigInt
+        const cleanBalanceWei = BigInt(rawBalanceWei.toString().split('.')[0]);
+
+        if (cleanBalanceWei > 0n) {
           // 2. Fetch Gasless Quote from 0x v2
           const query = new URLSearchParams({
             chainId: "8453",
             sellToken: safeToken.toLowerCase(),
             buyToken: WETH_ADDRESS.toLowerCase(),
-            sellAmount: balanceWei.toString(),
+            sellAmount: cleanBalanceWei.toString(), // Sent as clean integer string
             taker: safeBotAddress.toLowerCase(),
           });
 
@@ -95,7 +94,7 @@ export async function POST(request: NextRequest) {
           // 3. Sign EIP-712 Data
           const signature = await (smartAccount as any).signTypedData(quote.trade.eip712);
           
-          // 4. Construct Final Data for Settler (Append Sig Length + Sig)
+          // 4. Construct Final Data for Settler
           const sigHex = signature.startsWith('0x') ? signature.slice(2) : signature;
           const sigLengthHex = (sigHex.length / 2).toString(16).padStart(64, '0');
           const transactionData = quote.trade.transaction.data;
@@ -110,7 +109,7 @@ export async function POST(request: NextRequest) {
                 data: encodeFunctionData({
                   abi: WETH_ABI,
                   functionName: "approve",
-                  args: [quote.trade.clearinghouse as Address, balanceWei],
+                  args: [quote.trade.clearinghouse as Address, cleanBalanceWei],
                 }),
                 value: 0n
               },
@@ -124,19 +123,20 @@ export async function POST(request: NextRequest) {
           });
           await swapOp.wait();
           
-          // Wait for state sync
           await new Promise(r => setTimeout(r, 2000));
         }
 
         // 6. Final Transfer of WETH to Main Wallet
-        const finalWethBalance = await publicClient.readContract({
+        const rawFinalWeth = await publicClient.readContract({
           address: WETH_ADDRESS,
           abi: WETH_ABI,
           functionName: "balanceOf",
           args: [safeBotAddress],
         });
+        
+        const cleanFinalWeth = BigInt(rawFinalWeth.toString().split('.')[0]);
 
-        if (finalWethBalance > 0n) {
+        if (cleanFinalWeth > 0n) {
           const transferOp = await (smartAccount as any).sendUserOperation({
             network: "base",
             calls: [{
@@ -144,7 +144,7 @@ export async function POST(request: NextRequest) {
               data: encodeFunctionData({ 
                 abi: WETH_ABI, 
                 functionName: "transfer", 
-                args: [safeRecipient, finalWethBalance] 
+                args: [safeRecipient, cleanFinalWeth] 
               }),
               value: 0n
             }],
@@ -153,7 +153,6 @@ export async function POST(request: NextRequest) {
           await transferOp.wait();
         }
 
-        // 7. Update Credits in Database
         await supabase
           .from("bot_wallet_credits")
           .update({ weth_balance_wei: "0" })
