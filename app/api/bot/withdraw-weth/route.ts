@@ -24,13 +24,13 @@ export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
     // 'tokenAddress' berasal dari Select Token di Manage Bot
-    const { botWalletAddresses, tokenAddress } = body as { 
-      botWalletAddresses: string[], 
+    const { smart_account_address, tokenAddress } = body as { 
+      smart_account_address: string[], 
       tokenAddress: string 
     }
 
-    if (!botWalletAddresses || !tokenAddress) {
-      return NextResponse.json({ error: "Missing botWalletAddresses or tokenAddress" }, { status: 400 })
+    if (!smart_account_address || !tokenAddress) {
+      return NextResponse.json({ error: "Missing smart_account_address or tokenAddress" }, { status: 400 })
     }
 
     const supabase = createSupabaseServiceClient()
@@ -39,7 +39,7 @@ export async function POST(request: NextRequest) {
 
     console.log(`🔄 Starting Swap to WETH for Token: ${tokenAddress}`)
 
-    for (const botAddress of botWalletAddresses) {
+    for (const botAddress of smart_account_address) {
       try {
         // 1. Fetch data wallet dari database
         const { data: botWallet } = await supabase
