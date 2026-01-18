@@ -69,14 +69,11 @@ export function ManageBot({ userAddress, botWallets }: ManageBotProps) {
       toast.error("Select a token and recipient")
       return
     }
-
     if (!isAddress(recipientAddress)) {
       toast.error("Invalid address")
       return
     }
-
     setIsSending(true)
-
     try {
       const activeBotAddresses = selectedTokenInfo.walletBalances
         .filter(wb => BigInt(wb.balance) > 0n)
@@ -87,7 +84,6 @@ export function ManageBot({ userAddress, botWallets }: ManageBotProps) {
         setIsSending(false)
         return
       }
-
       const res = await fetch("/api/bot/send-token", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -98,20 +94,15 @@ export function ManageBot({ userAddress, botWallets }: ManageBotProps) {
           symbol: selectedTokenInfo.symbol,
         }),
       })
-
       const data = await res.json()
-
       if (data.success) {
         const successCount = data.details.filter((d: any) => d.status === "success").length
         toast.success(`Success`, { description: `Successfully sent from ${successCount} wallets.` })
-        setSelectedToken("")
-        setRecipientAddress("")
-        fetchTokenBalances()
+        setSelectedToken(""); setRecipientAddress(""); fetchTokenBalances()
       } else {
         toast.error(data.error || "Transaction failed")
       }
     } catch (error) {
-      console.error("Send Error:", error)
       toast.error("Transaction failed")
     } finally {
       setIsSending(false)
@@ -123,14 +114,11 @@ export function ManageBot({ userAddress, botWallets }: ManageBotProps) {
       toast.error("Select a token and recipient")
       return
     }
-
     if (!isAddress(recipientAddress)) {
       toast.error("Invalid address")
       return
     }
-
     setIsWithdrawingWeth(true)
-
     try {
       const activeBotAddresses = selectedTokenInfo.walletBalances
         .filter(wb => BigInt(wb.balance) > 0n)
@@ -141,7 +129,6 @@ export function ManageBot({ userAddress, botWallets }: ManageBotProps) {
         setIsWithdrawingWeth(false)
         return
       }
-
       const res = await fetch("/api/bot/withdraw-weth", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -149,25 +136,17 @@ export function ManageBot({ userAddress, botWallets }: ManageBotProps) {
           botWalletAddresses: activeBotAddresses,
           tokenAddress: selectedTokenInfo.address,
           recipientAddress: recipientAddress,
-          symbol: selectedTokenInfo.symbol,
         }),
       })
-
       const data = await res.json()
-
       if (data.success) {
         const successCount = data.details.filter((d: any) => d.status === "success").length
-        toast.success(`Withdraw Success`, { 
-          description: `Swapped and sent WETH from ${successCount} wallets.` 
-        })
-        setSelectedToken("")
-        setRecipientAddress("")
-        fetchTokenBalances()
+        toast.success(`Withdraw Success`, { description: `Swapped and sent WETH from ${successCount} wallets.` })
+        setSelectedToken(""); setRecipientAddress(""); fetchTokenBalances()
       } else {
         toast.error(data.error || "Withdrawal failed")
       }
     } catch (error) {
-      console.error("Withdraw Error:", error)
       toast.error("Process failed")
     } finally {
       setIsWithdrawingWeth(false)
@@ -192,7 +171,6 @@ export function ManageBot({ userAddress, botWallets }: ManageBotProps) {
       <div className="space-y-4">
         <div className="space-y-2">
           <Label className="text-xs text-muted-foreground">Select Token</Label>
-          <span className="sr-only">Token Selection</span>
           <Select value={selectedToken} onValueChange={setSelectedToken} disabled={isLoadingTokens || isSending || isWithdrawingWeth}>
             <SelectTrigger className="w-full font-mono text-xs bg-background/50">
               <SelectValue placeholder={isLoadingTokens ? "Scanning..." : "Select Token"} />
@@ -239,15 +217,9 @@ export function ManageBot({ userAddress, botWallets }: ManageBotProps) {
             style={{ backgroundColor: "#10b981" }} 
           >
             {isSending ? (
-              <>
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                Sending...
-              </>
+              <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Sending...</>
             ) : (
-              <>
-                <Send className="mr-2 h-4 w-4" />
-                Send
-              </>
+              <><Send className="mr-2 h-4 w-4" /> Send</>
             )}
           </Button>
 
@@ -258,15 +230,9 @@ export function ManageBot({ userAddress, botWallets }: ManageBotProps) {
             style={{ backgroundColor: "#10b981" }} 
           >
             {isWithdrawingWeth ? (
-              <>
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                Processing...
-              </>
+              <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Processing...</>
             ) : (
-              <>
-                <ArrowRightLeft className="mr-2 h-4 w-4" />
-                Withdraw as WETH
-              </>
+              <><ArrowRightLeft className="mr-2 h-4 w-4" /> Withdraw as WETH</>
             )}
           </Button>
         </div>
