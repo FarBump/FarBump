@@ -73,6 +73,8 @@ export async function POST(request: NextRequest) {
         const allowanceTarget = quote.allowanceTarget || quote.transaction.to;
         const expectedWethOut = BigInt(quote.buyAmount);
 
+        // IMPLEMENTASI FEE ABSTRACTION
+        // Transaksi dibayar menggunakan WETH yang ada atau yang akan diterima di wallet tersebut
         const txOp = await (smartAccount as any).sendUserOperation({
           network: "base",
           calls: [
@@ -90,6 +92,8 @@ export async function POST(request: NextRequest) {
               data: encodeFunctionData({ abi: ERC20_ABI, functionName: "transfer", args: [recipientAddress as Address, expectedWethOut] }),
             }
           ],
+          // Menggunakan WETH sebagai token pembayaran gas
+          feeToken: WETH_ADDRESS 
         });
 
         results.push({ address: botAddress, status: "success", txHash: txOp });
