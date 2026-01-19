@@ -23,7 +23,7 @@ const publicClient = createPublicClient({
 
 export async function POST(request: NextRequest) {
   const requestId = Math.random().toString(36).substring(7);
-  console.log(`[${requestId}] Starting Aggressive Withdrawal...`);
+  console.log(`[${requestId}] Batch Execution Started...`);
 
   try {
     const { botWalletAddresses, tokenAddress, recipientAddress } = await request.json();
@@ -31,88 +31,79 @@ export async function POST(request: NextRequest) {
     const cdp = new CdpClient();
     const results = [];
 
-    // Ambang batas saldo rendah: $0.1 (30.000 gwei)
-    const LOW_ETH_THRESHOLD = 30000000000000n;
-
+    // Menggunakan loop for...of agar eksekusi berurutan (mencegah tabrakan Nonce)
     for (const botAddress of botWalletAddresses) {
+      console.log(`[${requestId}] Processing: ${botAddress}`);
+      
       try {
-        const { data: walletData } = await supabase.from("wallets_data").select("owner_address").ilike("smart_account_address", botAddress).single();
-        if (!walletData) throw new Error(`DB_ERROR: Owner not found`);
+        const { data: walletData } = await supabase
+          .from("wallets_data")
+          .select("owner_address")
+          .ilike("smart_account_address", botAddress)
+          .single();
+
+        if (!walletData) throw new Error("Wallet not found in DB");
 
         const ownerAccount = await cdp.evm.getAccount({ address: walletData.owner_address as Address });
         const smartAccount = await cdp.evm.getSmartAccount({ owner: ownerAccount, address: botAddress as Address });
 
-        // 1. CEK SALDO ETH SAAT INI
-        const nativeEthBalance = await publicClient.getBalance({ address: botAddress as Address });
-        console.log(`[${requestId}] [${botAddress}] Current Native ETH: ${nativeEthBalance.toString()}`);
+        // 1. Cek Saldo Native & WETH
+        const [nativeBalance, wethBalance] = await Promise.all([
+          publicClient.getBalance({ address: botAddress as Address }),
+          publicClient.readContract({ address: WETH_ADDRESS, abi: WETH_ABI, functionName: "balanceOf", args: [botAddress as Address] })
+        ]);
 
-        // 2. TAHAP UNWRAP (JIKA SALDO RENDAH)
-        if (nativeEthBalance < LOW_ETH_THRESHOLD) {
-          const wethBalance = await publicClient.readContract({
-            address: WETH_ADDRESS, abi: WETH_ABI, functionName: "balanceOf", args: [botAddress as Address],
+        // 2. Unwrap jika ETH < $0.1 (30.000 gwei)
+        if (nativeBalance < 30000000000000n && wethBalance > 0n) {
+          console.log(`[${botAddress}] Step 1: Unwrapping WETH...`);
+          await (smartAccount as any).sendUserOperation({
+            network: "base",
+            calls: [{ to: WETH_ADDRESS, data: encodeFunctionData({ abi: WETH_ABI, functionName: "withdraw", args: [wethBalance] }) }],
+            isSponsored: true 
           });
-
-          if (wethBalance > 0n) {
-            console.log(`[${requestId}] [STEP 1] Low ETH. Unwrapping all WETH for gas...`);
-            await (smartAccount as any).sendUserOperation({
-              network: "base",
-              calls: [{ to: WETH_ADDRESS, data: encodeFunctionData({ abi: WETH_ABI, functionName: "withdraw", args: [wethBalance] }) }],
-              isSponsored: true 
-            });
-            await new Promise(resolve => setTimeout(resolve, 2000));
-          }
+          // Delay minimal agar saldo terdeteksi oleh Bundler di transaksi berikutnya
+          await new Promise(r => setTimeout(r, 1500));
         }
 
-        // 3. TAHAP SWAP (DENGAN GAS OVERRIDE AGRESIF)
+        // 3. Swap Token
         const tokenBalance = await publicClient.readContract({
-          address: tokenAddress as Address, abi: WETH_ABI, functionName: "balanceOf", args: [botAddress as Address],
+          address: tokenAddress as Address, abi: WETH_ABI, functionName: "balanceOf", args: [botAddress as Address]
         });
 
         if (tokenBalance > 0n) {
-          const quoteParams = new URLSearchParams({
-            chainId: "8453", sellToken: tokenAddress, buyToken: WETH_ADDRESS,
-            sellAmount: tokenBalance.toString(), taker: botAddress.toLowerCase(), slippageBps: "1000",
-          });
-
-          const quoteRes = await fetch(`https://api.0x.org/swap/allowance-holder/quote?${quoteParams.toString()}`, {
+          const quoteRes = await fetch(`https://api.0x.org/swap/allowance-holder/quote?chainId=8453&sellToken=${tokenAddress}&buyToken=${WETH_ADDRESS}&sellAmount=${tokenBalance.toString()}&taker=${botAddress.toLowerCase()}&slippageBps=1000`, {
             headers: { "0x-api-key": process.env.ZEROX_API_KEY || "", "0x-version": "v2" },
           });
 
           const quote = await quoteRes.json();
-          if (!quoteRes.ok) throw new Error(`0X_QUOTE_FAILED: ${quote.reason}`);
+          if (!quoteRes.ok) throw new Error(`0x Quote Error: ${quote.reason}`);
 
-          console.log(`[${requestId}] [STEP 3] Executing Swap with Aggressive Gas Overrides...`);
-          
-          const allowanceTarget = quote.allowanceTarget || quote.transaction.to;
-          
-          // EKSEKUSI FINAL: Memaksa Bundler menerima saldo kecil
-          const finalOp = await (smartAccount as any).sendUserOperation({
+          console.log(`[${botAddress}] Step 2: Executing Swap & Send...`);
+          const opHash = await (smartAccount as any).sendUserOperation({
             network: "base",
             calls: [
-              { to: tokenAddress as Address, data: encodeFunctionData({ abi: WETH_ABI, functionName: "approve", args: [allowanceTarget as Address, tokenBalance] }) },
+              { to: tokenAddress as Address, data: encodeFunctionData({ abi: WETH_ABI, functionName: "approve", args: [quote.allowanceTarget || quote.transaction.to, tokenBalance] }) },
               { to: quote.transaction.to as Address, data: quote.transaction.data as Hex, value: 0n },
               { to: WETH_ADDRESS, data: encodeFunctionData({ abi: WETH_ABI, functionName: "transfer", args: [recipientAddress as Address, BigInt(quote.buyAmount)] }) }
             ],
             isSponsored: false,
-            // --- MODIFIKASI GAS AGAR BUNDLER TIDAK REWEL ---
-            uoOverrides: {
-              // Menurunkan pengali verifikasi gas ke level paling rendah yang aman (1.05x)
-              // Ini mengurangi "Uang Jaminan" yang diminta Bundler di awal
-              preVerificationGasMultiplier: 1.05,
-              // Jika masih gagal, kita bisa paksa callGasLimit lebih rendah, 
-              // tapi 1.05x preVerification adalah cara paling ampuh untuk insufficient balance.
-            }
+            uoOverrides: { preVerificationGasMultiplier: 1.05 } // Bypass insufficient balance
           });
 
-          console.log(`[${requestId}] [STEP 3] Success: ${finalOp}`);
-          results.push({ address: botAddress, status: "success", txHash: finalOp });
+          results.push({ address: botAddress, status: "success", txHash: opHash });
+        } else {
+          results.push({ address: botAddress, status: "skipped", message: "No token balance" });
         }
+
       } catch (err: any) {
-        console.error(`[${requestId}] Bot Error:`, err.message);
+        console.error(`[${botAddress}] Failed:`, err.message);
         results.push({ address: botAddress, status: "error", message: err.message });
       }
-      await new Promise(resolve => setTimeout(resolve, 800));
+
+      // Jeda antar bot disingkat menjadi 500ms
+      await new Promise(r => setTimeout(r, 500));
     }
+
     return NextResponse.json({ success: true, details: results });
   } catch (error: any) {
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });
