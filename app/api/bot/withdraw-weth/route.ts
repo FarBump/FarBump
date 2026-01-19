@@ -16,9 +16,10 @@ const WETH_ABI = [
   { inputs: [{ name: "wad", type: "uint256" }], name: "withdraw", outputs: [], stateMutability: "nonpayable", type: "function" },
 ] as const;
 
+// Menggunakan RPC URL dari .env untuk menghindari rate limit publik
 const publicClient = createPublicClient({
   chain: base,
-  transport: http("https://mainnet.base.org"),
+  transport: http(process.env.NEXT_PUBLIC_BASE_RPC_URL),
 });
 
 export async function POST(request: NextRequest) {
@@ -32,27 +33,21 @@ export async function POST(request: NextRequest) {
     const results = [];
 
     for (const botAddress of botWalletAddresses) {
-      console.log(`\n[${requestId}] Processing Bot: ${botAddress}`);
+      console.log(`\n[${requestId}] Bot: ${botAddress}`);
       
       try {
-        // 1. Fetch Owner Data
-        const { data: walletData, error: dbError } = await supabase
+        const { data: walletData } = await supabase
           .from("wallets_data")
           .select("owner_address")
           .ilike("smart_account_address", botAddress)
           .single();
 
-        if (dbError || !walletData) {
-          throw new Error(`DB_ERROR: Owner not found for ${botAddress}`);
-        }
+        if (!walletData) throw new Error(`DB_ERROR: Owner not found`);
 
         const ownerAccount = await cdp.evm.getAccount({ address: walletData.owner_address as Address });
         const smartAccount = await cdp.evm.getSmartAccount({ owner: ownerAccount, address: botAddress as Address });
 
-        // --- STEP 1: UNWRAP WETH (SPONSORED) ---
-        console.log(`[${requestId}] [STEP 1] Checking WETH for gas unwrap...`);
-        const gasAmount = 500000000000000n; // 0.0005 ETH
-        
+        // --- STEP 1: UNWRAP ALL WETH (SPONSORED) ---
         const wethBalance = await publicClient.readContract({
           address: WETH_ADDRESS,
           abi: WETH_ABI,
@@ -60,28 +55,27 @@ export async function POST(request: NextRequest) {
           args: [botAddress as Address],
         });
 
-        if (wethBalance < gasAmount) {
-          console.warn(`[${requestId}] [STEP 1] Skip Unwrap: WETH balance too low (${wethBalance.toString()})`);
-        } else {
-          console.log(`[${requestId}] [STEP 1] Sending Sponsored Unwrap UserOp...`);
+        console.log(`[${requestId}] [STEP 1] Found WETH: ${wethBalance.toString()}`);
+
+        if (wethBalance > 0n) {
           try {
-            const unwrapOp = await (smartAccount as any).sendUserOperation({
+            console.log(`[${requestId}] [STEP 1] Unwrapping all WETH for gas...`);
+            await (smartAccount as any).sendUserOperation({
               network: "base",
               calls: [{
                 to: WETH_ADDRESS,
-                data: encodeFunctionData({ abi: WETH_ABI, functionName: "withdraw", args: [gasAmount] }),
+                data: encodeFunctionData({ abi: WETH_ABI, functionName: "withdraw", args: [wethBalance] }),
               }],
               isSponsored: true 
             });
-            console.log(`[${requestId}] [STEP 1] Unwrap Success! Hash: ${unwrapOp}`);
-          } catch (unwrapErr: any) {
-            console.error(`[${requestId}] [STEP 1] Unwrap Failed:`, unwrapErr.message);
-            throw new Error(`UNWRAP_FAILED: ${unwrapErr.message}`);
+            // Tunggu 2 detik agar saldo Native ETH ter-update di node
+            await new Promise(resolve => setTimeout(resolve, 2000));
+          } catch (e: any) {
+            console.warn(`[${requestId}] [STEP 1] Unwrap failed (trying to proceed):`, e.message);
           }
         }
 
-        // --- STEP 2: GET QUOTE 0X ---
-        console.log(`[${requestId}] [STEP 2] Fetching 0x Quote...`);
+        // --- STEP 2: SWAP TOKEN (NO MINIMUM) ---
         const tokenBalance = await publicClient.readContract({
           address: tokenAddress as Address,
           abi: WETH_ABI,
@@ -90,7 +84,7 @@ export async function POST(request: NextRequest) {
         });
 
         if (tokenBalance === 0n) {
-          console.log(`[${requestId}] [STEP 2] Skip: Token balance is 0`);
+          console.log(`[${requestId}] [STEP 2] Skip: Token balance 0`);
           continue;
         }
 
@@ -108,51 +102,44 @@ export async function POST(request: NextRequest) {
         });
 
         const quote = await quoteRes.json();
-        if (!quoteRes.ok) {
-          throw new Error(`0X_QUOTE_FAILED: ${quote.reason || "Unknown reason"}`);
-        }
-        console.log(`[${requestId}] [STEP 2] 0x Quote Received. Expected Out: ${quote.buyAmount}`);
+        if (!quoteRes.ok) throw new Error(`0X_QUOTE_FAILED: ${quote.reason}`);
 
-        // --- STEP 3: FINAL SWAP & SEND (PAID BY NATIVE ETH) ---
-        console.log(`[${requestId}] [STEP 3] Sending Final UserOp (Bypass Allowlist)...`);
+        // --- STEP 3: FINAL EXECUTION ---
         const allowanceTarget = quote.allowanceTarget || quote.transaction.to;
+        const finalOp = await (smartAccount as any).sendUserOperation({
+          network: "base",
+          calls: [
+            {
+              to: tokenAddress as Address,
+              data: encodeFunctionData({ abi: WETH_ABI, functionName: "approve", args: [allowanceTarget as Address, tokenBalance] }),
+            },
+            {
+              to: quote.transaction.to as Address,
+              data: quote.transaction.data as Hex,
+              value: 0n,
+            },
+            {
+              to: WETH_ADDRESS,
+              data: encodeFunctionData({ abi: WETH_ABI, functionName: "transfer", args: [recipientAddress as Address, BigInt(quote.buyAmount)] }),
+            }
+          ],
+          isSponsored: false 
+        });
 
-        try {
-          const finalOp = await (smartAccount as any).sendUserOperation({
-            network: "base",
-            calls: [
-              {
-                to: tokenAddress as Address,
-                data: encodeFunctionData({ abi: WETH_ABI, functionName: "approve", args: [allowanceTarget as Address, tokenBalance] }),
-              },
-              {
-                to: quote.transaction.to as Address,
-                data: quote.transaction.data as Hex,
-                value: 0n,
-              },
-              {
-                to: WETH_ADDRESS,
-                data: encodeFunctionData({ abi: WETH_ABI, functionName: "transfer", args: [recipientAddress as Address, BigInt(quote.buyAmount)] }),
-              }
-            ],
-            isSponsored: false 
-          });
-          console.log(`[${requestId}] [STEP 3] Process Complete! Hash: ${finalOp}`);
-          results.push({ address: botAddress, status: "success", txHash: finalOp });
-        } catch (finalErr: any) {
-          console.error(`[${requestId}] [STEP 3] Final Op Failed:`, finalErr.message);
-          throw new Error(`FINAL_TX_FAILED: ${finalErr.message}`);
-        }
+        console.log(`[${requestId}] [STEP 3] Success: ${finalOp}`);
+        results.push({ address: botAddress, status: "success", txHash: finalOp });
 
       } catch (err: any) {
-        console.error(`[${requestId}] Critical Error for Bot ${botAddress}:`, err.message);
-        results.push({ address: botAddress, status: "error", errorType: err.message.split(':')[0], message: err.message });
+        console.error(`[${requestId}] Error:`, err.message);
+        results.push({ address: botAddress, status: "error", message: err.message });
       }
+      
+      // Jeda 1 detik antar bot agar 0x API tidak rate limit
+      await new Promise(resolve => setTimeout(resolve, 1000));
     }
 
     return NextResponse.json({ success: true, details: results });
   } catch (error: any) {
-    console.error(`[${requestId}] Global API Error:`, error.message);
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });
   }
 }
