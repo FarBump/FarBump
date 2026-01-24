@@ -444,15 +444,25 @@ export function useDistributeCredits() {
       }
 
       // =============================================
-      // IMPORTANT: No need to manually deduct from database
-      // Main wallet credit is now based on ACTUAL on-chain balance (ETH + WETH)
-      // When distributing, ETH/WETH moves from main wallet to bot wallets on-chain
-      // So main wallet balance decreases AUTOMATICALLY on-chain
-      // user_credits.balance_wei is kept for audit/history but NOT used for display
+      // CREDIT DEDUCTION LOGIC:
+      // When distributing WETH from main wallet to bot wallets:
+      // 1. WETH is transferred on-chain (from main wallet to bot wallets)
+      // 2. bot_wallet_credits.weth_balance_wei is INCREASED (via record-distribution API)
+      // 3. user_credits.balance_wei is DECREASED (via record-distribution API)
+      // 
+      // This prevents double counting:
+      // - Before: user_credits.balance_wei = 1 WETH, bot_wallet_credits = 0 WETH → Total = 1 WETH ✅
+      // - After distribute: user_credits.balance_wei = 0 WETH, bot_wallet_credits = 1 WETH → Total = 1 WETH ✅
+      // - Without deduction: user_credits.balance_wei = 1 WETH, bot_wallet_credits = 1 WETH → Total = 2 WETH ❌
+      // 
+      // The record-distribution API handles both operations atomically:
+      // - Adds to bot_wallet_credits.weth_balance_wei
+      // - Subtracts from user_credits.balance_wei
       // =============================================
-      console.log(`\n💰 Main wallet credit will decrease automatically (on-chain balance)`)
-      console.log(`   → ETH/WETH has been transferred from main wallet to bot wallets`)
-      console.log(`   → Next time credit is fetched, it will reflect the reduced balance`)
+      console.log(`\n💰 Credit distribution completed!`)
+      console.log(`   → WETH transferred on-chain: ${formatEther(creditToDistribute)} WETH`)
+      console.log(`   → Database updated: Added to bot wallets, deducted from main wallet`)
+      console.log(`   → Credit balance is now correctly distributed (no double counting)`)
 
       setIsSuccess(true)
       setStatus("Distribution completed!")

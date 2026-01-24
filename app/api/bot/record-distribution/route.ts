@@ -43,6 +43,10 @@ export async function POST(request: NextRequest) {
     const supabase = createSupabaseServiceClient()
     const normalizedUserAddress = userAddress.toLowerCase()
 
+    // Calculate total WETH distributed (sum of all distributions)
+    // This will be deducted from main wallet credit (user_credits.balance_wei)
+    let totalDistributedWei = BigInt(0)
+    
     // Upsert distribution records for each bot wallet
     // IMPORTANT: Only 1 row per bot_wallet_address (unique constraint)
     // If record exists, add to existing weth_balance_wei
@@ -50,7 +54,8 @@ export async function POST(request: NextRequest) {
     // 
     // CREDIT SYSTEM (1:1 Value):
     // - Only weth_balance_wei is used for credit tracking
-    // - Total Credit = Native ETH (main wallet) + WETH (bot wallets)
+    // - When distributing: Add to bot_wallet_credits.weth_balance_wei AND subtract from user_credits.balance_wei
+    // - Total Credit = user_credits.balance_wei (main wallet) + SUM(bot_wallet_credits.weth_balance_wei) (bot wallets)
     // - Credit value is 1:1 (WETH = ETH in terms of credit calculation)
     // 
     // WHY WETH?
@@ -61,6 +66,7 @@ export async function POST(request: NextRequest) {
     for (const dist of distributions) {
       const botWalletAddress = dist.botWalletAddress.toLowerCase()
       const wethAmountWei = dist.wethAmountWei || dist.amountWei
+      totalDistributedWei += BigInt(wethAmountWei)
       
       // Check if record exists
       const { data: existingRecord } = await supabase
@@ -112,17 +118,85 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    if (insertError) {
-      console.error("❌ Error recording distribution:", insertError)
+    // CRITICAL: Deduct distributed amount from main wallet credit (user_credits.balance_wei)
+    // This prevents double counting: credit should not be counted in both main wallet and bot wallets
+    console.log(`\n💰 Deducting ${totalDistributedWei.toString()} wei from main wallet credit...`)
+    
+    // Get current main wallet credit
+    const { data: userCreditData, error: fetchUserCreditError } = await supabase
+      .from("user_credits")
+      .select("balance_wei")
+      .eq("user_address", normalizedUserAddress)
+      .single()
+
+    if (fetchUserCreditError && fetchUserCreditError.code !== "PGRST116") {
+      console.error("❌ Error fetching user credit balance:", fetchUserCreditError)
       return NextResponse.json(
-        { error: "Failed to record distribution", details: insertError.message },
+        { error: "Failed to fetch user credit balance", details: fetchUserCreditError.message },
         { status: 500 }
       )
     }
 
+    const currentMainWalletCreditWei = userCreditData?.balance_wei 
+      ? BigInt(userCreditData.balance_wei.toString())
+      : BigInt(0)
+
+    if (currentMainWalletCreditWei < totalDistributedWei) {
+      console.warn(`⚠️ Warning: Main wallet credit (${currentMainWalletCreditWei.toString()}) is less than distributed amount (${totalDistributedWei.toString()})`)
+      console.warn(`   → Setting main wallet credit to 0`)
+      // Set to 0 if insufficient (should not happen, but handle gracefully)
+      const { error: updateUserCreditError } = await supabase
+        .from("user_credits")
+        .upsert(
+          {
+            user_address: normalizedUserAddress,
+            balance_wei: "0",
+            last_updated: new Date().toISOString(),
+          },
+          {
+            onConflict: "user_address",
+          }
+        )
+      
+      if (updateUserCreditError) {
+        console.error("❌ Error updating user credit balance:", updateUserCreditError)
+        return NextResponse.json(
+          { error: "Failed to update user credit balance", details: updateUserCreditError.message },
+          { status: 500 }
+        )
+      }
+    } else {
+      // Deduct distributed amount from main wallet credit
+      const newMainWalletCreditWei = currentMainWalletCreditWei - totalDistributedWei
+      
+      const { error: updateUserCreditError } = await supabase
+        .from("user_credits")
+        .upsert(
+          {
+            user_address: normalizedUserAddress,
+            balance_wei: newMainWalletCreditWei.toString(),
+            last_updated: new Date().toISOString(),
+          },
+          {
+            onConflict: "user_address",
+          }
+        )
+      
+      if (updateUserCreditError) {
+        console.error("❌ Error updating user credit balance:", updateUserCreditError)
+        return NextResponse.json(
+          { error: "Failed to update user credit balance", details: updateUserCreditError.message },
+          { status: 500 }
+        )
+      }
+      
+      console.log(`   ✅ Main wallet credit updated: ${currentMainWalletCreditWei.toString()} → ${newMainWalletCreditWei.toString()} wei`)
+    }
+
     console.log(`✅ Recorded ${distributions.length} distribution(s) for user ${normalizedUserAddress}`)
-    console.log(`   → Used UPSERT: Updated existing records or created new ones`)
-    console.log(`   → Only weth_balance_wei is used for credit tracking`)
+    console.log(`   → Added ${totalDistributedWei.toString()} wei to bot wallets`)
+    console.log(`   → Deducted ${totalDistributedWei.toString()} wei from main wallet`)
+    console.log(`   → Credit balance is now correctly distributed (no double counting)`)
 
     return NextResponse.json({
       success: true,

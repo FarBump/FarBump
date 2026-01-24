@@ -1269,7 +1269,14 @@ export async function POST(request: NextRequest) {
       const buyAmountWei = quote.buyAmount ? BigInt(quote.buyAmount) : BigInt(0)
       
       try {
-        // Deduct WETH balance from bot_wallet_credits
+        // CRITICAL: Deduct WETH balance from bot_wallet_credits after successful swap
+        // This ensures credit balance decreases when WETH is consumed for swaps
+        // 
+        // Credit Flow:
+        // 1. Convert $BUMP → Credit: user_credits.balance_wei increases
+        // 2. Distribute Credits: user_credits.balance_wei decreases, bot_wallet_credits.weth_balance_wei increases
+        // 3. Execute Swap: bot_wallet_credits.weth_balance_wei decreases (here)
+        // 
         // IMPORTANT: Only 1 row per bot_wallet_address (unique constraint)
         // Only weth_balance_wei is used (distributed_amount_wei removed)
         const { data: creditRecord, error: fetchCreditError } = await supabase
@@ -1283,6 +1290,7 @@ export async function POST(request: NextRequest) {
           const currentBalance = BigInt(creditRecord.weth_balance_wei || "0")
           
           if (currentBalance >= amountWei) {
+            // Deduct swap amount from bot wallet credit
             const newBalance = currentBalance - amountWei
             
             const { error: updateError } = await supabase
@@ -1297,17 +1305,20 @@ export async function POST(request: NextRequest) {
             } else {
               console.log(`   ✅ WETH balance deducted: ${formatEther(amountWei)} WETH`)
               console.log(`   → Remaining balance: ${formatEther(newBalance)} WETH`)
+              console.log(`   → Credit balance updated correctly after swap`)
             }
           } else {
             console.warn(`   ⚠️ Insufficient WETH balance: ${formatEther(currentBalance)} < ${formatEther(amountWei)}`)
-            // Set to 0 if insufficient
+            // Set to 0 if insufficient (all credit consumed)
             await supabase
               .from("bot_wallet_credits")
               .update({ weth_balance_wei: "0" })
               .eq("id", creditRecord.id)
+            console.log(`   → Bot wallet credit set to 0 (all consumed)`)
           }
         } else {
           console.warn(`   ⚠️ No credit record found for bot wallet`)
+          console.warn(`   → Swap executed but credit balance not updated (record missing)`)
         }
 
         // Record swap in bot_logs table (swap_history is not needed, we use bot_logs)
