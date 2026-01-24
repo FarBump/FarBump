@@ -75,8 +75,23 @@ export function useConvertFuel() {
         throw new Error("Smart Wallet client not found. Please login again.")
       }
 
+      // CRITICAL: Only allow whole numbers (integers), no decimals
+      // Parse and validate that amount is a whole number
+      const amountNumber = parseFloat(amount)
+      if (isNaN(amountNumber) || amountNumber <= 0) {
+        throw new Error("Please enter a valid whole number greater than 0")
+      }
+      
+      // Check if amount has decimal places
+      if (amountNumber % 1 !== 0) {
+        throw new Error("Only whole numbers are allowed. Please enter a number without decimals (e.g., 100 instead of 100.5)")
+      }
+      
+      // Ensure amount is a whole number string (remove any decimal part)
+      const wholeNumberAmount = Math.floor(amountNumber).toString()
+
       const userAddress = smartWalletClient.account.address as Address
-      const totalAmountWei = parseUnits(amount, BUMP_DECIMALS)
+      const totalAmountWei = parseUnits(wholeNumberAmount, BUMP_DECIMALS)
 
       // Calculate amounts using BigInt for precision:
       // - 5% $BUMP → Treasury (TREASURY_FEE_BPS = 500)
@@ -85,7 +100,7 @@ export function useConvertFuel() {
       const swapAmountWei = totalAmountWei - treasuryFeeWei // 95% of total
 
       console.log("🔄 Starting Convert $BUMP to Credit...")
-      console.log(`💰 Total Amount: ${amount} $BUMP`)
+      console.log(`💰 Total Amount: ${wholeNumberAmount} $BUMP (whole number only)`)
       console.log(`📤 Treasury Fee (5% $BUMP): ${treasuryFeeWei.toString()} wei`)
       console.log(`💱 Swap Amount (95% $BUMP): ${swapAmountWei.toString()} wei`)
 
@@ -195,7 +210,7 @@ export function useConvertFuel() {
           body: JSON.stringify({
             txHash: txHash,
             userAddress: userAddress,
-            amountBump: amount,
+            amountBump: wholeNumberAmount, // Use whole number amount
             amountBumpWei: totalAmountWei.toString(),
             expectedEthWei: expectedEthWei.toString(), // Pass expected ETH from quote for fallback verification
           }),

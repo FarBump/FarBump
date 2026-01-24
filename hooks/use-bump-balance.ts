@@ -51,10 +51,13 @@ export function useBumpBalance({ address, enabled = true }: UseBumpBalanceProps)
   })
 
   // Format balance from wei to readable format
+  // IMPORTANT: For Convert $BUMP to Credit, we only show whole numbers (no decimals)
   const balance = data ? formatUnits(data, BUMP_DECIMALS) : "0"
-  const formattedBalance = parseFloat(balance).toLocaleString("en-US", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 6,
+  const balanceNumber = parseFloat(balance)
+  // Round down to nearest integer and format without decimals
+  const formattedBalance = Math.floor(balanceNumber).toLocaleString("en-US", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
   })
 
   return {

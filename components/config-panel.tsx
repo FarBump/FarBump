@@ -229,18 +229,12 @@ export function ConfigPanel({
                     <div className="relative">
                       <Input
                         type="text"
-                        inputMode="decimal"
+                        inputMode="numeric"
                         value={convertAmount}
                         onChange={(e) => {
-                          // Only allow numbers and decimal point
-                          const value = e.target.value.replace(/[^0-9.]/g, '')
-                          // Prevent multiple decimal points
-                          const parts = value.split('.')
-                          if (parts.length > 2) {
-                            setConvertAmount(parts[0] + '.' + parts.slice(1).join(''))
-                          } else {
-                            setConvertAmount(value)
-                          }
+                          // Only allow whole numbers (integers), no decimals
+                          const value = e.target.value.replace(/[^0-9]/g, '')
+                          setConvertAmount(value)
                         }}
                         placeholder="Enter amount to convert"
                         className="font-mono pr-16 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
@@ -254,7 +248,8 @@ export function ConfigPanel({
                         className="absolute right-1 top-1/2 -translate-y-1/2 h-7 px-2 text-xs font-medium hover:bg-secondary"
                         onClick={() => {
                           if (formattedBalance && !isLoadingBalance) {
-                            const maxAmount = formattedBalance.replace(/,/g, '')
+                            // Remove commas and parse as integer (no decimals)
+                            const maxAmount = Math.floor(parseFloat(formattedBalance.replace(/,/g, ''))).toString()
                             setConvertAmount(maxAmount)
                           }
                         }}
@@ -264,7 +259,7 @@ export function ConfigPanel({
                       </Button>
                     </div>
                     <p className="text-xs text-muted-foreground">
-                      Available: {formattedBalance} $BUMP
+                      Available: {formattedBalance} $BUMP (whole numbers only)
                     </p>
                   </div>
                   
