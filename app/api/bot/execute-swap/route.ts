@@ -700,6 +700,15 @@ export async function POST(request: NextRequest) {
 
       console.log(`   ✅ Owner Account and Smart Account retrieved`)
       console.log(`   → Preparing swap transaction...`)
+      
+      // Helper function to safely serialize objects with BigInt for logging
+      // Define at function scope so it can be used throughout
+      const safeStringify = (obj: any): string => {
+        return JSON.stringify(obj, (key, value) => 
+          typeof value === 'bigint' ? value.toString() : value
+        )
+      }
+      
       // v2 API response structure: quote.transaction.to, quote.transaction.data, quote.transaction.value
       const transactionForLog = quote.transaction || quote
       console.log(`   → To: ${transactionForLog.to}`)
@@ -781,11 +790,11 @@ export async function POST(request: NextRequest) {
       
       // Prepare transaction call for Smart Account (uses calls array format)
       // For WETH swaps, value should be 0 (ERC20 transfer, not native ETH)
-      // CRITICAL: Ensure all fields are properly formatted for CDP SDK
+      // CRITICAL: CDP SDK accepts BigInt for value, but we need to handle serialization for logging
       const transactionCall = {
         to: transaction.to.toLowerCase() as Address, // Ensure lowercase address
         data: transaction.data as Hex, // Ensure hex string format
-        value: BigInt(0), // WETH is ERC20, value is always 0
+        value: BigInt(0), // WETH is ERC20, value is always 0 (CDP SDK accepts BigInt)
       }
       
       // Final validation of transaction call
@@ -824,14 +833,15 @@ export async function POST(request: NextRequest) {
         console.log(`   → Method: Smart Account sendUserOperation (CDP SDK v2)`)
         try {
           // Log the exact parameters being sent to CDP SDK
+          // Use safeStringify to handle BigInt serialization
           console.log(`   → Sending User Operation with parameters:`)
           console.log(`      Network: ${network}`)
-          console.log(`      Calls: [${JSON.stringify(transactionCall, null, 2)}]`)
+          console.log(`      Calls: [${safeStringify(transactionCall)}]`)
           console.log(`      Is Sponsored: true`)
           
           userOpHash = await (smartAccount as any).sendUserOperation({
             network: network, // Required by CDP SDK v2
-            calls: [transactionCall], // Smart Account uses calls array format
+            calls: [transactionCall], // Smart Account uses calls array format (value is BigInt)
             isSponsored: true, // Enable gas sponsorship
           })
           console.log(`   ✅ User Operation submitted via sendUserOperation`)
@@ -854,13 +864,13 @@ export async function POST(request: NextRequest) {
             console.error(`      Status Code: ${err.statusCode}`)
           }
           
-          // Log API response if available
+          // Log API response if available (use safeStringify to handle BigInt)
           if (err.response) {
-            console.error(`      API Response:`, JSON.stringify(err.response.data || err.response, null, 2))
+            console.error(`      API Response:`, safeStringify(err.response.data || err.response))
           }
           
-          // Log the transaction call that failed
-          console.error(`      Failed Transaction Call:`, JSON.stringify(transactionCall, null, 2))
+          // Log the transaction call that failed (use safeStringify to handle BigInt)
+          console.error(`      Failed Transaction Call:`, safeStringify(transactionCall))
           
           // Provide more helpful error message
           const errorMsg = err.errorMessage || err.message || "Unknown error"
@@ -1053,7 +1063,7 @@ export async function POST(request: NextRequest) {
       
       if (!txHash) {
         console.error(`   ❌ Could not extract transaction hash from receipt`)
-        console.error(`   → Receipt:`, JSON.stringify(userOpReceipt, null, 2))
+        console.error(`   → Receipt:`, safeStringify(userOpReceipt))
         throw new Error("User operation completed but no transaction hash found in receipt. Receipt format may have changed.")
       }
       
