@@ -892,7 +892,7 @@ export default function BumpBotDashboard() {
           console.log(`   Bot #${index + 1}: ${formatEther(wallet.balance)} WETH ($${walletBalanceUsd.toFixed(2)}) - ${wallet.sufficient ? "✅ Sufficient" : "❌ Insufficient"}`)
         })
         
-        // STEP 2: Only distribute if bot wallets don't have sufficient WETH balance for the required amount per bump
+        // STEP 2: Always check if bot wallets need funding
         // Distribute if:
         // 1. No wallets have sufficient WETH balance, OR
         // 2. Total WETH balance is less than required amount (can't even do one swap)
@@ -901,28 +901,79 @@ export default function BumpBotDashboard() {
         if (needsDistribution) {
           console.log("💰 Bot wallets need funding. Distributing credits...")
           console.log(`   → Reason: ${sufficientWallets === 0 ? "No wallets have sufficient balance" : "Total balance insufficient for one swap"}`)
-          setBumpLoadingState("Distributing credits to bot wallets...")
+          setBumpLoadingState("Checking main wallet balance and distributing credits...")
           
-          if (!creditData?.balanceWei) {
-            throw new Error("Credit balance not found")
-          }
+          // CRITICAL: Check actual on-chain balance (Native ETH + WETH) from main wallet
+          // Don't rely solely on database balance - fetch actual on-chain balance
+          console.log("💰 Fetching actual on-chain balance from main wallet...")
           
           try {
+            // Fetch actual on-chain balance from credit-balance API
+            // This API returns actual Native ETH + WETH balance from blockchain
+            const actualBalanceResponse = await fetch("/api/credit-balance", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ userAddress: privySmartWalletAddress }),
+            })
+            
+            let actualMainWalletCreditWei = BigInt(0)
+            if (actualBalanceResponse.ok) {
+              const actualBalanceData = await actualBalanceResponse.json()
+              actualMainWalletCreditWei = BigInt(actualBalanceData.mainWalletCreditWei || "0")
+              console.log(`   → Actual on-chain balance: ${formatEther(actualMainWalletCreditWei)} ETH (Native ETH + WETH)`)
+            } else {
+              // Fallback to database balance if API fails
+              console.warn("⚠️ Failed to fetch actual on-chain balance, using database balance")
+              actualMainWalletCreditWei = creditData?.balanceWei ? BigInt(creditData.balanceWei) : BigInt(0)
+            }
+            
+            // Check if main wallet has any balance (Native ETH + WETH)
+            if (actualMainWalletCreditWei <= BigInt(0)) {
+              throw new Error(
+                "No credit available in main wallet.\n\n" +
+                "Please ensure you have ETH or WETH in your main wallet.\n" +
+                "You can:\n" +
+                "1. Convert $BUMP to Credit (this will give you ETH/WETH)\n" +
+                "2. Or manually send ETH/WETH to your main wallet"
+              )
+            }
+            
+            console.log(`   → Will distribute: ${formatEther(actualMainWalletCreditWei)} ETH (will auto-convert Native ETH to WETH if needed)`)
+            setBumpLoadingState("Distributing credits to bot wallets (auto-converting ETH to WETH if needed)...")
+            
             // Distribute credits using hook
+            // The hook will automatically:
+            // 1. Check Native ETH + WETH balance
+            // 2. Convert Native ETH to WETH if needed
+            // 3. Distribute WETH to all 5 bot wallets
             await distributeCredits({
               userAddress: privySmartWalletAddress as `0x${string}`,
               botWallets: existingBotWallets,
-              creditBalanceWei: BigInt(creditData.balanceWei),
+              creditBalanceWei: actualMainWalletCreditWei, // Use actual on-chain balance
             })
             
             console.log("✅ Credits distributed successfully!")
+            console.log("   → Native ETH was automatically converted to WETH if needed")
+            console.log("   → WETH was distributed to all 5 bot wallets")
             
-            // Wait a bit for balances to update
-            await new Promise(resolve => setTimeout(resolve, 2000))
+            // Wait a bit for balances to update in database
+            await new Promise(resolve => setTimeout(resolve, 3000))
           } catch (distributeError: any) {
             console.error("❌ Distribution failed:", distributeError)
             setBumpLoadingState(null)
-            throw new Error(`Failed to distribute credits: ${distributeError.message}`)
+            
+            // Provide more helpful error message
+            let errorMessage = distributeError.message || "Failed to distribute credits"
+            if (errorMessage.includes("No credit available") || errorMessage.includes("Insufficient balance")) {
+              errorMessage = 
+                "Insufficient balance in main wallet.\n\n" +
+                "Please ensure you have ETH or WETH in your main wallet.\n" +
+                "You can:\n" +
+                "1. Convert $BUMP to Credit (this will give you ETH/WETH)\n" +
+                "2. Or manually send ETH/WETH to your main wallet"
+            }
+            
+            throw new Error(`Failed to distribute credits: ${errorMessage}`)
           }
         } else {
           console.log("✅ Bot wallets have sufficient balance. Skipping distribution.")

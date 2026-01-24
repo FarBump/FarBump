@@ -135,7 +135,9 @@ export function useDistributeCredits() {
         console.warn("⚠️ Failed to fetch WETH balance, assuming 0")
       }
 
-      // Fetch Credit from DB
+      // Fetch actual on-chain balance (Native ETH + WETH) from credit-balance API
+      // This API returns actual balance from blockchain, not just database
+      console.log(`\n💰 Fetching actual on-chain balance from main wallet...`)
       const creditResponse = await fetch("/api/credit-balance", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -143,11 +145,20 @@ export function useDistributeCredits() {
       })
       
       const creditData = await creditResponse.json()
+      // Use mainWalletCreditWei which is calculated from actual on-chain balance (Native ETH + WETH)
       const mainWalletCreditWei = BigInt(creditData.mainWalletCreditWei || "0")
 
       if (mainWalletCreditWei <= BigInt(0)) {
-        throw new Error("No credit available in main wallet. Please convert $BUMP to credit first.")
+        throw new Error(
+          "No credit available in main wallet.\n\n" +
+          "Please ensure you have ETH or WETH in your main wallet.\n" +
+          "You can:\n" +
+          "1. Convert $BUMP to Credit (this will give you ETH/WETH)\n" +
+          "2. Or manually send ETH/WETH to your main wallet"
+        )
       }
+      
+      console.log(`   → Actual on-chain balance: ${formatEther(mainWalletCreditWei)} ETH (Native ETH + WETH)`)
 
       // =============================================
       // Calculate Distribution Amount
