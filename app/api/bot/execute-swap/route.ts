@@ -14,7 +14,7 @@ const WETH_ADDRESS = "0x4200000000000000000000000000000000000006" as const
 // The AllowanceHolder address will be returned in the quote response (quote.allowanceTarget)
 // Reference: https://0x.org/docs/upgrading/upgrading_to_swap_v2
 
-// WETH ABI for balance and approval
+// WETH ABI for balance, approval, and deposit
 const WETH_ABI = [
   {
     inputs: [{ name: "account", type: "address" }],
@@ -41,6 +41,13 @@ const WETH_ABI = [
     name: "approve",
     outputs: [{ name: "", type: "bool" }],
     stateMutability: "nonpayable",
+    type: "function",
+  },
+  {
+    inputs: [],
+    name: "deposit",
+    outputs: [],
+    stateMutability: "payable",
     type: "function",
   },
 ] as const
@@ -163,10 +170,35 @@ export async function POST(request: NextRequest) {
     const cdp = new CdpClient()
     console.log(`✅ CDP Client V2 initialized`)
 
-    // Step 5: Check Smart Account WETH balance from database
-    console.log(`💰 Checking Smart Account WETH balance...`)
+    // Step 5: Check Smart Account balance (Native ETH + WETH) and convert if needed
+    console.log(`💰 Checking Smart Account balance (Native ETH + WETH)...`)
     
-    // Fetch WETH balance from database (bot_wallet_credits)
+    // Check on-chain Native ETH balance
+    let nativeEthBalance = BigInt(0)
+    try {
+      nativeEthBalance = await publicClient.getBalance({
+        address: smartAccountAddress,
+      })
+      console.log(`   Native ETH Balance (on-chain): ${formatEther(nativeEthBalance)} ETH`)
+    } catch (error: any) {
+      console.warn(`   ⚠️ Failed to check Native ETH balance: ${error.message}`)
+    }
+    
+    // Check on-chain WETH balance
+    let onChainWethBalance = BigInt(0)
+    try {
+      onChainWethBalance = await publicClient.readContract({
+        address: WETH_ADDRESS,
+        abi: WETH_ABI,
+        functionName: "balanceOf",
+        args: [smartAccountAddress],
+      }) as bigint
+      console.log(`   WETH Balance (on-chain): ${formatEther(onChainWethBalance)} WETH`)
+    } catch (error: any) {
+      console.warn(`   ⚠️ Failed to check on-chain WETH balance: ${error.message}`)
+    }
+    
+    // Fetch WETH balance from database (bot_wallet_credits) for reference
     // IMPORTANT: Only 1 row per bot_wallet_address, only weth_balance_wei is used
     const { data: creditRecord, error: creditError } = await supabase
       .from("bot_wallet_credits")
@@ -175,30 +207,29 @@ export async function POST(request: NextRequest) {
       .eq("bot_wallet_address", smartAccountAddress.toLowerCase())
       .single()
 
-    // Get WETH balance (only weth_balance_wei is used)
-    const wethBalanceWei = creditRecord 
+    // Get WETH balance from database (for reference)
+    const dbWethBalanceWei = creditRecord 
       ? BigInt(creditRecord.weth_balance_wei || "0")
       : BigInt(0)
 
-    console.log(`   WETH Balance (from DB): ${formatEther(wethBalanceWei)} WETH`)
-
-    // Also check on-chain WETH balance for verification
-    try {
-      const onChainWethBalance = await publicClient.readContract({
-        address: WETH_ADDRESS,
-        abi: WETH_ABI,
-        functionName: "balanceOf",
-        args: [smartAccountAddress],
-      }) as bigint
-      console.log(`   WETH Balance (on-chain): ${formatEther(onChainWethBalance)} WETH`)
-      
-      // If on-chain balance is less than database balance, sync database
-      if (onChainWethBalance < wethBalanceWei) {
-        console.log(`   ⚠️ On-chain balance is less than database balance. Syncing...`)
-        // This will be handled after swap execution
+    console.log(`   WETH Balance (from DB): ${formatEther(dbWethBalanceWei)} WETH`)
+    
+    // Use on-chain WETH balance as source of truth (more accurate)
+    let wethBalanceWei = onChainWethBalance > BigInt(0) ? onChainWethBalance : dbWethBalanceWei
+    
+    // If on-chain balance is different from database, update database
+    if (onChainWethBalance !== dbWethBalanceWei) {
+      console.log(`   ⚠️ On-chain balance (${formatEther(onChainWethBalance)}) differs from DB (${formatEther(dbWethBalanceWei)}). Using on-chain balance.`)
+      // Update database to match on-chain balance
+      try {
+        await supabase
+          .from("bot_wallet_credits")
+          .update({ weth_balance_wei: onChainWethBalance.toString() })
+          .eq("user_address", user_address.toLowerCase())
+          .eq("bot_wallet_address", smartAccountAddress.toLowerCase())
+      } catch (err: any) {
+        console.warn("Failed to sync DB balance:", err)
       }
-    } catch (error: any) {
-      console.warn(`   ⚠️ Failed to check on-chain WETH balance: ${error.message}`)
     }
 
     // Fetch ETH price for USD conversion
@@ -305,34 +336,188 @@ export async function POST(request: NextRequest) {
     console.log(`   Amount (wei): ${amountWei.toString()}`)
     console.log(`   Target Token: ${token_address}`)
     
-    // Check if bot has enough WETH balance
+    // Step 6.5: Check if WETH balance is sufficient, if not, try to convert Native ETH to WETH
     // NO MINIMUM AMOUNT VALIDATION - bot can swap any amount (even 1 wei)
     if (wethBalanceWei < amountWei) {
-      console.log(`⚠️ Bot #${walletIndex + 1} WETH balance insufficient (${formatEther(wethBalanceWei)} < ${formatEther(amountWei)}) - Skipping`)
+      console.log(`⚠️ Bot #${walletIndex + 1} WETH balance insufficient (${formatEther(wethBalanceWei)} < ${formatEther(amountWei)})`)
+      console.log(`   → Checking if we can convert Native ETH to WETH...`)
       
-      await supabase.from("bot_logs").insert({
-        user_address: user_address.toLowerCase(),
-        wallet_address: smartAccountAddress,
-        token_address: token_address,
-        amount_wei: amountWei.toString(),
-        action: "swap_skipped",
-        message: `[System] Bot #${walletIndex + 1} WETH balance insufficient (${formatEther(wethBalanceWei)} < ${formatEther(amountWei)}). Please distribute credit.`,
-        status: "warning",
-        created_at: new Date().toISOString(),
-      })
+      // Calculate how much WETH we need
+      const wethNeeded = amountWei - wethBalanceWei
+      console.log(`   → WETH needed: ${formatEther(wethNeeded)} WETH`)
+      console.log(`   → Native ETH available: ${formatEther(nativeEthBalance)} ETH`)
+      
+      // Check if we have enough Native ETH to convert
+      if (nativeEthBalance >= wethNeeded) {
+        console.log(`   → Converting ${formatEther(wethNeeded)} Native ETH to WETH...`)
+        
+        try {
+          // Get Owner Account and Smart Account for CDP SDK
+          const ownerAccount = await cdp.evm.getAccount({ address: ownerAddress })
+          if (!ownerAccount) {
+            throw new Error("Failed to get Owner Account from CDP")
+          }
 
-      // Move to next wallet
-      const nextIndex = (wallet_rotation_index + 1) % 5
-      await supabase
-        .from("bot_sessions")
-        .update({ wallet_rotation_index: nextIndex })
-        .eq("id", sessionId)
+          const smartAccount = await cdp.evm.getSmartAccount({ 
+            owner: ownerAccount,
+            address: smartAccountAddress 
+          })
+          if (!smartAccount) {
+            throw new Error("Failed to get Smart Account from CDP")
+          }
 
-      return NextResponse.json({
-        message: "Bot wallet WETH balance insufficient - Skipped",
-        skipped: true,
-        nextIndex,
-      })
+          // Encode WETH deposit function call (WETH.deposit())
+          const depositData = encodeFunctionData({
+            abi: WETH_ABI,
+            functionName: "deposit",
+          })
+
+          // Execute deposit transaction using Smart Account (gasless)
+          const depositCall = {
+            to: WETH_ADDRESS,
+            data: depositData,
+            value: wethNeeded, // Send Native ETH to WETH contract
+          }
+
+          console.log(`   → Executing WETH deposit transaction (gasless)...`)
+          const depositUserOpHash = await (smartAccount as any).sendUserOperation({
+            network: "base",
+            calls: [depositCall],
+            isSponsored: true, // Gasless transaction
+          })
+
+          const depositUserOpHashStr = typeof depositUserOpHash === 'string' 
+            ? depositUserOpHash 
+            : (depositUserOpHash?.hash || depositUserOpHash?.userOpHash || String(depositUserOpHash))
+
+          console.log(`   → WETH deposit User Operation submitted: ${depositUserOpHashStr}`)
+
+          // Wait for deposit confirmation
+          if (typeof (smartAccount as any).waitForUserOperation === 'function') {
+            await (smartAccount as any).waitForUserOperation({
+              userOpHash: depositUserOpHashStr,
+              network: "base",
+            })
+            console.log(`   ✅ ${formatEther(wethNeeded)} Native ETH successfully converted to WETH!`)
+          } else {
+            // Fallback: wait using public client
+            await publicClient.waitForTransactionReceipt({
+              hash: depositUserOpHashStr as `0x${string}`,
+              confirmations: 1,
+              timeout: 60000,
+            })
+            console.log(`   ✅ ${formatEther(wethNeeded)} Native ETH successfully converted to WETH! (via public client)`)
+          }
+
+          // Update WETH balance after conversion
+          const newWethBalance = await publicClient.readContract({
+            address: WETH_ADDRESS,
+            abi: WETH_ABI,
+            functionName: "balanceOf",
+            args: [smartAccountAddress],
+          }) as bigint
+          
+          wethBalanceWei = newWethBalance
+          console.log(`   → New WETH balance: ${formatEther(wethBalanceWei)} WETH`)
+
+          // Update database with new WETH balance
+          try {
+            await supabase
+              .from("bot_wallet_credits")
+              .update({ weth_balance_wei: wethBalanceWei.toString() })
+              .eq("user_address", user_address.toLowerCase())
+              .eq("bot_wallet_address", smartAccountAddress.toLowerCase())
+          } catch (err: any) {
+            console.warn("Failed to update DB balance:", err)
+          }
+
+          // Log conversion
+          await supabase.from("bot_logs").insert({
+            user_address: user_address.toLowerCase(),
+            wallet_address: smartAccountAddress,
+            token_address: token_address,
+            amount_wei: wethNeeded.toString(),
+            action: "eth_to_weth_conversion",
+            message: `[Bot #${walletIndex + 1}] Converted ${formatEther(wethNeeded)} Native ETH to WETH before swap`,
+            status: "success",
+            tx_hash: depositUserOpHashStr,
+            created_at: new Date().toISOString(),
+          })
+
+        } catch (convertError: any) {
+          console.error(`   ❌ Failed to convert Native ETH to WETH:`, convertError.message)
+          
+          // Log error but continue - maybe we can still proceed with available WETH
+          await supabase.from("bot_logs").insert({
+            user_address: user_address.toLowerCase(),
+            wallet_address: smartAccountAddress,
+            token_address: token_address,
+            amount_wei: wethNeeded.toString(),
+            action: "eth_to_weth_conversion_failed",
+            message: `[Bot #${walletIndex + 1}] Failed to convert Native ETH to WETH: ${convertError.message}`,
+            status: "error",
+            error_details: { error: convertError.message },
+            created_at: new Date().toISOString(),
+          })
+
+          // If conversion failed, skip this wallet
+          console.log(`   → Conversion failed, skipping this wallet`)
+          
+          await supabase.from("bot_logs").insert({
+            user_address: user_address.toLowerCase(),
+            wallet_address: smartAccountAddress,
+            token_address: token_address,
+            amount_wei: amountWei.toString(),
+            action: "swap_skipped",
+            message: `[System] Bot #${walletIndex + 1} WETH balance insufficient (${formatEther(wethBalanceWei)} < ${formatEther(amountWei)}). Conversion failed.`,
+            status: "warning",
+            created_at: new Date().toISOString(),
+          })
+
+          // Move to next wallet
+          const nextIndex = (wallet_rotation_index + 1) % 5
+          await supabase
+            .from("bot_sessions")
+            .update({ wallet_rotation_index: nextIndex })
+            .eq("id", sessionId)
+
+          return NextResponse.json({
+            message: "Bot wallet WETH balance insufficient - Conversion failed - Skipped",
+            skipped: true,
+            nextIndex,
+          })
+        }
+      } else {
+        // Not enough Native ETH to convert
+        console.log(`   → Not enough Native ETH to convert (need ${formatEther(wethNeeded)}, have ${formatEther(nativeEthBalance)})`)
+        console.log(`   → Skipping this wallet`)
+        
+        await supabase.from("bot_logs").insert({
+          user_address: user_address.toLowerCase(),
+          wallet_address: smartAccountAddress,
+          token_address: token_address,
+          amount_wei: amountWei.toString(),
+          action: "swap_skipped",
+          message: `[System] Bot #${walletIndex + 1} WETH balance insufficient (${formatEther(wethBalanceWei)} < ${formatEther(amountWei)}). Not enough Native ETH to convert.`,
+          status: "warning",
+          created_at: new Date().toISOString(),
+        })
+
+        // Move to next wallet
+        const nextIndex = (wallet_rotation_index + 1) % 5
+        await supabase
+          .from("bot_sessions")
+          .update({ wallet_rotation_index: nextIndex })
+          .eq("id", sessionId)
+
+        return NextResponse.json({
+          message: "Bot wallet WETH balance insufficient - Not enough Native ETH to convert - Skipped",
+          skipped: true,
+          nextIndex,
+        })
+      }
+    } else {
+      console.log(`   ✅ WETH balance sufficient: ${formatEther(wethBalanceWei)} >= ${formatEther(amountWei)}`)
     }
 
     // Step 7: Get swap quote from 0x API v2 with optimized parameters for Clanker v4
