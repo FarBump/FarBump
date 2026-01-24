@@ -135,9 +135,10 @@ export function useDistributeCredits() {
         console.warn("⚠️ Failed to fetch WETH balance, assuming 0")
       }
 
-      // Fetch actual on-chain balance (Native ETH + WETH) from credit-balance API
-      // This API returns actual balance from blockchain, not just database
-      console.log(`\n💰 Fetching actual on-chain balance from main wallet...`)
+      // Fetch credit balance from database (credit-balance API)
+      // CRITICAL: This API returns WETH from database (user_credits.balance_wei)
+      // Only WETH from "Convert $BUMP to Credit" is counted, NOT direct WETH transfers
+      console.log(`\n💰 Fetching credit balance from database (main wallet)...`)
       const creditResponse = await fetch("/api/credit-balance", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -145,50 +146,51 @@ export function useDistributeCredits() {
       })
       
       const creditData = await creditResponse.json()
-      // Use mainWalletCreditWei which is calculated from actual on-chain balance (Native ETH + WETH)
+      // Use mainWalletCreditWei from database (only WETH from Convert $BUMP to Credit)
       const mainWalletCreditWei = BigInt(creditData.mainWalletCreditWei || "0")
 
       if (mainWalletCreditWei <= BigInt(0)) {
         throw new Error(
           "No credit available in main wallet.\n\n" +
-          "Please ensure you have ETH or WETH in your main wallet.\n" +
-          "You can:\n" +
-          "1. Convert $BUMP to Credit (this will give you ETH/WETH)\n" +
-          "2. Or manually send ETH/WETH to your main wallet"
+          "Please convert $BUMP to Credit first.\n" +
+          "Direct WETH transfers to your wallet are NOT counted as credit."
         )
       }
       
-      console.log(`   → Actual on-chain balance: ${formatEther(mainWalletCreditWei)} ETH (Native ETH + WETH)`)
+      console.log(`   → Credit from database: ${formatEther(mainWalletCreditWei)} WETH (from Convert $BUMP to Credit)`)
+      console.log(`   → Note: Only WETH from Convert $BUMP to Credit is counted`)
 
       // =============================================
       // Calculate Distribution Amount
-      // CRITICAL: Total available = Native ETH + WETH in main wallet
-      // User can have credit in ETH or WETH form (from Convert $BUMP to Credit)
+      // CRITICAL: Credit to distribute = WETH from database (user_credits.balance_wei)
+      // This is ONLY WETH from "Convert $BUMP to Credit" transactions
+      // We need to ensure we have enough WETH (or convert Native ETH to WETH)
       // =============================================
       setStatus("Calculating distribution amount...")
       
       console.log(`\n📊 Distribution Calculation:`)
-      console.log(`   → Native ETH Balance: ${formatEther(nativeEthBalance)} ETH`)
-      console.log(`   → WETH Balance: ${formatEther(wethBalance)} WETH`)
+      console.log(`   → Native ETH Balance (on-chain): ${formatEther(nativeEthBalance)} ETH`)
+      console.log(`   → WETH Balance (on-chain): ${formatEther(wethBalance)} WETH`)
       console.log(`   → Total Available (ETH + WETH): ${formatEther(nativeEthBalance + wethBalance)} ETH`)
-      console.log(`   → Credit in database: ${formatEther(mainWalletCreditWei)} ETH`)
+      console.log(`   → Credit from database: ${formatEther(mainWalletCreditWei)} WETH (from Convert $BUMP to Credit)`)
 
-      // Total available = Native ETH + WETH
+      // Credit to distribute = WETH from database (only from Convert $BUMP to Credit)
+      const creditToDistribute: bigint = mainWalletCreditWei
+      
+      // Total available on-chain = Native ETH + WETH (for conversion if needed)
       const totalAvailable = nativeEthBalance + wethBalance
       
-      // Check if wallet has enough balance (ETH + WETH) for distribution
-      if (totalAvailable < mainWalletCreditWei) {
+      // Check if wallet has enough balance (ETH + WETH) to cover credit distribution
+      // We can convert Native ETH to WETH if needed
+      if (totalAvailable < creditToDistribute) {
         throw new Error(
           `Insufficient balance for distribution.\n` +
           `Available: ${formatEther(totalAvailable)} ETH (${formatEther(nativeEthBalance)} Native + ${formatEther(wethBalance)} WETH)\n` +
-          `Credit to distribute: ${formatEther(mainWalletCreditWei)} ETH\n\n` +
-          `Please ensure you have ETH/WETH in your wallet.\n` +
-          `The "Convert $BUMP to Credit" function should have given you ETH/WETH.`
+          `Credit to distribute: ${formatEther(creditToDistribute)} WETH\n\n` +
+          `Please convert $BUMP to Credit first.\n` +
+          `Direct WETH transfers are NOT counted as credit.`
         )
       }
-      
-      // Use credit from database (what user earned from Convert $BUMP)
-      const creditToDistribute: bigint = mainWalletCreditWei
 
       console.log(`   → Credit to distribute: ${formatEther(creditToDistribute)} ETH`)
       

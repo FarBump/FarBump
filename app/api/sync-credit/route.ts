@@ -29,29 +29,31 @@ interface SyncCreditRequest {
 }
 
 /**
- * Verifies transaction and calculates ETH credit amount
- * Returns the ETH amount (in wei) that should be credited to user (90% of swap result)
+ * Verifies transaction and calculates WETH credit amount
+ * Returns the WETH amount (in wei) that should be credited to user (90% of swap result)
  * 
  * IMPORTANT: This function verifies that the transaction is a valid "Convert $BUMP to Credit" transaction.
  * 
  * Workflow yang benar:
  * 1. 5% $BUMP → Treasury (as $BUMP token)
  * 2. 95% $BUMP → Swap via 0x Settler → WETH
- * 3. WETH → Unwrap to ETH (native)
- * 4. 5% ETH → Treasury (as native ETH)
- * 5. 90% ETH → Stays in Smart Wallet as Credit (this is what we credit to user)
+ * 3. 5% WETH → Treasury (as WETH token)
+ * 4. 90% WETH → Stays in Smart Wallet as Credit (this is what we credit to user)
+ * 
+ * IMPORTANT: WETH is kept as WETH (NOT unwrapped to ETH) for gasless transactions
  * 
  * Verification checks:
  * - Must have 5% $BUMP transfer to Treasury
  * - Must have swap transaction (via 0x Settler contract)
  * - Must have WETH received from swap (or use expectedEthWei as fallback)
+ * - Must have 5% WETH transfer to Treasury
  * 
  * Credit calculation:
- * - ethReceivedWei = Total ETH received from swap (100% of swap result)
- * - creditAmountWei = 90% of total ETH (the portion that stays in Smart Wallet)
- * - The remaining 5% was already sent to Treasury in step 4
+ * - wethReceivedWei = Total WETH received from swap (100% of swap result)
+ * - creditAmountWei = 90% of total WETH (the portion that stays in Smart Wallet)
+ * - The remaining 5% was already sent to Treasury in step 3
  * 
- * This prevents users from bypassing the system by sending ETH directly to their Smart Wallet.
+ * This prevents users from bypassing the system by sending WETH directly to their Smart Wallet.
  */
 async function verifyAndCalculateCredit(
   txHash: Hex,
@@ -230,9 +232,9 @@ async function verifyAndCalculateCredit(
       console.log("✅ 0x Settler contract call found")
     }
 
-    // 4. Calculate ETH received from swap
+    // 4. Calculate WETH received from swap
     // Method 1: Check WETH transfers to userAddress (from 0x swap)
-    let ethReceivedWei = BigInt(0)
+    let wethReceivedWei = BigInt(0)
     
     // Determine token order (same as frontend)
     const isBumpToken0 = BUMP_TOKEN_ADDRESS.toLowerCase() < BASE_WETH_ADDRESS.toLowerCase()
@@ -278,17 +280,17 @@ async function verifyAndCalculateCredit(
           // BUMP is token0, WETH is token1
           // amount1 should be positive (WETH output)
           if (amount1 > BigInt(0)) {
-            ethReceivedWei = BigInt(amount1.toString())
+            wethReceivedWei = BigInt(amount1.toString())
           }
         } else {
           // WETH is token0, BUMP is token1
           // amount0 should be positive (WETH output)
           if (amount0 > BigInt(0)) {
-            ethReceivedWei = BigInt(amount0.toString())
+            wethReceivedWei = BigInt(amount0.toString())
           }
         }
         
-        console.log(`✅ Parsed Swap event: amount0=${amount0.toString()}, amount1=${amount1.toString()}, ETH received=${ethReceivedWei.toString()}`)
+        console.log(`✅ Parsed Swap event: amount0=${amount0.toString()}, amount1=${amount1.toString()}, WETH received=${wethReceivedWei.toString()}`)
       } catch (decodeError) {
         console.error("❌ Error decoding Swap event:", decodeError)
       }
@@ -347,14 +349,14 @@ async function verifyAndCalculateCredit(
           // Only count transfers TO userAddress (not FROM userAddress)
           if (toAddress === userAddress.toLowerCase() && decoded.args.value) {
             const transferAmount = BigInt(decoded.args.value.toString())
-            ethReceivedWei += transferAmount
+            wethReceivedWei += transferAmount
             console.log(`  📥 WETH Transfer: ${transferAmount.toString()} wei from ${fromAddress} to ${toAddress}`)
           }
         } catch (decodeError) {
           console.error("❌ Error decoding WETH transfer:", decodeError)
         }
       }
-      console.log(`✅ Found WETH transfers to user: ${ethReceivedWei.toString()} wei`)
+      console.log(`✅ Found WETH transfers to user: ${wethReceivedWei.toString()} wei`)
     } else {
       console.warn("⚠️ No WETH transfers found in transaction logs")
       console.log(`  📋 Checking all logs for debugging...`)
@@ -387,32 +389,33 @@ async function verifyAndCalculateCredit(
     // Fallback: If WETH transfer not detected but we have expectedEthWei from frontend
     // This can happen in Smart Wallet batch transactions where WETH flow is complex
     // We can use expectedEthWei if we've verified at least one of the required components
-    if (ethReceivedWei === BigInt(0) && expectedEthWei) {
-      console.warn("⚠️ No WETH/ETH detected in logs, checking if we can use expectedEthWei fallback...")
+    // Note: expectedEthWei is actually WETH (from quote.buyAmount)
+    if (wethReceivedWei === BigInt(0) && expectedEthWei) {
+      console.warn("⚠️ No WETH detected in logs, checking if we can use expectedEthWei fallback...")
       const expectedWei = BigInt(expectedEthWei)
       
       // Use fallback if:
-      // 1. We have expectedEthWei > 0
+      // 1. We have expectedEthWei > 0 (actually WETH)
       // 2. AND we've verified at least Treasury transfer OR Settler call exists
       const canUseFallback = expectedWei > BigInt(0) && (treasuryBumpTransferLog || hasSettlerCall || isDirectSettlerCall)
       
       if (canUseFallback) {
-        ethReceivedWei = expectedWei
-        console.log(`  📝 Using expected ETH from quote as fallback: ${ethReceivedWei.toString()} wei`)
+        wethReceivedWei = expectedWei
+        console.log(`  📝 Using expected WETH from quote as fallback: ${wethReceivedWei.toString()} wei`)
         console.log(`  ✅ Fallback verification passed:`)
         console.log(`     - Treasury transfer found: ${!!treasuryBumpTransferLog}`)
         console.log(`     - Settler call found: ${hasSettlerCall || isDirectSettlerCall}`)
-        console.log(`     - Expected ETH provided: ${expectedWei.toString()} wei`)
+        console.log(`     - Expected WETH provided: ${expectedWei.toString()} wei`)
       } else {
         console.warn("  ❌ Cannot use fallback - missing required verification components")
         console.warn(`    - Treasury transfer found: ${!!treasuryBumpTransferLog}`)
         console.warn(`    - Settler call found: ${hasSettlerCall || isDirectSettlerCall}`)
-        console.warn(`    - Expected ETH provided: ${expectedWei > BigInt(0)}`)
+        console.warn(`    - Expected WETH provided: ${expectedWei > BigInt(0)}`)
       }
     }
 
-    if (ethReceivedWei === BigInt(0)) {
-      console.warn("⚠️ No WETH/ETH received detected in transaction")
+    if (wethReceivedWei === BigInt(0)) {
+      console.warn("⚠️ No WETH received detected in transaction")
       if (!expectedEthWei) {
         console.warn("  ❌ No expectedEthWei provided - cannot proceed with verification")
         return { ethAmountWei: BigInt(0), isValid: false }
@@ -424,38 +427,35 @@ async function verifyAndCalculateCredit(
       }
     }
 
-    // 5. Verify that 5% ETH was transferred to Treasury (optional check)
+    // 5. Verify that 5% WETH was transferred to Treasury (optional check)
     // This ensures the full workflow was executed
-    // Note: After unwrap, ETH is native, so we check for native ETH transfers
-    // In batch transactions, this might be in a separate transaction, so we don't fail if not found
-    // Native ETH transfers don't emit Transfer events, but we can check transaction value
-    // For now, we'll rely on the presence of WETH unwrap and swap as validation
+    // Note: WETH is kept as WETH (not unwrapped to ETH) for gasless transactions
+    // We check for WETH transfers to Treasury in the transaction logs
 
     // 6. Calculate 90% credit (after 5% app fee to Treasury)
     // IMPORTANT: The workflow is:
     //   1. 5% $BUMP → Treasury (as $BUMP token)
     //   2. 95% $BUMP → Swap via 0x → WETH
-    //   3. WETH → Unwrap to ETH
-    //   4. 5% ETH → Treasury (as native ETH)
-    //   5. 90% ETH → Stays in Smart Wallet as Credit
+    //   3. 5% WETH → Treasury (as WETH token)
+    //   4. 90% WETH → Stays in Smart Wallet as Credit
     // 
-    // ethReceivedWei = Total ETH received from swap (100% of swap result)
-    // creditAmountWei = 90% of total ETH (the portion that stays in Smart Wallet as credit)
-    // The remaining 5% was already sent to Treasury in step 4
-    const creditAmountWei = (ethReceivedWei * BigInt(USER_CREDIT_BPS)) / BigInt(10000)
+    // wethReceivedWei = Total WETH received from swap (100% of swap result)
+    // creditAmountWei = 90% of total WETH (the portion that stays in Smart Wallet as credit)
+    // The remaining 5% was already sent to Treasury in step 3
+    const creditAmountWei = (wethReceivedWei * BigInt(USER_CREDIT_BPS)) / BigInt(10000)
 
-    // Convert to ETH for logging (for readability)
-    const ethReceivedEth = Number(ethReceivedWei) / 1e18
-    const creditAmountEth = Number(creditAmountWei) / 1e18
-    const treasuryEthAmount = Number(ethReceivedWei - creditAmountWei) / 1e18
+    // Convert to WETH for logging (for readability)
+    const wethReceivedWeth = Number(wethReceivedWei) / 1e18
+    const creditAmountWeth = Number(creditAmountWei) / 1e18
+    const treasuryWethAmount = Number(wethReceivedWei - creditAmountWei) / 1e18
 
     console.log(`\n✅ [VERIFICATION SUCCESS] Transaction verified as valid convert:`)
     console.log(`   - Treasury $BUMP transfer (5%): ✅`)
     console.log(`   - 0x Settler swap (95% $BUMP → WETH): ✅`)
-    console.log(`   - Total ETH from swap: ${ethReceivedWei.toString()} wei (${ethReceivedEth.toFixed(6)} ETH)`)
-    console.log(`   - Credit amount (90% of total ETH): ${creditAmountWei.toString()} wei (${creditAmountEth.toFixed(6)} ETH)`)
-    console.log(`   - Treasury ETH (5% of total ETH): ${(ethReceivedWei - creditAmountWei).toString()} wei (${treasuryEthAmount.toFixed(6)} ETH)`)
-    console.log(`   📝 This ${creditAmountEth.toFixed(6)} ETH will be stored in database and converted to USD using real-time ETH price`)
+    console.log(`   - Total WETH from swap: ${wethReceivedWei.toString()} wei (${wethReceivedWeth.toFixed(6)} WETH)`)
+    console.log(`   - Credit amount (90% of total WETH): ${creditAmountWei.toString()} wei (${creditAmountWeth.toFixed(6)} WETH)`)
+    console.log(`   - Treasury WETH (5% of total WETH): ${(wethReceivedWei - creditAmountWei).toString()} wei (${treasuryWethAmount.toFixed(6)} WETH)`)
+    console.log(`   📝 This ${creditAmountWeth.toFixed(6)} WETH will be stored in database as credit`)
 
     return {
       ethAmountWei: creditAmountWei,

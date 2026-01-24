@@ -214,22 +214,16 @@ export async function POST(request: NextRequest) {
 
     console.log(`   WETH Balance (from DB): ${formatEther(dbWethBalanceWei)} WETH`)
     
-    // Use on-chain WETH balance as source of truth (more accurate)
-    let wethBalanceWei = onChainWethBalance > BigInt(0) ? onChainWethBalance : dbWethBalanceWei
+    // CRITICAL: Use database WETH balance as source of truth (prevents bypass)
+    // Only WETH from "Distribute Credits" is counted, NOT direct WETH transfers
+    // This prevents users from bypassing by sending WETH directly to bot wallets
+    let wethBalanceWei = dbWethBalanceWei
     
-    // If on-chain balance is different from database, update database
+    // Log on-chain balance for reference (but don't use it for credit calculation)
     if (onChainWethBalance !== dbWethBalanceWei) {
-      console.log(`   ⚠️ On-chain balance (${formatEther(onChainWethBalance)}) differs from DB (${formatEther(dbWethBalanceWei)}). Using on-chain balance.`)
-      // Update database to match on-chain balance
-      try {
-        await supabase
-          .from("bot_wallet_credits")
-          .update({ weth_balance_wei: onChainWethBalance.toString() })
-          .eq("user_address", user_address.toLowerCase())
-          .eq("bot_wallet_address", smartAccountAddress.toLowerCase())
-      } catch (err: any) {
-        console.warn("Failed to sync DB balance:", err)
-      }
+      console.log(`   ⚠️ On-chain balance (${formatEther(onChainWethBalance)}) differs from DB (${formatEther(dbWethBalanceWei)})`)
+      console.log(`   → Using DB balance (${formatEther(dbWethBalanceWei)}) to prevent bypass`)
+      console.log(`   → On-chain balance includes direct WETH transfers (not counted as credit)`)
     }
 
     // Fetch ETH price for USD conversion

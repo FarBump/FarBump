@@ -35,16 +35,8 @@ const ERC20_ABI = [
   },
 ] as const
 
-// WETH ABI for unwrapping WETH to ETH
-const WETH_ABI = [
-  {
-    inputs: [{ name: "wad", type: "uint256" }],
-    name: "withdraw",
-    outputs: [],
-    stateMutability: "nonpayable",
-    type: "function",
-  },
-] as const
+// ERC20 ABI is already defined above, we'll use it for WETH transfer
+// WETH is an ERC20 token, so we use the same ABI for transfer
 
 export function useConvertFuel() {
   const { client: smartWalletClient } = useSmartWallets()
@@ -101,30 +93,31 @@ export function useConvertFuel() {
       setSwapStatus("Fetching quote from 0x API...")
       const quote = await get0xQuote(swapAmountWei, userAddress)
 
-      // Calculate expected ETH amount from swap
-      const totalEthReceivedWei = BigInt(quote.buyAmount)
+      // Calculate expected WETH amount from swap (quote.buyAmount is WETH)
+      const totalWethReceivedWei = BigInt(quote.buyAmount)
       
-      // Calculate 5% of ETH result for Treasury (APP_FEE_BPS = 500)
-      // This represents 5% of the total initial value in ETH
-      const treasuryEthWei = (totalEthReceivedWei * BigInt(APP_FEE_BPS)) / BigInt(10000)
-      const userCreditEthWei = totalEthReceivedWei - treasuryEthWei // 90% remains in Smart Wallet
+      // Calculate 5% of WETH result for Treasury (APP_FEE_BPS = 500)
+      // This represents 5% of the total initial value in WETH
+      const treasuryWethWei = (totalWethReceivedWei * BigInt(APP_FEE_BPS)) / BigInt(10000)
+      const userCreditWethWei = totalWethReceivedWei - treasuryWethWei // 90% WETH remains in Smart Wallet as Credit
       
-      // expectedEthWei is the 90% credit that will be added to user balance
-      const expectedEthWei = userCreditEthWei
+      // expectedEthWei is the 90% WETH credit that will be added to user balance
+      // Note: We use "eth" naming for backward compatibility, but it's actually WETH
+      const expectedEthWei = userCreditWethWei
 
-      console.log(`📊 Distribution after swap:`)
-      console.log(`   - Total ETH from swap: ${totalEthReceivedWei.toString()} wei`)
-      console.log(`   - Treasury ETH (5%): ${treasuryEthWei.toString()} wei`)
-      console.log(`   - User Credit ETH (90%): ${userCreditEthWei.toString()} wei`)
+      console.log(`📊 Distribution after swap (WETH):`)
+      console.log(`   - Total WETH from swap: ${totalWethReceivedWei.toString()} wei`)
+      console.log(`   - Treasury WETH (5%): ${treasuryWethWei.toString()} wei`)
+      console.log(`   - User Credit WETH (90%): ${userCreditWethWei.toString()} wei`)
 
       setSwapStatus("Preparing transactions...")
 
       // Execute transactions in sequence using sendTransaction with calls array:
       // 1. Transfer 5% $BUMP to Treasury
       // 2. Approve 95% $BUMP to 0x AllowanceHolder
-      // 3. Execute swap 95% $BUMP through 0x
-      // 4. Unwrap all WETH to ETH
-      // 5. Transfer 5% ETH to Treasury (remaining 90% stays in Smart Wallet)
+      // 3. Execute swap 95% $BUMP through 0x → WETH
+      // 4. Transfer 5% WETH to Treasury (remaining 90% WETH stays in Smart Wallet as Credit)
+      // IMPORTANT: Keep WETH as WETH (don't unwrap to ETH) for gasless transactions
       const txHash = await smartWalletClient.sendTransaction({
         calls: [
           // Step 1: Transfer 5% $BUMP to Treasury
@@ -147,29 +140,22 @@ export function useConvertFuel() {
             }),
             value: BigInt(0),
           },
-          // Step 3: Execute swap 95% $BUMP through 0x Settler contract
+          // Step 3: Execute swap 95% $BUMP through 0x Settler contract → WETH
           {
             to: quote.transaction.to as Address,
             data: quote.transaction.data as Hex,
             value: BigInt(quote.transaction.value || "0"),
           },
-          // Step 4: Unwrap all WETH to ETH
+          // Step 4: Transfer 5% WETH to Treasury (remaining 90% WETH stays as Credit)
+          // IMPORTANT: Keep WETH as WETH, don't unwrap to ETH
           {
             to: BASE_WETH_ADDRESS as Address,
             data: encodeFunctionData({
-              abi: WETH_ABI,
-              functionName: "withdraw",
-              args: [totalEthReceivedWei], // Unwrap all WETH received from swap
+              abi: ERC20_ABI,
+              functionName: "transfer",
+              args: [TREASURY_ADDRESS as Address, treasuryWethWei], // 5% WETH to Treasury
             }),
             value: BigInt(0),
-          },
-          // Step 5: Transfer 5% ETH to Treasury
-          // Note: Native ETH transfer is done by sending value directly
-          // We'll use a simple transfer call (Smart Wallet will handle ETH transfer)
-          {
-            to: TREASURY_ADDRESS as Address,
-            data: "0x" as Hex, // Empty data for native ETH transfer
-            value: treasuryEthWei, // 5% of ETH result
           },
         ] as any,
       })

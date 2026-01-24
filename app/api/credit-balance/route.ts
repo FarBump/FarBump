@@ -10,16 +10,20 @@ export const runtime = "nodejs"
  * API Endpoint: Get Credit Balance
  * 
  * Returns total credit balance for a user:
- * - Main wallet credit: Actual ETH + WETH balance in smart wallet (on-chain)
- * - Bot wallet credits: Sum of weth_balance_wei from database
+ * - Main wallet credit: WETH balance from database (user_credits.balance_wei)
+ *   - This is ONLY WETH from "Convert $BUMP to Credit" transactions
+ *   - NOT from direct WETH transfers (prevents bypass)
+ * - Bot wallet credits: Sum of weth_balance_wei from database (bot_wallet_credits)
+ *   - This is ONLY WETH distributed via use-distribute-credits.ts
+ *   - NOT from direct WETH transfers to bot wallets (prevents bypass)
  * 
- * IMPORTANT CHANGE:
- * - Main wallet credit is now fetched from blockchain (actual balance)
- * - This ensures credit decreases naturally when distributing to bot wallets
- * - user_credits.balance_wei is kept for audit/history but NOT used for display
+ * IMPORTANT SECURITY:
+ * - Credit is ONLY calculated from database records (user_credits.balance_wei)
+ * - On-chain balance is NOT used to prevent users from bypassing by sending WETH directly
+ * - Only WETH from "Convert $BUMP to Credit" and "Distribute Credits" is counted
  * 
  * Credit Display Formula:
- * Total Credit (USD) = (Main Wallet ETH + Main Wallet WETH + Bot Wallets WETH) × ETH Price
+ * Total Credit (USD) = (Main Wallet WETH from DB + Bot Wallets WETH from DB) × ETH Price
  */
 export async function POST(request: NextRequest) {
   try {
@@ -36,74 +40,34 @@ export async function POST(request: NextRequest) {
     const supabase = createSupabaseServiceClient()
     const normalizedUserAddress = userAddress.toLowerCase()
 
-    // Initialize blockchain client for fetching actual balances
-    const publicClient = createPublicClient({
-      chain: base,
-      transport: http(process.env.NEXT_PUBLIC_BASE_RPC_URL || "https://mainnet.base.org"),
-    })
-
-    // WETH Contract on Base
-    const WETH_ADDRESS = "0x4200000000000000000000000000000000000006" as const
-    const WETH_ABI = [
-      {
-        inputs: [{ name: "account", type: "address" }],
-        name: "balanceOf",
-        outputs: [{ name: "", type: "uint256" }],
-        stateMutability: "view",
-        type: "function",
-      },
-    ] as const
-
-    // Fetch ACTUAL ETH + WETH balance from blockchain (main smart wallet)
-    console.log(`\n💰 Fetching actual balance for ${normalizedUserAddress}...`)
+    // CRITICAL: Only fetch credit from database (user_credits.balance_wei)
+    // This ensures only WETH from "Convert $BUMP to Credit" is counted
+    // Direct WETH transfers to wallet are NOT counted (prevents bypass)
+    console.log(`\n💰 Fetching credit balance from database for ${normalizedUserAddress}...`)
     
-    let nativeEthBalance = BigInt(0)
-    let wethBalance = BigInt(0)
-    let balanceFetchError: string | null = null
-    
-    try {
-      // Get Native ETH balance
-      nativeEthBalance = await publicClient.getBalance({
-        address: normalizedUserAddress as Address,
-      })
-      console.log(`   ✅ Native ETH: ${formatUnits(nativeEthBalance, 18)} ETH`)
-      
-      // Get WETH balance
-      wethBalance = await publicClient.readContract({
-        address: WETH_ADDRESS,
-        abi: WETH_ABI,
-        functionName: "balanceOf",
-        args: [normalizedUserAddress as Address],
-      }) as bigint
-      console.log(`   ✅ WETH: ${formatUnits(wethBalance, 18)} WETH`)
-      
-    } catch (balanceError: any) {
-      balanceFetchError = balanceError.message || String(balanceError)
-      console.error("❌ Error fetching on-chain balance:", balanceFetchError)
-      console.error("   → Full error:", balanceError)
-      
-      // If blockchain fetch fails, try to get from database as fallback
-      console.log("   → Attempting fallback to database balance...")
-      try {
-        const { data: userCreditData, error: userCreditError } = await supabase
-          .from("user_credits")
-          .select("balance_wei")
-          .eq("user_address", normalizedUserAddress)
-          .single()
-        
-        if (!userCreditError && userCreditData) {
-          // Use database balance as fallback (might be outdated but better than 0)
-          const dbBalance = BigInt(userCreditData.balance_wei || "0")
-          console.log(`   ⚠️ Using database balance as fallback: ${formatUnits(dbBalance, 18)} ETH`)
-          nativeEthBalance = dbBalance
-        }
-      } catch (fallbackError) {
-        console.error("   ❌ Fallback to database also failed:", fallbackError)
-      }
+    // Fetch main wallet credit from database (user_credits.balance_wei)
+    // This is ONLY WETH from "Convert $BUMP to Credit" transactions
+    const { data: userCreditData, error: userCreditError } = await supabase
+      .from("user_credits")
+      .select("balance_wei")
+      .eq("user_address", normalizedUserAddress)
+      .single()
+
+    if (userCreditError && userCreditError.code !== "PGRST116") {
+      console.error("❌ Error fetching user credit balance:", userCreditError)
+      return NextResponse.json(
+        { error: "Failed to fetch user credit balance", details: userCreditError.message },
+        { status: 500 }
+      )
     }
 
-    // Main wallet credit = Actual ETH + WETH in wallet (on-chain)
-    const mainWalletCreditWei = nativeEthBalance + wethBalance
+    // Main wallet credit = WETH from database (only from Convert $BUMP to Credit)
+    const mainWalletCreditWei = userCreditData?.balance_wei 
+      ? BigInt(userCreditData.balance_wei.toString())
+      : BigInt(0)
+    
+    console.log(`   → Main Wallet WETH (from DB): ${formatUnits(mainWalletCreditWei, 18)} WETH`)
+    console.log(`   → Note: Only WETH from "Convert $BUMP to Credit" is counted`)
 
     // Fetch bot wallet credits from database
     // IMPORTANT: Only 1 row per bot_wallet_address, only weth_balance_wei is used
@@ -121,19 +85,24 @@ export async function POST(request: NextRequest) {
     }
 
     // Calculate bot wallet credits (from database)
+    // This is ONLY WETH distributed via use-distribute-credits.ts
+    // Direct WETH transfers to bot wallets are NOT counted (prevents bypass)
     const botWalletCreditsWei = botCreditsData?.reduce((sum, record) => {
       const amountWei = BigInt(record.weth_balance_wei || "0")
       return sum + amountWei
     }, BigInt(0)) || BigInt(0)
     
-    console.log(`   → Bot Wallets WETH (DB): ${formatUnits(botWalletCreditsWei, 18)} WETH`)
+    console.log(`   → Bot Wallets WETH (from DB): ${formatUnits(botWalletCreditsWei, 18)} WETH`)
+    console.log(`   → Note: Only WETH from "Distribute Credits" is counted`)
     
-    // Total credit = Main wallet (ETH + WETH on-chain) + Bot wallets WETH (from DB)
+    // Total credit = Main wallet WETH (from DB) + Bot wallets WETH (from DB)
+    // Both are ONLY from legitimate sources (Convert $BUMP to Credit + Distribute Credits)
     const totalCreditWei = mainWalletCreditWei + botWalletCreditsWei
     const balanceWei = totalCreditWei.toString()
     const balanceEth = formatUnits(BigInt(balanceWei), 18)
     
-    console.log(`   → Total Credit: ${balanceEth} ETH`)
+    console.log(`   → Total Credit: ${balanceEth} WETH (from database only)`)
+    console.log(`   → Security: Direct WETH transfers are NOT counted`)
 
     return NextResponse.json({
       success: true,
@@ -141,11 +110,10 @@ export async function POST(request: NextRequest) {
       balanceEth,
       mainWalletCreditWei: mainWalletCreditWei.toString(),
       botWalletCreditsWei: botWalletCreditsWei.toString(),
-      lastUpdated: new Date().toISOString(),
+      lastUpdated: userCreditData?.last_updated || new Date().toISOString(),
       debug: {
-        nativeEthBalance: nativeEthBalance.toString(),
-        wethBalance: wethBalance.toString(),
-        balanceFetchError,
+        source: "database_only",
+        note: "Only WETH from Convert $BUMP to Credit and Distribute Credits is counted",
       },
     })
   } catch (error: any) {
