@@ -76,10 +76,10 @@ export function BotLiveActivity({ userAddress, enabled = true, existingBotWallet
     limit: 20, // Initial load: last 20 logs
   })
   
-  // Auto-scroll to bottom when new logs arrive
+  // Auto-scroll to top when new logs arrive (log terbaru di atas)
   // CRITICAL: Declare refs AFTER logs is declared to prevent initialization errors
   const scrollAreaRef = useRef<HTMLDivElement>(null)
-  const logsEndRef = useRef<HTMLDivElement>(null)
+  const logsStartRef = useRef<HTMLDivElement>(null)
   const prevLogsLengthRef = useRef<number>(0)
   
   useEffect(() => {
@@ -87,16 +87,16 @@ export function BotLiveActivity({ userAddress, enabled = true, existingBotWallet
     if (logs.length > prevLogsLengthRef.current && logs.length > 0) {
       // Small delay to ensure DOM is updated
       setTimeout(() => {
-        // Try to scroll the viewport of ScrollArea
+        // Try to scroll the viewport of ScrollArea to top (log terbaru)
         const viewport = scrollAreaRef.current?.querySelector('[data-slot="scroll-area-viewport"]') as HTMLElement
         if (viewport) {
           viewport.scrollTo({
-            top: viewport.scrollHeight,
+            top: 0, // Scroll to top (log terbaru)
             behavior: "smooth"
           })
         } else {
           // Fallback to scrollIntoView
-          logsEndRef.current?.scrollIntoView({ behavior: "smooth" })
+          logsStartRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
         }
       }, 100)
     }
@@ -177,6 +177,8 @@ export function BotLiveActivity({ userAddress, enabled = true, existingBotWallet
           </div>
         ) : (
           <div className="space-y-1 p-2">
+            {/* Invisible element at the start for auto-scroll target (log terbaru di atas) */}
+            <div ref={logsStartRef} />
             {logs.map((log, index) => {
               const walletLabel = getWalletLabel(log.wallet_address, safeBotWallets)
               // Handle empty or zero amount_wei
@@ -253,8 +255,6 @@ export function BotLiveActivity({ userAddress, enabled = true, existingBotWallet
                 </div>
               )
             })}
-            {/* Invisible element at the end for auto-scroll target */}
-            <div ref={logsEndRef} />
           </div>
         )}
       </ScrollArea>
