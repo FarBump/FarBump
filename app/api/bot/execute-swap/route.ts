@@ -289,9 +289,24 @@ export async function POST(request: NextRequest) {
     // Step 6: Calculate swap amount in WETH
     const amountUsdValue = parseFloat(amount_usd)
     const amountEthValue = amountUsdValue / ethPriceUsd
-    const amountWei = BigInt(Math.floor(amountEthValue * 1e18))
+    let amountWei = BigInt(Math.floor(amountEthValue * 1e18))
+    
+    // CRITICAL: Ensure amountWei is never zero (minimum 1 wei to avoid transaction failures)
+    // If calculation results in 0, use minimum 1 wei (allows micro-transactions)
+    if (amountWei === BigInt(0)) {
+      console.warn(`⚠️ Calculated amountWei is 0, using minimum 1 wei instead`)
+      amountWei = BigInt(1)
+    }
+    
+    // CRITICAL: Log amountWei before balance check for verification
+    console.log(`💱 Swap Parameters:`)
+    console.log(`   Amount: $${amountUsdValue} USD`)
+    console.log(`   Amount: ${formatEther(amountWei)} ETH`)
+    console.log(`   Amount (wei): ${amountWei.toString()}`)
+    console.log(`   Target Token: ${token_address}`)
     
     // Check if bot has enough WETH balance
+    // NO MINIMUM AMOUNT VALIDATION - bot can swap any amount (even 1 wei)
     if (wethBalanceWei < amountWei) {
       console.log(`⚠️ Bot #${walletIndex + 1} WETH balance insufficient (${formatEther(wethBalanceWei)} < ${formatEther(amountWei)}) - Skipping`)
       
@@ -318,33 +333,6 @@ export async function POST(request: NextRequest) {
         skipped: true,
         nextIndex,
       })
-    }
-
-    // CRITICAL: Log amountWei before 0x API call for verification
-    console.log(`💱 Swap Parameters:`)
-    console.log(`   Amount: $${amountUsdValue} USD`)
-    console.log(`   Amount: ${formatEther(amountWei)} ETH`)
-    console.log(`   Amount (wei): ${amountWei.toString()}`)
-    console.log(`   Target Token: ${token_address}`)
-
-    // Validate amountWei is not zero
-    if (amountWei === BigInt(0)) {
-      console.error("❌ Invalid swap amount: amountWei is 0")
-      await supabase.from("bot_logs").insert({
-        user_address: user_address.toLowerCase(),
-        wallet_address: smartAccountAddress,
-        token_address: token_address,
-        amount_wei: "0",
-        action: "swap_failed",
-        message: `[Bot #${walletIndex + 1}] Invalid swap amount: amountWei is 0`,
-        status: "error",
-        error_details: { amountUsdValue, amountEthValue, amountWei: "0" },
-        created_at: new Date().toISOString(),
-      })
-      return NextResponse.json(
-        { error: "Invalid swap amount: amountWei is 0" },
-        { status: 400 }
-      )
     }
 
     // Step 7: Get swap quote from 0x API v2 with optimized parameters for Clanker v4
@@ -733,8 +721,30 @@ export async function POST(request: NextRequest) {
         throw new Error("Invalid quote response: missing transaction.to or transaction.data")
       }
       
+      // Validate transaction.to is a valid address
+      if (!isAddress(transaction.to)) {
+        throw new Error(`Invalid transaction.to address: ${transaction.to}`)
+      }
+      
+      // Validate transaction.data is a valid hex string
+      if (typeof transaction.data !== 'string' || !transaction.data.startsWith('0x')) {
+        throw new Error(`Invalid transaction.data: must be a hex string starting with 0x`)
+      }
+      
+      // Validate transaction.data length (must be at least 4 bytes for function selector)
+      if (transaction.data.length < 10) { // 0x + 8 hex chars = 4 bytes
+        throw new Error(`Invalid transaction.data: too short (${transaction.data.length} chars, minimum 10)`)
+      }
+      
+      // Log transaction details for debugging
+      console.log(`   → Transaction Details:`)
+      console.log(`      To: ${transaction.to}`)
+      console.log(`      Data: ${transaction.data.slice(0, 66)}... (${transaction.data.length} chars)`)
+      console.log(`      Data length: ${(transaction.data.length - 2) / 2} bytes`)
+      
       // Safely convert value to BigInt (handle undefined, null, or empty string)
       // CRITICAL: Ensure we never pass undefined to BigInt
+      // For WETH swaps (ERC20), value should always be 0
       let transactionValue: string = "0"
       if (transaction.value !== undefined && transaction.value !== null) {
         if (typeof transaction.value === 'string') {
@@ -771,13 +781,26 @@ export async function POST(request: NextRequest) {
       
       // Prepare transaction call for Smart Account (uses calls array format)
       // For WETH swaps, value should be 0 (ERC20 transfer, not native ETH)
+      // CRITICAL: Ensure all fields are properly formatted for CDP SDK
       const transactionCall = {
-        to: transaction.to as Address,
-        data: transaction.data as Hex,
+        to: transaction.to.toLowerCase() as Address, // Ensure lowercase address
+        data: transaction.data as Hex, // Ensure hex string format
         value: BigInt(0), // WETH is ERC20, value is always 0
       }
       
-      console.log(`   → Transaction value: 0 (WETH swap, not native ETH)`)
+      // Final validation of transaction call
+      console.log(`   → Transaction Call Prepared:`)
+      console.log(`      To: ${transactionCall.to}`)
+      console.log(`      Data: ${transactionCall.data.slice(0, 66)}...`)
+      console.log(`      Value: ${transactionCall.value.toString()} (0 for ERC20 swap)`)
+      
+      // Validate transaction call format
+      if (!isAddress(transactionCall.to)) {
+        throw new Error(`Invalid transactionCall.to: ${transactionCall.to}`)
+      }
+      if (typeof transactionCall.data !== 'string' || !transactionCall.data.startsWith('0x')) {
+        throw new Error(`Invalid transactionCall.data: ${transactionCall.data}`)
+      }
       
       let userOpHash: any
       let userOpReceipt: any
@@ -800,6 +823,12 @@ export async function POST(request: NextRequest) {
       if (typeof (smartAccount as any).sendUserOperation === 'function') {
         console.log(`   → Method: Smart Account sendUserOperation (CDP SDK v2)`)
         try {
+          // Log the exact parameters being sent to CDP SDK
+          console.log(`   → Sending User Operation with parameters:`)
+          console.log(`      Network: ${network}`)
+          console.log(`      Calls: [${JSON.stringify(transactionCall, null, 2)}]`)
+          console.log(`      Is Sponsored: true`)
+          
           userOpHash = await (smartAccount as any).sendUserOperation({
             network: network, // Required by CDP SDK v2
             calls: [transactionCall], // Smart Account uses calls array format
@@ -807,10 +836,47 @@ export async function POST(request: NextRequest) {
           })
           console.log(`   ✅ User Operation submitted via sendUserOperation`)
         } catch (err: any) {
-          console.error(`   ❌ Smart Account sendUserOperation failed:`, err.message)
-          if (err.response) {
-            console.error(`   → API Response:`, JSON.stringify(err.response.data || err.response, null, 2))
+          console.error(`   ❌ Smart Account sendUserOperation failed:`)
+          console.error(`      Error Message: ${err.message}`)
+          console.error(`      Error Type: ${err.constructor?.name || typeof err}`)
+          
+          // Log detailed error information
+          if (err.errorMessage) {
+            console.error(`      Error Message (detailed): ${err.errorMessage}`)
           }
+          if (err.errorType) {
+            console.error(`      Error Type: ${err.errorType}`)
+          }
+          if (err.correlationId) {
+            console.error(`      Correlation ID: ${err.correlationId}`)
+          }
+          if (err.statusCode) {
+            console.error(`      Status Code: ${err.statusCode}`)
+          }
+          
+          // Log API response if available
+          if (err.response) {
+            console.error(`      API Response:`, JSON.stringify(err.response.data || err.response, null, 2))
+          }
+          
+          // Log the transaction call that failed
+          console.error(`      Failed Transaction Call:`, JSON.stringify(transactionCall, null, 2))
+          
+          // Provide more helpful error message
+          const errorMsg = err.errorMessage || err.message || "Unknown error"
+          if (errorMsg.includes("execution reverted") || errorMsg.includes("useroperation reverted")) {
+            console.error(`   ⚠️ Execution reverted - possible causes:`)
+            console.error(`      1. Transaction data is invalid or malformed`)
+            console.error(`      2. Smart Account does not have sufficient WETH balance`)
+            console.error(`      3. WETH approval is insufficient or expired`)
+            console.error(`      4. 0x API quote data is invalid for this Smart Account`)
+            console.error(`      5. Transaction amount is too small or invalid`)
+            console.error(`      6. Target token address is invalid or not supported`)
+            
+            // Try to provide more specific error information
+            throw new Error(`Swap execution failed: ${errorMsg}. Check Smart Account WETH balance, approval status, and transaction data validity.`)
+          }
+          
           throw err
         }
       }
