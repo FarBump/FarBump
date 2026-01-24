@@ -80,22 +80,6 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // Validate credit balance
-    // Database query uses user_address column (NOT user_id)
-    const { data: creditData, error: creditError } = await supabase
-      .from("user_credits")
-      .select("balance_wei")
-      .eq("user_address", normalizedUserAddress)
-      .single()
-
-    if (creditError && creditError.code !== "PGRST116") {
-      console.error("❌ Error fetching credit balance:", creditError)
-      return NextResponse.json(
-        { error: "Failed to fetch credit balance" },
-        { status: 500 }
-      )
-    }
-
     // Get real-time ETH price for USD to ETH conversion
     let ethPriceUsd: number
     try {
@@ -125,12 +109,58 @@ export async function POST(request: NextRequest) {
     // Use Math.floor for safe rounding to avoid precision errors (18 decimals)
     const amountWei = BigInt(Math.floor(amountEth * 1e18))
     
-    // Validate credit balance using USD (at least enough for one bump)
-    const creditBalanceWei = creditData?.balance_wei
+    // CRITICAL: Validate TOTAL credit balance (main wallet + bot wallets)
+    // After distribution, credit is in bot_wallet_credits, not user_credits
+    // So we need to check TOTAL credit = user_credits.balance_wei + SUM(bot_wallet_credits.weth_balance_wei)
+    
+    // Fetch main wallet credit
+    const { data: creditData, error: creditError } = await supabase
+      .from("user_credits")
+      .select("balance_wei")
+      .eq("user_address", normalizedUserAddress)
+      .single()
+
+    if (creditError && creditError.code !== "PGRST116") {
+      console.error("❌ Error fetching credit balance:", creditError)
+      return NextResponse.json(
+        { error: "Failed to fetch credit balance" },
+        { status: 500 }
+      )
+    }
+
+    // Fetch bot wallet credits
+    const { data: botCreditsData, error: botCreditsError } = await supabase
+      .from("bot_wallet_credits")
+      .select("weth_balance_wei")
+      .eq("user_address", normalizedUserAddress)
+
+    if (botCreditsError && botCreditsError.code !== "PGRST116") {
+      console.error("❌ Error fetching bot credit balance:", botCreditsError)
+      return NextResponse.json(
+        { error: "Failed to fetch bot credit balance" },
+        { status: 500 }
+      )
+    }
+
+    // Calculate total credit (main wallet + bot wallets)
+    const mainWalletCreditWei = creditData?.balance_wei
       ? BigInt(creditData.balance_wei.toString())
       : BigInt(0)
-    const creditEth = Number(creditBalanceWei) / 1e18
+    
+    const botWalletCreditsWei = botCreditsData?.reduce((sum, record) => {
+      const amountWei = BigInt(record.weth_balance_wei || "0")
+      return sum + amountWei
+    }, BigInt(0)) || BigInt(0)
+    
+    const totalCreditWei = mainWalletCreditWei + botWalletCreditsWei
+    const creditEth = Number(totalCreditWei) / 1e18
     const creditUsd = creditEth * ethPriceUsd
+
+    console.log(`💰 Credit Balance Check:`)
+    console.log(`   Main Wallet: ${mainWalletCreditWei.toString()} wei (${(Number(mainWalletCreditWei) / 1e18).toFixed(6)} ETH)`)
+    console.log(`   Bot Wallets: ${botWalletCreditsWei.toString()} wei (${(Number(botWalletCreditsWei) / 1e18).toFixed(6)} ETH)`)
+    console.log(`   Total Credit: ${totalCreditWei.toString()} wei (${creditEth.toFixed(6)} ETH / $${creditUsd.toFixed(2)} USD)`)
+    console.log(`   Required: ${amountWei.toString()} wei (${amountEth.toFixed(6)} ETH / $${amountUsdValue.toFixed(2)} USD)`)
 
     if (creditUsd < amountUsdValue) {
       return NextResponse.json(
@@ -140,6 +170,9 @@ export async function POST(request: NextRequest) {
           requiredAmountUsd: amountUsdValue.toFixed(2),
           creditBalanceEth: creditEth.toFixed(6),
           requiredAmountEth: amountEth.toFixed(6),
+          mainWalletCreditWei: mainWalletCreditWei.toString(),
+          botWalletCreditsWei: botWalletCreditsWei.toString(),
+          totalCreditWei: totalCreditWei.toString(),
         },
         { status: 400 }
       )
