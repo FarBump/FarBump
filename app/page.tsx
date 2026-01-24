@@ -1260,6 +1260,7 @@ export default function BumpBotDashboard() {
               intervalSeconds={intervalSeconds}
               onIntervalChange={setIntervalSeconds}
               onCreditUpdate={refetchCredit}
+              isActive={isActive} // Lock settings when bot is running
             />
             <ActionButton 
               isActive={isActive} 

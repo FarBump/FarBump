@@ -22,6 +22,7 @@ interface ConfigPanelProps {
   intervalSeconds?: number
   onIntervalChange?: (seconds: number) => void
   onCreditUpdate?: (options?: any) => Promise<any> | void // Callback to refetch credit balance after convert (React Query refetch)
+  isActive?: boolean // Lock settings when bot is running
 }
 
 export function ConfigPanel({ 
@@ -32,7 +33,8 @@ export function ConfigPanel({
   onBuyAmountChange,
   intervalSeconds = 60,
   onIntervalChange,
-  onCreditUpdate
+  onCreditUpdate,
+  isActive = false // Lock settings when bot is running
 }: ConfigPanelProps) {
   // Fetch $BUMP token balance from Smart Wallet address (same as WalletCard)
   const { formattedBalance, isLoading: isLoadingBalance } = useBumpBalance({
@@ -429,7 +431,8 @@ export function ConfigPanel({
               min={2}
               max={600}
               step={1}
-              className="cursor-pointer"
+              disabled={isActive} // Lock when bot is running
+              className={isActive ? "cursor-not-allowed opacity-50" : "cursor-pointer"}
             />
             <div className="flex justify-between text-xs text-muted-foreground">
               <span>2s</span>
@@ -451,6 +454,7 @@ export function ConfigPanel({
                 type="number"
                 value={amount}
                 onChange={(e) => handleAmountChange(e.target.value)}
+                disabled={isActive} // Lock when bot is running
                 className="font-mono pr-16 bg-secondary border-border text-foreground"
                 step="0.01"
                 min="0"
