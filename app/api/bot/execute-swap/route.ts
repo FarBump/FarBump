@@ -233,24 +233,37 @@ export async function POST(request: NextRequest) {
     const balanceInUsd = Number(formatEther(wethBalanceWei)) * ethPriceUsd
     console.log(`   Balance: $${balanceInUsd.toFixed(4)} USD`)
 
-    // No minimum amount validation - bot can swap any amount
-    // But check if balance is zero
-    if (wethBalanceWei === BigInt(0)) {
-      console.log(`⚠️ Bot #${walletIndex + 1} has no WETH balance - Skipping`)
+    // Step 6: Calculate swap amount in WETH (moved up to check balance before swap)
+    const amountUsdValue = parseFloat(amount_usd)
+    const amountEthValue = amountUsdValue / ethPriceUsd
+    let amountWei = BigInt(Math.floor(amountEthValue * 1e18))
+    
+    // CRITICAL: Ensure amountWei is never zero (minimum 1 wei to avoid transaction failures)
+    if (amountWei === BigInt(0)) {
+      console.warn(`⚠️ Calculated amountWei is 0, using minimum 1 wei instead`)
+      amountWei = BigInt(1)
+    }
+
+    // CRITICAL: Check if wallet has sufficient balance for swap
+    // If balance is insufficient, check all wallets and stop session if all are depleted
+    if (wethBalanceWei < amountWei) {
+      console.log(`⚠️ Bot #${walletIndex + 1} has insufficient WETH balance - Skipping`)
+      console.log(`   Required: ${formatEther(amountWei)} WETH`)
+      console.log(`   Available: ${formatEther(wethBalanceWei)} WETH`)
       
       // Log insufficient balance
       await supabase.from("bot_logs").insert({
         user_address: user_address.toLowerCase(),
         wallet_address: smartAccountAddress,
         token_address: token_address,
-        amount_wei: "0",
+        amount_wei: wethBalanceWei.toString(),
         action: "swap_skipped",
-        message: `[System] Bot #${walletIndex + 1} has no WETH balance. Please distribute credit first.`,
+        message: `[System] Bot #${walletIndex + 1} has insufficient WETH balance (${formatEther(wethBalanceWei)} WETH < ${formatEther(amountWei)} WETH required).`,
         status: "warning",
         created_at: new Date().toISOString(),
       })
 
-      // Check if all wallets are depleted
+      // CRITICAL: Check if ALL wallets are depleted (insufficient balance for swap)
       // IMPORTANT: Only 1 row per bot_wallet_address, only weth_balance_wei is used
       let allDepleted = true
       for (let i = 0; i < botWallets.length; i++) {
@@ -266,18 +279,22 @@ export async function POST(request: NextRequest) {
           ? BigInt(wCredit.weth_balance_wei || "0")
           : BigInt(0)
         
-        if (wWethBalance > BigInt(0)) {
+        // Check if wallet has enough balance for at least one swap
+        if (wWethBalance >= amountWei) {
           allDepleted = false
           break
         }
       }
 
       if (allDepleted) {
-        console.log("❌ All bot wallets depleted - Stopping session")
+        console.log("❌ All bot wallets depleted (insufficient balance for swap) - Stopping session automatically")
         
         await supabase
           .from("bot_sessions")
-          .update({ status: "stopped" })
+          .update({ 
+            status: "stopped",
+            stopped_at: new Date().toISOString()
+          })
           .eq("id", sessionId)
 
         await supabase.from("bot_logs").insert({
@@ -286,18 +303,19 @@ export async function POST(request: NextRequest) {
           token_address: token_address,
           amount_wei: "0",
           action: "session_stopped",
-          message: `[System] All bot wallets have no WETH balance. Bumping session completed.`,
+          message: `[System] All 5 bot wallets have insufficient WETH balance for swap. Bumping session stopped automatically.`,
           status: "info",
           created_at: new Date().toISOString(),
         })
 
         return NextResponse.json({
-          message: "All bot wallets depleted - Session stopped",
+          message: "All bot wallets depleted - Session stopped automatically",
           allDepleted: true,
+          stopped: true,
         })
       }
 
-      // Move to next wallet
+      // Move to next wallet (some wallets still have sufficient balance)
       const nextIndex = (wallet_rotation_index + 1) % 5
       await supabase
         .from("bot_sessions")
@@ -305,30 +323,22 @@ export async function POST(request: NextRequest) {
         .eq("id", sessionId)
 
       return NextResponse.json({
-        message: "Bot wallet has no WETH balance - Skipped",
+        message: "Bot wallet has insufficient WETH balance - Skipped",
         skipped: true,
         nextIndex,
       })
     }
 
-    // Step 6: Calculate swap amount in WETH
-    const amountUsdValue = parseFloat(amount_usd)
-    const amountEthValue = amountUsdValue / ethPriceUsd
-    let amountWei = BigInt(Math.floor(amountEthValue * 1e18))
+    // Step 6 calculation already done above (line 236-245)
+    // amountWei is already calculated
     
-    // CRITICAL: Ensure amountWei is never zero (minimum 1 wei to avoid transaction failures)
-    // If calculation results in 0, use minimum 1 wei (allows micro-transactions)
-    if (amountWei === BigInt(0)) {
-      console.warn(`⚠️ Calculated amountWei is 0, using minimum 1 wei instead`)
-      amountWei = BigInt(1)
-    }
-    
-    // CRITICAL: Log amountWei before balance check for verification
+    // CRITICAL: Log amountWei for verification
     console.log(`💱 Swap Parameters:`)
     console.log(`   Amount: $${amountUsdValue} USD`)
     console.log(`   Amount: ${formatEther(amountWei)} ETH`)
     console.log(`   Amount (wei): ${amountWei.toString()}`)
     console.log(`   Target Token: ${token_address}`)
+    console.log(`   Current WETH Balance: ${formatEther(wethBalanceWei)} WETH`)
     
     // Step 6.5: Check if WETH balance is sufficient, if not, try to convert Native ETH to WETH
     // NO MINIMUM AMOUNT VALIDATION - bot can swap any amount (even 1 wei)
@@ -454,8 +464,59 @@ export async function POST(request: NextRequest) {
             created_at: new Date().toISOString(),
           })
 
-          // If conversion failed, skip this wallet
-          console.log(`   → Conversion failed, skipping this wallet`)
+          // If conversion failed, check if all wallets are depleted before skipping
+          console.log(`   → Conversion failed, checking if all wallets are depleted...`)
+          
+          // CRITICAL: Check if ALL wallets are depleted (insufficient balance for swap)
+          let allDepletedAfterConvertFail = true
+          for (let i = 0; i < botWallets.length; i++) {
+            const w = botWallets[i]
+            const { data: wCredit } = await supabase
+              .from("bot_wallet_credits")
+              .select("weth_balance_wei")
+              .eq("user_address", user_address.toLowerCase())
+              .eq("bot_wallet_address", w.smart_account_address.toLowerCase())
+              .single()
+            
+            const wWethBalance = wCredit 
+              ? BigInt(wCredit.weth_balance_wei || "0")
+              : BigInt(0)
+            
+            // Check if wallet has enough balance for at least one swap
+            if (wWethBalance >= amountWei) {
+              allDepletedAfterConvertFail = false
+              break
+            }
+          }
+
+          if (allDepletedAfterConvertFail) {
+            console.log("❌ All bot wallets depleted after conversion failed - Stopping session automatically")
+            
+            await supabase
+              .from("bot_sessions")
+              .update({ 
+                status: "stopped",
+                stopped_at: new Date().toISOString()
+              })
+              .eq("id", sessionId)
+
+            await supabase.from("bot_logs").insert({
+              user_address: user_address.toLowerCase(),
+              wallet_address: smartAccountAddress,
+              token_address: token_address,
+              amount_wei: "0",
+              action: "session_stopped",
+              message: `[System] All 5 bot wallets have insufficient WETH balance for swap (conversion failed). Bumping session stopped automatically.`,
+              status: "info",
+              created_at: new Date().toISOString(),
+            })
+
+            return NextResponse.json({
+              message: "All bot wallets depleted - Session stopped automatically",
+              allDepleted: true,
+              stopped: true,
+            })
+          }
           
           await supabase.from("bot_logs").insert({
             user_address: user_address.toLowerCase(),
@@ -468,7 +529,7 @@ export async function POST(request: NextRequest) {
             created_at: new Date().toISOString(),
           })
 
-          // Move to next wallet
+          // Move to next wallet (some wallets still have sufficient balance)
           const nextIndex = (wallet_rotation_index + 1) % 5
           await supabase
             .from("bot_sessions")
@@ -484,7 +545,58 @@ export async function POST(request: NextRequest) {
       } else {
         // Not enough Native ETH to convert
         console.log(`   → Not enough Native ETH to convert (need ${formatEther(wethNeeded)}, have ${formatEther(nativeEthBalance)})`)
-        console.log(`   → Skipping this wallet`)
+        console.log(`   → Checking if all wallets are depleted...`)
+        
+        // CRITICAL: Check if ALL wallets are depleted (insufficient balance for swap)
+        let allDepletedNoEth = true
+        for (let i = 0; i < botWallets.length; i++) {
+          const w = botWallets[i]
+          const { data: wCredit } = await supabase
+            .from("bot_wallet_credits")
+            .select("weth_balance_wei")
+            .eq("user_address", user_address.toLowerCase())
+            .eq("bot_wallet_address", w.smart_account_address.toLowerCase())
+            .single()
+          
+          const wWethBalance = wCredit 
+            ? BigInt(wCredit.weth_balance_wei || "0")
+            : BigInt(0)
+          
+          // Check if wallet has enough balance for at least one swap
+          if (wWethBalance >= amountWei) {
+            allDepletedNoEth = false
+            break
+          }
+        }
+
+        if (allDepletedNoEth) {
+          console.log("❌ All bot wallets depleted (not enough Native ETH to convert) - Stopping session automatically")
+          
+          await supabase
+            .from("bot_sessions")
+            .update({ 
+              status: "stopped",
+              stopped_at: new Date().toISOString()
+            })
+            .eq("id", sessionId)
+
+          await supabase.from("bot_logs").insert({
+            user_address: user_address.toLowerCase(),
+            wallet_address: smartAccountAddress,
+            token_address: token_address,
+            amount_wei: "0",
+            action: "session_stopped",
+            message: `[System] All 5 bot wallets have insufficient WETH balance for swap (not enough Native ETH to convert). Bumping session stopped automatically.`,
+            status: "info",
+            created_at: new Date().toISOString(),
+          })
+
+          return NextResponse.json({
+            message: "All bot wallets depleted - Session stopped automatically",
+            allDepleted: true,
+            stopped: true,
+          })
+        }
         
         await supabase.from("bot_logs").insert({
           user_address: user_address.toLowerCase(),
@@ -497,7 +609,7 @@ export async function POST(request: NextRequest) {
           created_at: new Date().toISOString(),
         })
 
-        // Move to next wallet
+        // Move to next wallet (some wallets still have sufficient balance)
         const nextIndex = (wallet_rotation_index + 1) % 5
         await supabase
           .from("bot_sessions")
