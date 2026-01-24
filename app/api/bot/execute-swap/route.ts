@@ -1357,7 +1357,58 @@ export async function POST(request: NextRequest) {
         created_at: new Date().toISOString(),
       })
 
-      // Step 12: Update wallet rotation index
+      // Step 12: Check if all wallets are depleted after swap
+      // CRITICAL: After successful swap, check if all bot wallets have insufficient balance
+      // If all wallets are depleted, stop the session automatically
+      let allDepletedAfterSwap = true
+      for (let i = 0; i < botWallets.length; i++) {
+        const w = botWallets[i]
+        const { data: wCredit } = await supabase
+          .from("bot_wallet_credits")
+          .select("weth_balance_wei")
+          .eq("user_address", user_address.toLowerCase())
+          .eq("bot_wallet_address", w.smart_account_address.toLowerCase())
+          .single()
+        
+        const wWethBalance = wCredit 
+          ? BigInt(wCredit.weth_balance_wei || "0")
+          : BigInt(0)
+        
+        // Check if wallet has enough balance for at least one more swap
+        if (wWethBalance >= amountWei) {
+          allDepletedAfterSwap = false
+          break
+        }
+      }
+
+      if (allDepletedAfterSwap) {
+        console.log("❌ All bot wallets depleted after swap - Stopping session")
+        
+        await supabase
+          .from("bot_sessions")
+          .update({ status: "stopped", stopped_at: new Date().toISOString() })
+          .eq("id", sessionId)
+
+        await supabase.from("bot_logs").insert({
+          user_address: user_address.toLowerCase(),
+          wallet_address: smartAccountAddress,
+          token_address: token_address,
+          amount_wei: "0",
+          action: "session_stopped",
+          message: `[System] All bot wallets have insufficient WETH balance after swap. Bumping session completed.`,
+          status: "info",
+          created_at: new Date().toISOString(),
+        })
+
+        return NextResponse.json({
+          message: "All bot wallets depleted - Session stopped",
+          allDepleted: true,
+          stopped: true,
+          txHash,
+        })
+      }
+
+      // Step 13: Update wallet rotation index
       const nextIndex = (wallet_rotation_index + 1) % 5
       await supabase
         .from("bot_sessions")
@@ -1374,6 +1425,7 @@ export async function POST(request: NextRequest) {
         remainingBalanceUsd: remainingBalanceUsd.toFixed(2),
         sellAmount: formatEther(amountWei),
         buyAmount: buyAmountWei > BigInt(0) ? formatEther(buyAmountWei) : null,
+        stopped: false,
       })
     } catch (swapError: any) {
       console.error("❌ Swap execution failed:", swapError)

@@ -98,7 +98,7 @@ export async function POST(request: NextRequest) {
           consecutiveFailures = 0
 
           // Check if session was stopped due to all wallets being empty
-          if (swapResult.stopped) {
+          if (swapResult.stopped || swapResult.allDepleted) {
             console.log("🛑 All wallets depleted. Stopping continuous loop.")
             break
           }
@@ -107,7 +107,7 @@ export async function POST(request: NextRequest) {
           currentRotationIndex = (currentRotationIndex + 1) % 5
         } else {
           // Handle errors
-          if (swapResult.stopped) {
+          if (swapResult.stopped || swapResult.allDepleted) {
             console.log("🛑 All wallets depleted. Stopping continuous loop.")
             break
           }

@@ -893,14 +893,13 @@ export default function BumpBotDashboard() {
         })
         
         // STEP 2: Always check if bot wallets need funding
-        // Distribute if:
-        // 1. No wallets have sufficient WETH balance, OR
-        // 2. Total WETH balance is less than required amount (can't even do one swap)
-        const needsDistribution = sufficientWallets === 0 || totalBotWethBalanceWei < requiredAmountWei
+        // Distribute if ANY wallet doesn't have sufficient WETH balance
+        // This ensures all 5 bot wallets have enough credit before starting
+        const needsDistribution = sufficientWallets < 5
         
         if (needsDistribution) {
           console.log("💰 Bot wallets need funding. Distributing credits...")
-          console.log(`   → Reason: ${sufficientWallets === 0 ? "No wallets have sufficient balance" : "Total balance insufficient for one swap"}`)
+          console.log(`   → Reason: ${sufficientWallets}/5 wallets have sufficient balance (need all 5 wallets to have sufficient balance)`)
           setBumpLoadingState("Checking main wallet balance and distributing credits...")
           
           // CRITICAL: Check actual on-chain balance (Native ETH + WETH) from main wallet
