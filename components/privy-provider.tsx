@@ -37,7 +37,7 @@ export function PrivyProvider({ children }: PrivyProviderProps) {
     <PrivyProviderBase
       appId={PRIVY_APP_ID}
       config={{
-        loginMethods: ["farcaster"],
+        loginMethods: ["farcaster", "wallet"],
         appearance: {
           theme: "light",
           accentColor: "#676FFF",
