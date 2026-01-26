@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { type Address, type Hex, encodeFunctionData, createPublicClient, http } from "viem";
+import { type Address, type Hex, encodeFunctionData, createPublicClient, http, formatEther } from "viem";
 import { base } from "viem/chains";
 import { createSupabaseServiceClient } from "@/lib/supabase";
 import { CdpClient } from "@coinbase/cdp-sdk";
@@ -38,7 +38,7 @@ export async function POST(request: NextRequest) {
       try {
         const { data: walletData } = await supabase
           .from("wallets_data")
-          .select("owner_address")
+          .select("user_address, owner_address")
           .ilike("smart_account_address", botAddress)
           .single();
 
@@ -89,6 +89,53 @@ export async function POST(request: NextRequest) {
             isSponsored: false,
             uoOverrides: { preVerificationGasMultiplier: 1.05 } // Bypass insufficient balance
           });
+
+          // CRITICAL: Deduct WETH balance from bot_wallet_credits after successful withdraw
+          // This ensures credit balance decreases when WETH is sent from bot wallet
+          const wethAmountSent = BigInt(quote.buyAmount);
+          
+          // IMPORTANT: Only 1 row per bot_wallet_address (unique constraint)
+          const { data: creditRecord, error: fetchCreditError } = await supabase
+            .from("bot_wallet_credits")
+            .select("id, weth_balance_wei")
+            .eq("user_address", walletData.user_address.toLowerCase())
+            .eq("bot_wallet_address", botAddress.toLowerCase())
+            .single();
+
+          if (!fetchCreditError && creditRecord) {
+            const currentBalance = BigInt(creditRecord.weth_balance_wei || "0");
+            
+            if (currentBalance >= wethAmountSent) {
+              // Deduct sent amount from bot wallet credit
+              const newBalance = currentBalance - wethAmountSent;
+              
+              const { error: updateError } = await supabase
+                .from("bot_wallet_credits")
+                .update({ 
+                  weth_balance_wei: newBalance.toString(),
+                })
+                .eq("id", creditRecord.id);
+              
+              if (updateError) {
+                console.error(`[${botAddress}] ❌ Error updating WETH balance:`, updateError);
+              } else {
+                console.log(`[${botAddress}] ✅ WETH balance deducted: ${formatEther(wethAmountSent)} WETH`);
+                console.log(`[${botAddress}] → Remaining balance: ${formatEther(newBalance)} WETH`);
+                console.log(`[${botAddress}] → Credit balance updated correctly after withdraw`);
+              }
+            } else {
+              console.warn(`[${botAddress}] ⚠️ Insufficient WETH balance: ${formatEther(currentBalance)} < ${formatEther(wethAmountSent)}`);
+              // Set to 0 if insufficient (all credit consumed)
+              await supabase
+                .from("bot_wallet_credits")
+                .update({ weth_balance_wei: "0" })
+                .eq("id", creditRecord.id);
+              console.log(`[${botAddress}] → Bot wallet credit set to 0 (all consumed)`);
+            }
+          } else {
+            console.warn(`[${botAddress}] ⚠️ No credit record found for bot wallet`);
+            console.warn(`[${botAddress}] → WETH withdrawn but credit balance not updated (record missing)`);
+          }
 
           results.push({ address: botAddress, status: "success", txHash: opHash });
         } else {
