@@ -7,6 +7,8 @@ import { CdpClient } from "@coinbase/cdp-sdk"
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
 
+const WETH_ADDRESS = "0x4200000000000000000000000000000000000006" as const
+
 // ERC20 ABI untuk transfer dan balance
 const ERC20_ABI = [
   { constant: true, inputs: [{ name: "_owner", type: "address" }], name: "balanceOf", outputs: [{ name: "balance", type: "uint256" }], type: "function" },
@@ -95,16 +97,68 @@ export async function POST(request: NextRequest) {
         const txHash = typeof userOpHash === 'string' ? userOpHash : (userOpHash.hash || String(userOpHash))
 
         // 6. UPDATE DATABASE (Sync jumlah token)
-        // Jika yang dikirim adalah BUMP (token target), kita update recordnya
-        // Catatan: Anda mungkin perlu menyesuaikan nama kolom saldo di tabel Anda
-        await supabase
-          .from("bot_wallet_credits") // Mengikuti tabel di swap-route Anda
-          .update({ 
-            // Jika ini pengiriman token target, biasanya saldo di DB perlu di-nol-kan
-            // karena kita mengirimkan "balance" (MAX)
-            updated_at: new Date().toISOString()
-          })
-          .eq("bot_wallet_address", botAddress.toLowerCase())
+        // CRITICAL: Jika yang dikirim adalah WETH, kurangi weth_balance_wei di database
+        // Ini memastikan credit balance sinkron dengan on-chain balance
+        const isWeth = tokenAddress.toLowerCase() === WETH_ADDRESS.toLowerCase()
+        
+        if (isWeth) {
+          console.log(`   💰 Updating WETH credit balance for bot wallet...`)
+          
+          // Fetch current credit record
+          const { data: creditRecord, error: fetchError } = await supabase
+            .from("bot_wallet_credits")
+            .select("id, weth_balance_wei")
+            .eq("bot_wallet_address", botAddress.toLowerCase())
+            .single()
+
+          if (!fetchError && creditRecord) {
+            const currentBalance = BigInt(creditRecord.weth_balance_wei || "0")
+            const sentAmount = balance // amount yang dikirim
+            
+            if (currentBalance >= sentAmount) {
+              // Deduct sent amount from bot wallet credit
+              const newBalance = currentBalance - sentAmount
+              
+              const { error: updateError } = await supabase
+                .from("bot_wallet_credits")
+                .update({ 
+                  weth_balance_wei: newBalance.toString(),
+                  updated_at: new Date().toISOString()
+                })
+                .eq("id", creditRecord.id)
+              
+              if (updateError) {
+                console.error(`   ❌ Error updating WETH balance:`, updateError)
+              } else {
+                console.log(`   ✅ WETH balance deducted: ${formatEther(sentAmount)} WETH`)
+                console.log(`   → Remaining balance: ${formatEther(newBalance)} WETH`)
+                console.log(`   → Credit balance updated correctly after send`)
+              }
+            } else {
+              console.warn(`   ⚠️ Insufficient WETH balance in DB: ${formatEther(currentBalance)} < ${formatEther(sentAmount)}`)
+              // Set to 0 if insufficient (all credit consumed)
+              await supabase
+                .from("bot_wallet_credits")
+                .update({ 
+                  weth_balance_wei: "0",
+                  updated_at: new Date().toISOString()
+                })
+                .eq("id", creditRecord.id)
+              console.log(`   → Bot wallet credit set to 0 (all consumed)`)
+            }
+          } else {
+            console.warn(`   ⚠️ No credit record found for bot wallet`)
+            console.warn(`   → WETH sent but credit balance not updated (record missing)`)
+          }
+        } else {
+          // For non-WETH tokens, just update timestamp
+          await supabase
+            .from("bot_wallet_credits")
+            .update({ 
+              updated_at: new Date().toISOString()
+            })
+            .eq("bot_wallet_address", botAddress.toLowerCase())
+        }
 
         // Opsional: Log ke bot_logs
         await supabase.from("bot_logs").insert({
