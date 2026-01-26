@@ -66,9 +66,9 @@ export async function POST(request: NextRequest) {
           abi: ERC20_ABI,
           functionName: "balanceOf",
           args: [botWallet.smart_account_address as Address],
-        })
+        }) as bigint
 
-        if (balance === 0n) {
+        if (balance === BigInt(0)) {
           results.push({ address: botAddress, status: "skipped", message: "Zero balance" })
           continue
         }
@@ -90,7 +90,7 @@ export async function POST(request: NextRequest) {
         // 5. Kirim UserOperation (Gasless/Sponsored)
         const userOpHash = await (smartAccount as any).sendUserOperation({
           network: "base",
-          calls: [{ to: tokenAddress as Address, data: transferData as Hex, value: 0n }],
+          calls: [{ to: tokenAddress as Address, data: transferData as Hex, value: BigInt(0) }],
           isSponsored: true,
         })
 
