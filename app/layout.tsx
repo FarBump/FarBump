@@ -53,6 +53,9 @@ export const metadata: Metadata = {
     statusBarStyle: "black-translucent",
     title: "FarBump",
   },
+  other: {
+    "base:app_id": "697774113a92926b661fd68f",
+  },
 }
 
 export default function RootLayout({
