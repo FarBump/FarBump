@@ -93,6 +93,7 @@ export default function BumpBotDashboard() {
   // CRITICAL: Use a ref to track if we've already restored state to prevent multiple restorations
   // Must be declared early at component level, before any useEffect that uses it
   const hasRestoredStateRef = useRef(false)
+  const hasRestoredFromSessionRef = useRef(false)
   
   // CRITICAL: Persist isBumping state to localStorage
   // This ensures state persists across tab switches and page refreshes
@@ -196,45 +197,6 @@ export default function BumpBotDashboard() {
     }
   }, [intervalSeconds, privySmartWalletAddress])
   
-  // CRITICAL: Restore slider values from active session when session is loaded
-  // This ensures sliders are locked to session values when app reopens
-  const hasRestoredFromSessionRef = useRef(false)
-  useEffect(() => {
-    if (!session || session.status !== "running") {
-      hasRestoredFromSessionRef.current = false
-      return
-    }
-    if (!privySmartWalletAddress) return
-    if (hasRestoredFromSessionRef.current) return // Only restore once per session
-    
-    // Restore buyAmountUsd from session
-    if (session.amount_usd) {
-      const sessionAmount = session.amount_usd
-      if (sessionAmount !== buyAmountUsd) {
-        console.log(`🔄 Restoring buyAmountUsd from session: ${sessionAmount}`)
-        setBuyAmountUsd(sessionAmount)
-        // Also update localStorage
-        if (typeof window !== "undefined") {
-          localStorage.setItem(`buyAmountUsd_${privySmartWalletAddress}`, sessionAmount)
-        }
-      }
-    }
-    
-    // Restore intervalSeconds from session
-    if (session.interval_seconds) {
-      const sessionInterval = session.interval_seconds
-      if (sessionInterval !== intervalSeconds) {
-        console.log(`🔄 Restoring intervalSeconds from session: ${sessionInterval}`)
-        setIntervalSeconds(sessionInterval)
-        // Also update localStorage
-        if (typeof window !== "undefined") {
-          localStorage.setItem(`intervalSeconds_${privySmartWalletAddress}`, sessionInterval.toString())
-        }
-      }
-    }
-    
-    hasRestoredFromSessionRef.current = true
-  }, [session?.status, session?.amount_usd, session?.interval_seconds, privySmartWalletAddress]) // Only depend on session values, not buyAmountUsd/intervalSeconds to avoid loops
   
   // Farcaster Embed Wallet address (hanya untuk informasi, TIDAK digunakan untuk verifikasi atau transaksi)
   // Ini adalah wallet yang dibuat oleh Farcaster untuk user (custody address)
@@ -1159,6 +1121,62 @@ export default function BumpBotDashboard() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.status]) // Only depend on session.status, not the whole session object
+  
+  // CRITICAL: Restore slider values from active session when session is loaded
+  // This ensures sliders are locked to session values when app reopens
+  // Must be placed AFTER session is declared (useBotSession hook at line 503)
+  useEffect(() => {
+    // Early returns to prevent errors
+    if (!session) {
+      hasRestoredFromSessionRef.current = false
+      return
+    }
+    
+    if (session.status !== "running") {
+      hasRestoredFromSessionRef.current = false
+      return
+    }
+    
+    if (!privySmartWalletAddress) return
+    if (hasRestoredFromSessionRef.current) return // Only restore once per session
+    
+    // Restore buyAmountUsd from session
+    if (session.amount_usd) {
+      const sessionAmount = session.amount_usd
+      // Use functional update to avoid dependency on buyAmountUsd
+      setBuyAmountUsd((currentAmount) => {
+        if (sessionAmount !== currentAmount) {
+          console.log(`🔄 Restoring buyAmountUsd from session: ${sessionAmount}`)
+          // Also update localStorage
+          if (typeof window !== "undefined" && privySmartWalletAddress) {
+            localStorage.setItem(`buyAmountUsd_${privySmartWalletAddress}`, sessionAmount)
+          }
+          return sessionAmount
+        }
+        return currentAmount
+      })
+    }
+    
+    // Restore intervalSeconds from session
+    if (session.interval_seconds) {
+      const sessionInterval = session.interval_seconds
+      // Use functional update to avoid dependency on intervalSeconds
+      setIntervalSeconds((currentInterval) => {
+        if (sessionInterval !== currentInterval) {
+          console.log(`🔄 Restoring intervalSeconds from session: ${sessionInterval}`)
+          // Also update localStorage
+          if (typeof window !== "undefined" && privySmartWalletAddress) {
+            localStorage.setItem(`intervalSeconds_${privySmartWalletAddress}`, sessionInterval.toString())
+          }
+          return sessionInterval
+        }
+        return currentInterval
+      })
+    }
+    
+    hasRestoredFromSessionRef.current = true
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.status, session?.amount_usd, session?.interval_seconds, privySmartWalletAddress]) // Only depend on session values, not buyAmountUsd/intervalSeconds to avoid loops
 
   return (
     <div className="min-h-screen bg-background p-4 pb-safe">
