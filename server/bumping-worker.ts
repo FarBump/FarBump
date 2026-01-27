@@ -32,17 +32,38 @@ const cdpApiKeyName = process.env.CDP_API_KEY_NAME!
 const cdpPrivateKey = process.env.CDP_API_KEY_PRIVATE_KEY!
 
 try {
-  const privateKeyFormatted = cdpPrivateKey.replace(/\\n/g, '\n')
+  // Support both old format (PEM with \n) and new format (base64)
+  // Old format: "-----BEGIN EC PRIVATE KEY-----\n...\n-----END EC PRIVATE KEY-----"
+  // New format: "base64string=="
+  
+  let privateKeyFormatted = cdpPrivateKey
+  
+  // If privateKey contains \n, it's old PEM format - replace escaped newlines
+  if (cdpPrivateKey.includes('\\n')) {
+    privateKeyFormatted = cdpPrivateKey.replace(/\\n/g, '\n')
+  }
+  // If privateKey starts with "-----BEGIN", it's already PEM format
+  else if (cdpPrivateKey.startsWith('-----BEGIN')) {
+    privateKeyFormatted = cdpPrivateKey
+  }
+  // Otherwise it's new base64 format - use as-is
+  else {
+    privateKeyFormatted = cdpPrivateKey
+  }
   
   // FIX: Menggunakan Coinbase.configure (V2 SDK)
+  // New CDP format uses "id" field as apiKeyName
   Coinbase.configure({
     apiKeyName: cdpApiKeyName,
     privateKey: privateKeyFormatted,
   })
   
   console.log("✅ CDP Client configured successfully")
+  console.log(`   API Key ID: ${cdpApiKeyName.substring(0, 20)}...`)
 } catch (error: any) {
   console.error("❌ Failed to configure CDP Client:", error.message)
+  console.error("   API Key Name format:", cdpApiKeyName?.substring(0, 50))
+  console.error("   Private Key format:", cdpPrivateKey?.substring(0, 50))
   process.exit(1)
 }
 
