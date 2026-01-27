@@ -263,7 +263,9 @@ async function pollActiveSessions() {
 }
 
 async function startWorker() {
-    console.log("🔍 Active Session:", JSON.stringify(session, null, 2));
+    console.log("🚀 FarBump Bumping Worker Started")
+    console.log(`   Polling interval: ${POLLING_INTERVAL_MS / 1000}s`)
+    console.log(`   Batch update interval: ${BATCH_UPDATE_INTERVAL_MS / 1000}s`)
     setInterval(pollActiveSessions, POLLING_INTERVAL_MS)
     setInterval(batchUpdateWethBalances, BATCH_UPDATE_INTERVAL_MS)
 }
