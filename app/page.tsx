@@ -95,6 +95,11 @@ export default function BumpBotDashboard() {
   const hasRestoredStateRef = useRef(false)
   const hasRestoredFromSessionRef = useRef(false)
   
+  // CRITICAL: Declare slider state BEFORE restoration useEffect
+  // This prevents "Cannot access before initialization" errors in production
+  const [buyAmountUsd, setBuyAmountUsd] = useState("0.01") // Default: 0.01 USD (micro transaction support)
+  const [intervalSeconds, setIntervalSeconds] = useState(60) // Default: 60 seconds (1 minute)
+  
   // CRITICAL: Persist isBumping state to localStorage
   // This ensures state persists across tab switches and page refreshes
   useEffect(() => {
@@ -369,9 +374,8 @@ export default function BumpBotDashboard() {
   
   const [isConnecting, setIsConnecting] = useState(false)
   // Note: isActive is declared earlier (line 92) before useEffect that uses it
+  // Note: buyAmountUsd and intervalSeconds are declared earlier (before restoration useEffect) to prevent initialization errors
   const [fuelBalance] = useState(1250.5)
-  const [buyAmountUsd, setBuyAmountUsd] = useState("0.01") // Default: 0.01 USD (micro transaction support)
-  const [intervalSeconds, setIntervalSeconds] = useState(60) // Default: 60 seconds (1 minute)
   
   // State for active tab to enable auto-scroll to Live Activity
   // Integrasi Real-Time: Auto-scroll ke Live Activity tab setelah Start Bumping diklik
