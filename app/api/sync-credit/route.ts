@@ -28,6 +28,11 @@ interface SyncCreditRequest {
   expectedEthWei?: string // Optional: Expected ETH amount from quote (for fallback verification)
 }
 
+interface SyncBalanceRequest {
+  userAddress: string
+  onChainBalanceWei: string
+}
+
 /**
  * Verifies transaction and calculates WETH credit amount
  * Returns the WETH amount (in wei) that should be credited to user (90% of swap result)
@@ -467,10 +472,121 @@ async function verifyAndCalculateCredit(
   }
 }
 
+/**
+ * Sync user credit balance with on-chain balance
+ * Used when database credit is higher than on-chain balance (prevents distribution errors)
+ */
+async function syncUserCreditBalance(
+  userAddress: string,
+  onChainBalanceWei: string
+): Promise<{ success: boolean; synced: boolean; message: string }> {
+  const supabase = createSupabaseServiceClient()
+  const normalizedUserAddress = userAddress.toLowerCase()
+
+  // Get current database credit
+  const { data: currentCredit, error: fetchError } = await supabase
+    .from("user_credits")
+    .select("balance_wei")
+    .eq("user_address", normalizedUserAddress)
+    .single()
+
+  if (fetchError && fetchError.code !== "PGRST116") {
+    console.error("❌ Error fetching user credit balance:", fetchError)
+    return {
+      success: false,
+      synced: false,
+      message: `Failed to fetch user credit balance: ${fetchError.message}`,
+    }
+  }
+
+  const currentDbBalanceWei = currentCredit?.balance_wei
+    ? BigInt(currentCredit.balance_wei.toString())
+    : BigInt(0)
+
+  const onChainBalance = BigInt(onChainBalanceWei)
+
+  // Only sync if on-chain balance is less than database balance
+  // (on-chain balance is the source of truth)
+  if (onChainBalance >= currentDbBalanceWei) {
+    return {
+      success: true,
+      synced: false,
+      message: "Database balance is already in sync or higher than on-chain balance",
+    }
+  }
+
+  console.log(`🔄 Syncing user credit balance for ${normalizedUserAddress}`)
+  console.log(`   Database balance: ${currentDbBalanceWei.toString()} wei`)
+  console.log(`   On-chain balance: ${onChainBalanceWei} wei`)
+  console.log(`   Difference: ${(currentDbBalanceWei - onChainBalance).toString()} wei`)
+
+  // Update database credit to match on-chain balance
+  const { error: updateError } = await supabase
+    .from("user_credits")
+    .upsert(
+      {
+        user_address: normalizedUserAddress,
+        balance_wei: onChainBalanceWei,
+        last_updated: new Date().toISOString(),
+      },
+      {
+        onConflict: "user_address",
+      }
+    )
+
+  if (updateError) {
+    console.error("❌ Error updating user credit balance:", updateError)
+    return {
+      success: false,
+      synced: false,
+      message: `Failed to update user credit balance: ${updateError.message}`,
+    }
+  }
+
+  console.log(`✅ User credit balance synced successfully`)
+  return {
+    success: true,
+    synced: true,
+    message: "User credit balance synced with on-chain balance",
+  }
+}
+
 export async function POST(request: NextRequest) {
   try {
-    const body: SyncCreditRequest = await request.json()
-    const { txHash, userAddress, amountBump, amountBumpWei } = body
+    const body = await request.json()
+    
+    // Check if this is a balance sync request (different from credit sync from txHash)
+    if (body.onChainBalanceWei && !body.txHash) {
+      // This is a balance sync request
+      const syncRequest: SyncBalanceRequest = body
+      const { userAddress, onChainBalanceWei } = syncRequest
+
+      if (!userAddress || !onChainBalanceWei) {
+        return NextResponse.json(
+          { error: "Missing required fields: userAddress, onChainBalanceWei" },
+          { status: 400 }
+        )
+      }
+
+      const result = await syncUserCreditBalance(userAddress, onChainBalanceWei)
+      
+      if (!result.success) {
+        return NextResponse.json(
+          { error: result.message },
+          { status: 500 }
+        )
+      }
+
+      return NextResponse.json({
+        success: true,
+        synced: result.synced,
+        message: result.message,
+      })
+    }
+
+    // Original credit sync from transaction hash
+    const creditRequest: SyncCreditRequest = body
+    const { txHash, userAddress, amountBump, amountBumpWei } = creditRequest
 
     // Validation
     if (!txHash || !userAddress) {

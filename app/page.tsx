@@ -152,6 +152,21 @@ export default function BumpBotDashboard() {
         }
       }
       
+      // Restore slider values from localStorage (if session is not active)
+      // If session is active, values will be restored from session data
+      const storedBuyAmount = window.localStorage.getItem(`buyAmountUsd_${privySmartWalletAddress}`)
+      if (storedBuyAmount) {
+        setBuyAmountUsd(storedBuyAmount)
+      }
+      
+      const storedInterval = window.localStorage.getItem(`intervalSeconds_${privySmartWalletAddress}`)
+      if (storedInterval) {
+        const intervalValue = parseInt(storedInterval, 10)
+        if (!isNaN(intervalValue) && intervalValue >= 2 && intervalValue <= 600) {
+          setIntervalSeconds(intervalValue)
+        }
+      }
+      
       // Mark as restored to prevent re-restoration
       hasRestoredStateRef.current = true
     } catch (error) {
@@ -167,6 +182,59 @@ export default function BumpBotDashboard() {
       localStorage.setItem(`targetTokenMetadata_${privySmartWalletAddress}`, JSON.stringify(tokenMetadata))
     }
   }, [tokenMetadata, privySmartWalletAddress])
+  
+  // Persist slider values to localStorage when they change
+  useEffect(() => {
+    if (typeof window !== "undefined" && privySmartWalletAddress) {
+      localStorage.setItem(`buyAmountUsd_${privySmartWalletAddress}`, buyAmountUsd)
+    }
+  }, [buyAmountUsd, privySmartWalletAddress])
+  
+  useEffect(() => {
+    if (typeof window !== "undefined" && privySmartWalletAddress) {
+      localStorage.setItem(`intervalSeconds_${privySmartWalletAddress}`, intervalSeconds.toString())
+    }
+  }, [intervalSeconds, privySmartWalletAddress])
+  
+  // CRITICAL: Restore slider values from active session when session is loaded
+  // This ensures sliders are locked to session values when app reopens
+  const hasRestoredFromSessionRef = useRef(false)
+  useEffect(() => {
+    if (!session || session.status !== "running") {
+      hasRestoredFromSessionRef.current = false
+      return
+    }
+    if (!privySmartWalletAddress) return
+    if (hasRestoredFromSessionRef.current) return // Only restore once per session
+    
+    // Restore buyAmountUsd from session
+    if (session.amount_usd) {
+      const sessionAmount = session.amount_usd
+      if (sessionAmount !== buyAmountUsd) {
+        console.log(`🔄 Restoring buyAmountUsd from session: ${sessionAmount}`)
+        setBuyAmountUsd(sessionAmount)
+        // Also update localStorage
+        if (typeof window !== "undefined") {
+          localStorage.setItem(`buyAmountUsd_${privySmartWalletAddress}`, sessionAmount)
+        }
+      }
+    }
+    
+    // Restore intervalSeconds from session
+    if (session.interval_seconds) {
+      const sessionInterval = session.interval_seconds
+      if (sessionInterval !== intervalSeconds) {
+        console.log(`🔄 Restoring intervalSeconds from session: ${sessionInterval}`)
+        setIntervalSeconds(sessionInterval)
+        // Also update localStorage
+        if (typeof window !== "undefined") {
+          localStorage.setItem(`intervalSeconds_${privySmartWalletAddress}`, sessionInterval.toString())
+        }
+      }
+    }
+    
+    hasRestoredFromSessionRef.current = true
+  }, [session?.status, session?.amount_usd, session?.interval_seconds, privySmartWalletAddress]) // Only depend on session values, not buyAmountUsd/intervalSeconds to avoid loops
   
   // Farcaster Embed Wallet address (hanya untuk informasi, TIDAK digunakan untuk verifikasi atau transaksi)
   // Ini adalah wallet yang dibuat oleh Farcaster untuk user (custody address)
@@ -1047,6 +1115,7 @@ export default function BumpBotDashboard() {
           localStorage.removeItem(`isBumping_${privySmartWalletAddress}`)
           localStorage.removeItem(`targetTokenAddress_${privySmartWalletAddress}`)
           localStorage.removeItem(`targetTokenMetadata_${privySmartWalletAddress}`)
+          // Don't remove slider values - keep them for next session
         }
         setIsActive(false)
         setTargetTokenAddress(null)

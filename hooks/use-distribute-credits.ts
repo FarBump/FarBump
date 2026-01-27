@@ -174,11 +174,62 @@ export function useDistributeCredits() {
       console.log(`   → Total Available (ETH + WETH): ${formatEther(nativeEthBalance + wethBalance)} ETH`)
       console.log(`   → Credit from database: ${formatEther(mainWalletCreditWei)} WETH (from Convert $BUMP to Credit)`)
 
-      // Credit to distribute = WETH from database (only from Convert $BUMP to Credit)
-      const creditToDistribute: bigint = mainWalletCreditWei
-      
       // Total available on-chain = Native ETH + WETH (for conversion if needed)
       const totalAvailable = nativeEthBalance + wethBalance
+      
+      // CRITICAL: Sync database credit with on-chain balance if they differ
+      // If on-chain balance is less than database credit, adjust credit to distribute
+      // On-chain balance is the source of truth (what we can actually distribute)
+      let creditToDistribute: bigint = mainWalletCreditWei
+      let balanceWasSynced = false
+      
+      if (totalAvailable < mainWalletCreditWei) {
+        console.warn(`⚠️ Balance mismatch detected:`)
+        console.warn(`   → On-chain balance: ${formatEther(totalAvailable)} ETH (${formatEther(nativeEthBalance)} Native + ${formatEther(wethBalance)} WETH)`)
+        console.warn(`   → Database credit: ${formatEther(mainWalletCreditWei)} WETH`)
+        console.warn(`   → Difference: ${formatEther(mainWalletCreditWei - totalAvailable)} WETH`)
+        console.warn(`   → Syncing database credit to match on-chain balance...`)
+        
+        // Sync database credit to on-chain balance
+        try {
+          const syncResponse = await fetch("/api/sync-credit", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ 
+              userAddress,
+              onChainBalanceWei: totalAvailable.toString()
+            }),
+          })
+          
+          if (syncResponse.ok) {
+            const syncData = await syncResponse.json()
+            if (syncData.synced) {
+              console.log(`   ✅ Database credit synced to on-chain balance`)
+              balanceWasSynced = true
+            } else {
+              console.log(`   ℹ️ Database balance already in sync or higher`)
+            }
+          } else {
+            const errorData = await syncResponse.json().catch(() => ({}))
+            console.warn(`   ⚠️ Failed to sync database credit: ${errorData.error || syncResponse.statusText}`)
+          }
+          
+          // Always use on-chain balance as credit to distribute (source of truth)
+          // This prevents errors when database shows credit but on-chain balance is insufficient
+          creditToDistribute = totalAvailable
+        } catch (syncError: any) {
+          console.warn(`   ⚠️ Error syncing database credit: ${syncError.message}`)
+          // Use on-chain balance as credit to distribute anyway (source of truth)
+          creditToDistribute = totalAvailable
+        }
+      } else if (totalAvailable > mainWalletCreditWei) {
+        // On-chain balance is higher than database credit
+        // This could mean user received direct WETH transfers (not counted as credit)
+        // We still use database credit as credit to distribute (prevents bypass)
+        console.log(`ℹ️ On-chain balance (${formatEther(totalAvailable)} ETH) is higher than database credit (${formatEther(mainWalletCreditWei)} WETH)`)
+        console.log(`   → Using database credit for distribution (direct WETH transfers not counted)`)
+        creditToDistribute = mainWalletCreditWei
+      }
       
       // Check if wallet has enough balance (ETH + WETH) to cover credit distribution
       // We can convert Native ETH to WETH if needed
@@ -190,6 +241,22 @@ export function useDistributeCredits() {
           `Please convert $BUMP to Credit first.\n` +
           `Direct WETH transfers are NOT counted as credit.`
         )
+      }
+      
+      // If credit was adjusted, show info to user
+      if (creditToDistribute < mainWalletCreditWei) {
+        const adjustedAmount = formatEther(mainWalletCreditWei - creditToDistribute)
+        if (balanceWasSynced) {
+          toast.info(
+            `Balance synced: ${adjustedAmount} WETH adjusted to match on-chain balance`,
+            { duration: 5000 }
+          )
+        } else {
+          toast.warning(
+            `Using available balance: ${formatEther(creditToDistribute)} WETH (${adjustedAmount} WETH less than database credit)`,
+            { duration: 5000 }
+          )
+        }
       }
 
       console.log(`   → Credit to distribute: ${formatEther(creditToDistribute)} ETH`)
