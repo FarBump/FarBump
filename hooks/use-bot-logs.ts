@@ -203,15 +203,20 @@ export function useBotLogs({ userAddress, enabled = true, limit = 20 }: UseBotLo
  * Matches wallet address to index (0-4) to show "Bot Wallet #1", etc.
  */
 export function getWalletLabel(
-  walletAddress: string,
+  walletAddress: string | null,
   botWallets: Array<{ smartWalletAddress: string; index: number }> | null
 ): string {
+  // Handle null or undefined wallet address (system logs)
+  if (!walletAddress) {
+    return "System"
+  }
+  
   if (!botWallets || botWallets.length === 0) {
     return "Bot Wallet"
   }
 
   const wallet = botWallets.find(
-    (w) => w.smartWalletAddress.toLowerCase() === walletAddress.toLowerCase()
+    (w) => w.smartWalletAddress?.toLowerCase() === walletAddress.toLowerCase()
   )
 
   if (wallet) {
