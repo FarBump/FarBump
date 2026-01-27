@@ -263,7 +263,7 @@ async function pollActiveSessions() {
 }
 
 async function startWorker() {
-    console.log("🚀 FarBump Worker Live")
+    console.log("🔍 Active Session:", JSON.stringify(session, null, 2));
     setInterval(pollActiveSessions, POLLING_INTERVAL_MS)
     setInterval(batchUpdateWethBalances, BATCH_UPDATE_INTERVAL_MS)
 }
