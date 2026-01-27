@@ -33,7 +33,9 @@ export async function GET(request: NextRequest) {
 
     // Prepare CoinGecko API URL and headers
     const COINGECKO_API_KEY = process.env.COINGECKO_API_KEY // Server-side only
-    const apiUrl = "https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd"
+    const apiUrl = new URL('https://api.coingecko.com/api/v3/simple/price')
+    apiUrl.searchParams.set('ids', 'ethereum')
+    apiUrl.searchParams.set('vs_currencies', 'usd')
     
     const headers: HeadersInit = {
       Accept: "application/json",
@@ -46,7 +48,7 @@ export async function GET(request: NextRequest) {
     }
 
     // Fetch fresh price from CoinGecko
-    const priceResponse = await fetch(apiUrl, {
+    const priceResponse = await fetch(apiUrl.toString(), {
       headers,
       // Add cache to reduce requests
       next: { revalidate: 300 }, // Revalidate every 5 minutes (matches CACHE_DURATION)

@@ -138,7 +138,11 @@ export async function POST(request: NextRequest) {
         slippageBps: attempt === 1 ? "500" : "1000",
       })
 
-      const quoteUrl = `https://api.0x.org/swap/allowance-holder/quote?${quoteParams.toString()}`
+      const quoteUrlObj = new URL('https://api.0x.org/swap/allowance-holder/quote')
+      quoteParams.forEach((value, key) => {
+        quoteUrlObj.searchParams.set(key, value)
+      })
+      const quoteUrl = quoteUrlObj.toString()
       console.log(`🔄 Quote attempt ${attempt} (${attempt === 1 ? "5%" : "10%"} slippage)`)
 
       const quoteResponse = await fetch(quoteUrl, {

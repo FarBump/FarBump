@@ -62,6 +62,8 @@ export async function POST(request: NextRequest) {
     let currentRotationIndex = session.wallet_rotation_index || 0
     let consecutiveFailures = 0
     const MAX_CONSECUTIVE_FAILURES = 5 // Stop after 5 consecutive failures
+    let consecutiveSkips = 0
+    const MAX_CONSECUTIVE_SKIPS = 10 // Stop after 10 consecutive skips (all wallets likely depleted)
 
     while (true) {
       // Check if session is still running
@@ -72,7 +74,7 @@ export async function POST(request: NextRequest) {
         .single()
 
       if (!currentSession || currentSession.status !== "running") {
-        console.log("⏹️ Session stopped by user")
+        console.log("⏹️ Session stopped by user or system")
         break
       }
 
@@ -80,7 +82,9 @@ export async function POST(request: NextRequest) {
       console.log(`\n🔄 Round-robin swap - Wallet #${currentRotationIndex + 1}`)
       
       try {
-        const swapResponse = await fetch(`${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/api/bot/execute-swap`, {
+        const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'
+        const swapUrl = new URL('/api/bot/execute-swap', baseUrl).toString()
+        const swapResponse = await fetch(swapUrl, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -96,6 +100,7 @@ export async function POST(request: NextRequest) {
         if (swapResponse.ok) {
           console.log(`✅ Swap successful for Wallet #${currentRotationIndex + 1}`)
           consecutiveFailures = 0
+          consecutiveSkips = 0 // Reset skip counter on success
 
           // Check if session was stopped due to all wallets being empty
           if (swapResult.stopped || swapResult.allDepleted) {
@@ -114,10 +119,52 @@ export async function POST(request: NextRequest) {
 
           if (swapResult.skipped) {
             console.log(`⏭️ Wallet #${currentRotationIndex + 1} skipped (insufficient balance)`)
+            consecutiveSkips++
+            consecutiveFailures = 0
+            
+            // If we've skipped all 5 wallets consecutively, all are likely depleted
+            if (consecutiveSkips >= 5) {
+              console.log("🛑 All wallets skipped consecutively. Checking if session was auto-stopped...")
+              
+              // Double-check session status
+              const { data: finalSessionCheck } = await supabase
+                .from("bot_sessions")
+                .select("status")
+                .eq("id", session.id)
+                .single()
+              
+              if (finalSessionCheck && finalSessionCheck.status === "stopped") {
+                console.log("✅ Session already stopped by system (all wallets depleted)")
+                break
+              } else {
+                // Force stop if not already stopped
+                console.log("🛑 Force stopping session - all wallets appear depleted")
+                await supabase
+                  .from("bot_sessions")
+                  .update({
+                    status: "stopped",
+                    stopped_at: new Date().toISOString(),
+                  })
+                  .eq("id", session.id)
+                
+                await supabase.from("bot_logs").insert({
+                  user_address: normalizedUserAddress,
+                  wallet_address: null,
+                  token_address: null,
+                  amount_wei: "0",
+                  status: "info",
+                  message: `[System] Continuous swap loop stopped - all 5 bot wallets appear to be depleted (${consecutiveSkips} consecutive skips).`,
+                })
+                
+                break
+              }
+            }
+            
             // Rotate to next wallet
             currentRotationIndex = (currentRotationIndex + 1) % 5
-            consecutiveFailures = 0
           } else {
+            // Reset skip counter on successful swap or error (not skip)
+            consecutiveSkips = 0
             console.error(`❌ Swap failed for Wallet #${currentRotationIndex + 1}:`, swapResult.error)
             consecutiveFailures++
 

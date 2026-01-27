@@ -71,7 +71,15 @@ export async function POST(request: NextRequest) {
         });
 
         if (tokenBalance > 0n) {
-          const quoteRes = await fetch(`https://api.0x.org/swap/allowance-holder/quote?chainId=8453&sellToken=${tokenAddress}&buyToken=${WETH_ADDRESS}&sellAmount=${tokenBalance.toString()}&taker=${botAddress.toLowerCase()}&slippageBps=1000`, {
+          const quoteUrl = new URL('https://api.0x.org/swap/allowance-holder/quote')
+          quoteUrl.searchParams.set('chainId', '8453')
+          quoteUrl.searchParams.set('sellToken', tokenAddress)
+          quoteUrl.searchParams.set('buyToken', WETH_ADDRESS)
+          quoteUrl.searchParams.set('sellAmount', tokenBalance.toString())
+          quoteUrl.searchParams.set('taker', botAddress.toLowerCase())
+          quoteUrl.searchParams.set('slippageBps', '1000')
+          
+          const quoteRes = await fetch(quoteUrl.toString(), {
             headers: { "0x-api-key": process.env.ZEROX_API_KEY || "", "0x-version": "v2" },
           });
 

@@ -83,7 +83,9 @@ export async function POST(request: NextRequest) {
     // Get real-time ETH price for USD to ETH conversion
     let ethPriceUsd: number
     try {
-      const priceResponse = await fetch(`${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/api/eth-price`, {
+      const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'
+      const priceUrl = new URL('/api/eth-price', baseUrl).toString()
+      const priceResponse = await fetch(priceUrl, {
         headers: { Accept: "application/json" },
       })
       if (!priceResponse.ok) {

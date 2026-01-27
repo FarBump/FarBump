@@ -227,7 +227,9 @@ export async function POST(request: NextRequest) {
     }
 
     // Fetch ETH price for USD conversion
-    const ethPriceResponse = await fetch(`${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/api/eth-price`)
+    const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'
+    const ethPriceUrl = new URL('/api/eth-price', baseUrl).toString()
+    const ethPriceResponse = await fetch(ethPriceUrl)
     const { price: ethPriceUsd } = await ethPriceResponse.json()
     
     const balanceInUsd = Number(formatEther(wethBalanceWei)) * ethPriceUsd
@@ -244,30 +246,49 @@ export async function POST(request: NextRequest) {
       amountWei = BigInt(1)
     }
 
-    // CRITICAL: Check if wallet has sufficient balance for swap
-    // If balance is insufficient, check all wallets and stop session if all are depleted
-    if (wethBalanceWei < amountWei) {
-      console.log(`⚠️ Bot #${walletIndex + 1} has insufficient WETH balance - Skipping`)
+    // CRITICAL: Check on-chain WETH balance before swap execution
+    // Transaction requires actual on-chain WETH, not just DB balance
+    // If on-chain balance is insufficient, we cannot execute swap even if DB shows balance
+    if (onChainWethBalance < amountWei) {
+      console.log(`⚠️ Bot #${walletIndex + 1} has insufficient ON-CHAIN WETH balance - Skipping`)
       console.log(`   Required: ${formatEther(amountWei)} WETH`)
-      console.log(`   Available: ${formatEther(wethBalanceWei)} WETH`)
+      console.log(`   On-chain Available: ${formatEther(onChainWethBalance)} WETH`)
+      console.log(`   DB Balance: ${formatEther(dbWethBalanceWei)} WETH`)
+      
+      // Sync DB balance with on-chain balance if they differ significantly
+      if (onChainWethBalance !== dbWethBalanceWei) {
+        console.log(`   → Syncing DB balance with on-chain balance...`)
+        try {
+          await supabase
+            .from("bot_wallet_credits")
+            .update({ weth_balance_wei: onChainWethBalance.toString() })
+            .eq("user_address", user_address.toLowerCase())
+            .eq("bot_wallet_address", smartAccountAddress.toLowerCase())
+          console.log(`   ✅ DB balance synced to on-chain balance`)
+        } catch (syncError: any) {
+          console.warn(`   ⚠️ Failed to sync DB balance: ${syncError.message}`)
+        }
+      }
       
       // Log insufficient balance
       await supabase.from("bot_logs").insert({
         user_address: user_address.toLowerCase(),
         wallet_address: smartAccountAddress,
         token_address: token_address,
-        amount_wei: wethBalanceWei.toString(),
+        amount_wei: onChainWethBalance.toString(),
         action: "swap_skipped",
-        message: `[System] Bot #${walletIndex + 1} has insufficient WETH balance (${formatEther(wethBalanceWei)} WETH < ${formatEther(amountWei)} WETH required).`,
+        message: `[System] Bot #${walletIndex + 1} has insufficient ON-CHAIN WETH balance (${formatEther(onChainWethBalance)} WETH < ${formatEther(amountWei)} WETH required).`,
         status: "warning",
         created_at: new Date().toISOString(),
       })
 
-      // CRITICAL: Check if ALL wallets are depleted (insufficient balance for swap)
-      // IMPORTANT: Only 1 row per bot_wallet_address, only weth_balance_wei is used
+      // CRITICAL: Check if ALL wallets are depleted (insufficient ON-CHAIN balance for swap)
+      // Check both DB balance and on-chain balance for each wallet
       let allDepleted = true
       for (let i = 0; i < botWallets.length; i++) {
         const w = botWallets[i]
+        
+        // Check DB balance
         const { data: wCredit } = await supabase
           .from("bot_wallet_credits")
           .select("weth_balance_wei")
@@ -275,19 +296,35 @@ export async function POST(request: NextRequest) {
           .eq("bot_wallet_address", w.smart_account_address.toLowerCase())
           .single()
         
-        const wWethBalance = wCredit 
+        const wDbBalance = wCredit 
           ? BigInt(wCredit.weth_balance_wei || "0")
           : BigInt(0)
         
+        // Check on-chain balance
+        let wOnChainBalance = BigInt(0)
+        try {
+          wOnChainBalance = await publicClient.readContract({
+            address: WETH_ADDRESS,
+            abi: WETH_ABI,
+            functionName: "balanceOf",
+            args: [w.smart_account_address],
+          }) as bigint
+        } catch (error: any) {
+          console.warn(`   ⚠️ Failed to check on-chain balance for wallet ${i + 1}: ${error.message}`)
+        }
+        
+        // Use the minimum of DB and on-chain balance (most conservative)
+        const wEffectiveBalance = wOnChainBalance < wDbBalance ? wOnChainBalance : wDbBalance
+        
         // Check if wallet has enough balance for at least one swap
-        if (wWethBalance >= amountWei) {
+        if (wEffectiveBalance >= amountWei) {
           allDepleted = false
           break
         }
       }
 
       if (allDepleted) {
-        console.log("❌ All bot wallets depleted (insufficient balance for swap) - Stopping session automatically")
+        console.log("❌ All 5 bot wallets depleted (insufficient ON-CHAIN WETH balance for swap) - Stopping session automatically")
         
         await supabase
           .from("bot_sessions")
@@ -303,7 +340,7 @@ export async function POST(request: NextRequest) {
           token_address: token_address,
           amount_wei: "0",
           action: "session_stopped",
-          message: `[System] All 5 bot wallets have insufficient WETH balance for swap. Bumping session stopped automatically.`,
+          message: `[System] All 5 bot wallets have insufficient ON-CHAIN WETH balance for swap. Bumping session stopped automatically.`,
           status: "info",
           created_at: new Date().toISOString(),
         })
@@ -323,10 +360,33 @@ export async function POST(request: NextRequest) {
         .eq("id", sessionId)
 
       return NextResponse.json({
-        message: "Bot wallet has insufficient WETH balance - Skipped",
+        message: "Bot wallet has insufficient ON-CHAIN WETH balance - Skipped",
         skipped: true,
         nextIndex,
       })
+    }
+
+    // Also check DB balance for credit tracking (but on-chain check above is the critical one)
+    if (wethBalanceWei < amountWei) {
+      console.log(`⚠️ Bot #${walletIndex + 1} has insufficient DB WETH balance - But on-chain balance is sufficient`)
+      console.log(`   DB Balance: ${formatEther(wethBalanceWei)} WETH`)
+      console.log(`   On-chain Balance: ${formatEther(onChainWethBalance)} WETH`)
+      console.log(`   → Proceeding with swap using on-chain balance`)
+      
+      // Update DB balance to match on-chain balance
+      try {
+        await supabase
+          .from("bot_wallet_credits")
+          .update({ weth_balance_wei: onChainWethBalance.toString() })
+          .eq("user_address", user_address.toLowerCase())
+          .eq("bot_wallet_address", smartAccountAddress.toLowerCase())
+        console.log(`   ✅ DB balance updated to match on-chain balance`)
+      } catch (syncError: any) {
+        console.warn(`   ⚠️ Failed to sync DB balance: ${syncError.message}`)
+      }
+      
+      // Update wethBalanceWei to use on-chain balance for remaining calculations
+      wethBalanceWei = onChainWethBalance
     }
 
     // Step 6 calculation already done above (line 236-245)
@@ -688,7 +748,11 @@ export async function POST(request: NextRequest) {
       // Use swap/allowance-holder/quote endpoint for ERC20 token swaps (WETH)
       // Reference: https://0x.org/docs/upgrading/upgrading_to_swap_v2
       // AllowanceHolder is ideal for single-signature use cases and ERC20 tokens
-      const quoteUrl = `https://api.0x.org/swap/allowance-holder/quote?${quoteParams.toString()}`
+      const quoteUrlObj = new URL('https://api.0x.org/swap/allowance-holder/quote')
+      quoteParams.forEach((value, key) => {
+        quoteUrlObj.searchParams.set(key, value)
+      })
+      const quoteUrl = quoteUrlObj.toString()
       console.log(`   Endpoint: /swap/allowance-holder/quote (WETH → Token)`)
       console.log(`   URL: ${quoteUrl}`)
       console.log(`   Sell Token: WETH (${WETH_ADDRESS})`)
@@ -1470,11 +1534,13 @@ export async function POST(request: NextRequest) {
       })
 
       // Step 12: Check if all wallets are depleted after swap
-      // CRITICAL: After successful swap, check if all bot wallets have insufficient balance
+      // CRITICAL: After successful swap, check if all bot wallets have insufficient ON-CHAIN balance
       // If all wallets are depleted, stop the session automatically
       let allDepletedAfterSwap = true
       for (let i = 0; i < botWallets.length; i++) {
         const w = botWallets[i]
+        
+        // Check DB balance
         const { data: wCredit } = await supabase
           .from("bot_wallet_credits")
           .select("weth_balance_wei")
@@ -1482,23 +1548,42 @@ export async function POST(request: NextRequest) {
           .eq("bot_wallet_address", w.smart_account_address.toLowerCase())
           .single()
         
-        const wWethBalance = wCredit 
+        const wDbBalance = wCredit 
           ? BigInt(wCredit.weth_balance_wei || "0")
           : BigInt(0)
         
+        // Check on-chain balance
+        let wOnChainBalance = BigInt(0)
+        try {
+          wOnChainBalance = await publicClient.readContract({
+            address: WETH_ADDRESS,
+            abi: WETH_ABI,
+            functionName: "balanceOf",
+            args: [w.smart_account_address],
+          }) as bigint
+        } catch (error: any) {
+          console.warn(`   ⚠️ Failed to check on-chain balance for wallet ${i + 1}: ${error.message}`)
+        }
+        
+        // Use the minimum of DB and on-chain balance (most conservative)
+        const wEffectiveBalance = wOnChainBalance < wDbBalance ? wOnChainBalance : wDbBalance
+        
         // Check if wallet has enough balance for at least one more swap
-        if (wWethBalance >= amountWei) {
+        if (wEffectiveBalance >= amountWei) {
           allDepletedAfterSwap = false
           break
         }
       }
 
       if (allDepletedAfterSwap) {
-        console.log("❌ All bot wallets depleted after swap - Stopping session")
+        console.log("❌ All 5 bot wallets depleted after swap (insufficient ON-CHAIN WETH balance) - Stopping session automatically")
         
         await supabase
           .from("bot_sessions")
-          .update({ status: "stopped", stopped_at: new Date().toISOString() })
+          .update({ 
+            status: "stopped", 
+            stopped_at: new Date().toISOString() 
+          })
           .eq("id", sessionId)
 
         await supabase.from("bot_logs").insert({
@@ -1507,13 +1592,13 @@ export async function POST(request: NextRequest) {
           token_address: token_address,
           amount_wei: "0",
           action: "session_stopped",
-          message: `[System] All bot wallets have insufficient WETH balance after swap. Bumping session completed.`,
+          message: `[System] All 5 bot wallets have insufficient ON-CHAIN WETH balance after swap. Bumping session stopped automatically.`,
           status: "info",
           created_at: new Date().toISOString(),
         })
 
         return NextResponse.json({
-          message: "All bot wallets depleted - Session stopped",
+          message: "All bot wallets depleted - Session stopped automatically",
           allDepleted: true,
           stopped: true,
           txHash,
@@ -1544,6 +1629,102 @@ export async function POST(request: NextRequest) {
       console.error("   Error details:", swapError.message)
       if (swapError.response) {
         console.error("   API Response:", swapError.response.data)
+      }
+
+      // Check if error is due to insufficient balance (execution reverted)
+      const isInsufficientBalanceError = 
+        swapError.message?.includes("execution reverted") ||
+        swapError.message?.includes("insufficient balance") ||
+        swapError.message?.includes("useroperation reverted")
+
+      // If swap failed due to insufficient balance, check if all wallets are depleted
+      if (isInsufficientBalanceError) {
+        console.log("⚠️ Swap failed due to insufficient balance - Checking if all wallets are depleted...")
+        
+        // CRITICAL: Check if ALL wallets are depleted (insufficient ON-CHAIN balance)
+        let allDepletedOnError = true
+        for (let i = 0; i < botWallets.length; i++) {
+          const w = botWallets[i]
+          
+          // Check DB balance
+          const { data: wCredit } = await supabase
+            .from("bot_wallet_credits")
+            .select("weth_balance_wei")
+            .eq("user_address", user_address.toLowerCase())
+            .eq("bot_wallet_address", w.smart_account_address.toLowerCase())
+            .single()
+          
+          const wDbBalance = wCredit 
+            ? BigInt(wCredit.weth_balance_wei || "0")
+            : BigInt(0)
+          
+          // Check on-chain balance
+          let wOnChainBalance = BigInt(0)
+          try {
+            wOnChainBalance = await publicClient.readContract({
+              address: WETH_ADDRESS,
+              abi: WETH_ABI,
+              functionName: "balanceOf",
+              args: [w.smart_account_address],
+            }) as bigint
+          } catch (error: any) {
+            console.warn(`   ⚠️ Failed to check on-chain balance for wallet ${i + 1}: ${error.message}`)
+          }
+          
+          // Use the minimum of DB and on-chain balance (most conservative)
+          const wEffectiveBalance = wOnChainBalance < wDbBalance ? wOnChainBalance : wDbBalance
+          
+          // Check if wallet has enough balance for at least one swap
+          if (wEffectiveBalance >= amountWei) {
+            allDepletedOnError = false
+            break
+          }
+        }
+
+        if (allDepletedOnError) {
+          console.log("❌ All 5 bot wallets depleted after swap error (insufficient ON-CHAIN WETH balance) - Stopping session automatically")
+          
+          await supabase
+            .from("bot_sessions")
+            .update({ 
+              status: "stopped", 
+              stopped_at: new Date().toISOString() 
+            })
+            .eq("id", sessionId)
+
+          await supabase.from("bot_logs").insert({
+            user_address: user_address.toLowerCase(),
+            wallet_address: smartAccountAddress,
+            token_address: token_address,
+            amount_wei: "0",
+            action: "session_stopped",
+            message: `[System] All 5 bot wallets have insufficient ON-CHAIN WETH balance after swap error. Bumping session stopped automatically.`,
+            status: "info",
+            created_at: new Date().toISOString(),
+          })
+
+          // Update log with error
+          if (logEntry) {
+            await supabase
+              .from("bot_logs")
+              .update({
+                status: "error",
+                message: `[Bot #${walletIndex + 1}] Swap failed: ${swapError.message}. All wallets depleted - session stopped.`,
+                error_details: {
+                  error: swapError.message,
+                  stack: process.env.NODE_ENV === 'development' ? swapError.stack : undefined,
+                },
+              })
+              .eq("id", logEntry.id)
+          }
+
+          return NextResponse.json({
+            message: "All bot wallets depleted - Session stopped automatically",
+            allDepleted: true,
+            stopped: true,
+            error: "Swap execution failed due to insufficient balance",
+          })
+        }
       }
 
       // Update log with error

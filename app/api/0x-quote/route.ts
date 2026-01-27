@@ -15,17 +15,15 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const queryParams = new URLSearchParams({
-      chainId: "8453",
-      sellToken,
-      buyToken, // Akan menerima alamat WETH dari frontend
-      sellAmount,
-      taker,
-      slippageBps: "1000", 
-    });
-
-    const apiUrl = `https://api.0x.org/swap/allowance-holder/quote?${queryParams.toString()}`;
-    const response = await fetch(apiUrl, {
+    const apiUrl = new URL('https://api.0x.org/swap/allowance-holder/quote')
+    apiUrl.searchParams.set('chainId', '8453')
+    apiUrl.searchParams.set('sellToken', sellToken)
+    apiUrl.searchParams.set('buyToken', buyToken) // Akan menerima alamat WETH dari frontend
+    apiUrl.searchParams.set('sellAmount', sellAmount)
+    apiUrl.searchParams.set('taker', taker)
+    apiUrl.searchParams.set('slippageBps', '1000')
+    
+    const response = await fetch(apiUrl.toString(), {
       headers: {
         "0x-api-key": process.env.ZEROX_API_KEY || "",
         "0x-version": "v2",
