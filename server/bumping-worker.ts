@@ -61,9 +61,11 @@ try {
   process.exit(1)
 }
 
+// Use public RPC endpoint for read-only operations (more reliable, no auth required)
+// CDP SDK will be used for write operations (gasless swaps)
 const publicClient = createPublicClient({
   chain: base,
-  transport: http(process.env.NEXT_PUBLIC_BASE_RPC_URL),
+  transport: http("https://mainnet.base.org"),
 })
 
 // ============================================
@@ -234,13 +236,15 @@ async function executeSwap(
     const transaction = quote.transaction
     const allowanceTarget = quote.allowanceTarget || transaction.to
 
-    // Step 2: Check Allowance (FIX: Gunakan publicClient.readContract)
+    // Step 2: Check Allowance (using public RPC - no auth required)
+    console.log(`   🔍 Checking WETH allowance via public RPC...`)
     const currentAllowance = await publicClient.readContract({
       address: WETH_ADDRESS,
       abi: WETH_ABI,
       functionName: "allowance",
       args: [botWalletAddress as Address, allowanceTarget as Address],
     })
+    console.log(`   ✅ Allowance check successful: ${formatEther(currentAllowance)} WETH`)
 
     // CRITICAL: Get CDP accounts - this is where auth error may occur
     let ownerAccount: any
@@ -279,7 +283,7 @@ async function executeSwap(
 
       const op = await (smartAccount as any).sendUserOperation({
         network: "base",
-        calls: [{ to: WETH_ADDRESS, data: approveData, value: 0n }],
+        calls: [{ to: WETH_ADDRESS, data: approveData, value: BigInt(0) }],
         isSponsored: true,
       })
       await (smartAccount as any).waitForUserOperation({ userOpHash: op.hash || op, network: "base" })
@@ -288,7 +292,7 @@ async function executeSwap(
     // Step 3: Execute Swap
     const swapOp = await (smartAccount as any).sendUserOperation({
       network: "base",
-      calls: [{ to: transaction.to as Address, data: transaction.data as Hex, value: 0n }],
+      calls: [{ to: transaction.to as Address, data: transaction.data as Hex, value: BigInt(0) }],
       isSponsored: true,
     })
 
@@ -532,11 +536,11 @@ async function pollActiveSessions() {
           console.log(`   Amount: $${session.amount_usd} USD`)
           console.log(`   Interval: ${session.interval_seconds}s`)
           
-          const state: UserSwapState = { 
+          const state: UserSwapState = {
             session, 
             lastSwapTime: 0, 
             timeoutId: null, 
-            consumedWethWei: 0n 
+            consumedWethWei: BigInt(0)
           }
           activeUsers.set(session.user_address, state)
           
@@ -569,7 +573,7 @@ async function startWorker() {
     console.log(`⏱️  Polling interval: ${POLLING_INTERVAL_MS / 1000}s`)
     console.log(`💾 Database: ${supabaseUrl}`)
     console.log(`🔗 Chain: Base (8453)`)
-    console.log(`🌐 RPC: ${process.env.NEXT_PUBLIC_BASE_RPC_URL}`)
+    console.log(`🌐 RPC: https://mainnet.base.org (public, no auth required)`)
     console.log("=================================================\n")
     
     // Initial poll

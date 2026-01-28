@@ -974,26 +974,26 @@ export default function BumpBotDashboard() {
             console.log(`   → Will distribute: ${formatEther(actualMainWalletCreditWei)} ETH (will auto-convert Native ETH to WETH if needed)`)
             setBumpLoadingState("Distributing credits to bot wallets (auto-converting ETH to WETH if needed)...")
             
-            // Distribute credits using hook
+          // Distribute credits using hook
             // The hook will automatically:
             // 1. Check Native ETH + WETH balance
             // 2. Convert Native ETH to WETH if needed
             // 3. Distribute WETH to all 5 bot wallets
-            await distributeCredits({
-              userAddress: privySmartWalletAddress as `0x${string}`,
-              botWallets: existingBotWallets,
+          await distributeCredits({
+            userAddress: privySmartWalletAddress as `0x${string}`,
+            botWallets: existingBotWallets,
               creditBalanceWei: actualMainWalletCreditWei, // Use actual on-chain balance
-            })
-            
-            console.log("✅ Credits distributed successfully!")
+          })
+          
+          console.log("✅ Credits distributed successfully!")
             console.log("   → Native ETH was automatically converted to WETH if needed")
             console.log("   → WETH was distributed to all 5 bot wallets")
             
             // Wait a bit for balances to update in database
             await new Promise(resolve => setTimeout(resolve, 3000))
-          } catch (distributeError: any) {
-            console.error("❌ Distribution failed:", distributeError)
-            setBumpLoadingState(null)
+        } catch (distributeError: any) {
+          console.error("❌ Distribution failed:", distributeError)
+          setBumpLoadingState(null)
             
             // Provide more helpful error message
             let errorMessage = distributeError.message || "Failed to distribute credits"
@@ -1321,11 +1321,11 @@ export default function BumpBotDashboard() {
               onAddressChange={(address) => {
                 // Only allow changes when not bumping
                 if (!isActive) {
-                  setTargetTokenAddress(address)
-                  // Reset verification if address changes
-                  if (!address) {
-                    setIsTokenVerified(false)
-                    setTokenMetadata(null)
+                setTargetTokenAddress(address)
+                // Reset verification if address changes
+                if (!address) {
+                  setIsTokenVerified(false)
+                  setTokenMetadata(null)
                   }
                 }
               }}
