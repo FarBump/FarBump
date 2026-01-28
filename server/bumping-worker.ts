@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { createClient } from "@supabase/supabase-js"
-// Perubahan: Gunakan Coinbase dari SDK terbaru
-import { Coinbase } from "@coinbase/coinbase-sdk"
+// IMPORTANT: Use OLD SDK (same as Vercel API routes) for credential compatibility
+import { CdpClient } from "@coinbase/cdp-sdk"
 import { createPublicClient, http, formatEther, parseEther, isAddress, type Address, type Hex, encodeFunctionData } from "viem"
 import { base } from "viem/chains"
 import "dotenv/config"
@@ -28,42 +28,26 @@ const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY!
 const supabase = createClient(supabaseUrl, supabaseKey)
 
-const cdpApiKeyName = process.env.CDP_API_KEY_NAME!
-const cdpPrivateKey = process.env.CDP_API_KEY_PRIVATE_KEY!
+// IMPORTANT: Use same credentials as Vercel API routes
+// Old SDK uses: CDP_API_KEY_ID and CDP_API_KEY_SECRET (NOT CDP_API_KEY_NAME and CDP_API_KEY_PRIVATE_KEY)
+const cdpApiKeyId = process.env.CDP_API_KEY_ID!
+const cdpApiKeySecret = process.env.CDP_API_KEY_SECRET!
+
+// Initialize CDP Client (OLD SDK - same as Vercel)
+// The CdpClient constructor automatically reads from environment variables
+// Reference: https://docs.cdp.coinbase.com/server-wallets/v2/introduction/quickstart
+let cdp: CdpClient
 
 try {
-  // Support both old format (PEM with \n) and new format (base64)
-  // Old format: "-----BEGIN EC PRIVATE KEY-----\n...\n-----END EC PRIVATE KEY-----"
-  // New format: "base64string=="
-  
-  let privateKeyFormatted = cdpPrivateKey
-  
-  // If privateKey contains \n, it's old PEM format - replace escaped newlines
-  if (cdpPrivateKey.includes('\\n')) {
-    privateKeyFormatted = cdpPrivateKey.replace(/\\n/g, '\n')
-  }
-  // If privateKey starts with "-----BEGIN", it's already PEM format
-  else if (cdpPrivateKey.startsWith('-----BEGIN')) {
-    privateKeyFormatted = cdpPrivateKey
-  }
-  // Otherwise it's new base64 format - use as-is
-  else {
-    privateKeyFormatted = cdpPrivateKey
-  }
-  
-  // FIX: Menggunakan Coinbase.configure (V2 SDK)
-  // New CDP format uses "id" field as apiKeyName
-  Coinbase.configure({
-    apiKeyName: cdpApiKeyName,
-    privateKey: privateKeyFormatted,
-  })
-  
-  console.log("✅ CDP Client configured successfully")
-  console.log(`   API Key ID: ${cdpApiKeyName.substring(0, 20)}...`)
+  cdp = new CdpClient()
+  console.log("✅ CDP Client configured successfully (Old SDK)")
+  console.log(`   API Key ID: ${cdpApiKeyId?.substring(0, 20)}...`)
+  console.log(`   SDK: @coinbase/cdp-sdk (same as Vercel)`)
 } catch (error: any) {
   console.error("❌ Failed to configure CDP Client:", error.message)
-  console.error("   API Key Name format:", cdpApiKeyName?.substring(0, 50))
-  console.error("   Private Key format:", cdpPrivateKey?.substring(0, 50))
+  console.error("   API Key ID:", cdpApiKeyId?.substring(0, 50))
+  console.error("   API Key Secret:", cdpApiKeySecret ? "[SET]" : "[NOT SET]")
+  console.error("   Make sure CDP_API_KEY_ID and CDP_API_KEY_SECRET are set in Railway variables")
   process.exit(1)
 }
 
@@ -248,8 +232,8 @@ async function executeSwap(
       args: [botWalletAddress as Address, allowanceTarget as Address],
     })
 
-    const ownerAccount = await Coinbase.evm.getAccount({ address: ownerAddress as Address })
-    const smartAccount = await Coinbase.evm.getSmartAccount({
+    const ownerAccount = await cdp.evm.getAccount({ address: ownerAddress as Address })
+    const smartAccount = await cdp.evm.getSmartAccount({
         owner: ownerAccount,
         address: botWalletAddress as Address,
     })
