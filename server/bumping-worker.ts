@@ -36,14 +36,18 @@ const cdpApiKeySecret = process.env.CDP_API_KEY_SECRET!
 if (!cdpApiKeyId || !cdpApiKeySecret) {
   console.error("❌ Missing CDP credentials in environment variables")
   console.error("   Required: CDP_API_KEY_ID and CDP_API_KEY_SECRET")
-  console.error("   Get from cdp_api_key.json:")
-  console.error("   - CDP_API_KEY_ID = json['id']")
-  console.error("   - CDP_API_KEY_SECRET = json['privateKey']")
   process.exit(1)
 }
 
+// CRITICAL: CDP SDK may expect credentials in DIFFERENT env var names
+// Set all possible env var names that CDP SDK might look for
+process.env.COINBASE_API_KEY_ID = cdpApiKeyId
+process.env.COINBASE_API_KEY_SECRET = cdpApiKeySecret
+process.env.CDP_API_KEY_ID = cdpApiKeyId
+process.env.CDP_API_KEY_SECRET = cdpApiKeySecret
+
 // Initialize CDP Client (OLD SDK - same as Vercel)
-// CdpClient auto-loads from environment variables
+// CdpClient should auto-load from environment variables
 let cdp: CdpClient
 
 try {
@@ -51,9 +55,9 @@ try {
   console.log("✅ CDP Client configured successfully (Old SDK)")
   console.log(`   API Key ID: ${cdpApiKeyId?.substring(0, 20)}...`)
   console.log(`   SDK: @coinbase/cdp-sdk (same as Vercel)`)
+  console.log(`   Env vars set: COINBASE_API_KEY_ID, CDP_API_KEY_ID`)
 } catch (error: any) {
   console.error("❌ Failed to configure CDP Client:", error.message)
-  console.error("   Make sure CDP_API_KEY_ID and CDP_API_KEY_SECRET are set correctly")
   process.exit(1)
 }
 
@@ -238,11 +242,33 @@ async function executeSwap(
       args: [botWalletAddress as Address, allowanceTarget as Address],
     })
 
-    const ownerAccount = await cdp.evm.getAccount({ address: ownerAddress as Address })
-    const smartAccount = await cdp.evm.getSmartAccount({
+    // CRITICAL: Get CDP accounts - this is where auth error may occur
+    let ownerAccount: any
+    let smartAccount: any
+    
+    try {
+      console.log(`   🔐 Getting CDP Owner Account: ${ownerAddress}`)
+      ownerAccount = await cdp.evm.getAccount({ address: ownerAddress as Address })
+      console.log(`   ✅ Owner Account retrieved`)
+    } catch (authError: any) {
+      console.error(`   ❌ Failed to get Owner Account: ${authError.message}`)
+      console.error(`   CDP Auth Issue - Credentials may not be loaded properly`)
+      console.error(`   Env check: CDP_API_KEY_ID=${process.env.CDP_API_KEY_ID?.substring(0, 20)}...`)
+      console.error(`   Env check: CDP_API_KEY_SECRET=${process.env.CDP_API_KEY_SECRET ? '[SET]' : '[NOT SET]'}`)
+      throw new Error(`Invalid authentication credentials`)
+    }
+    
+    try {
+      console.log(`   🔐 Getting CDP Smart Account: ${botWalletAddress}`)
+      smartAccount = await cdp.evm.getSmartAccount({
         owner: ownerAccount,
         address: botWalletAddress as Address,
-    })
+      })
+      console.log(`   ✅ Smart Account retrieved`)
+    } catch (smartAccountError: any) {
+      console.error(`   ❌ Failed to get Smart Account: ${smartAccountError.message}`)
+      throw smartAccountError
+    }
 
     if (currentAllowance < amountWei) {
       const approveData = encodeFunctionData({
