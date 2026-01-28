@@ -32,10 +32,18 @@ const supabase = createClient(supabaseUrl, supabaseKey)
 // Old SDK uses: CDP_API_KEY_ID and CDP_API_KEY_SECRET
 const cdpApiKeyId = process.env.CDP_API_KEY_ID!
 const cdpApiKeySecret = process.env.CDP_API_KEY_SECRET!
+const cdpWalletSecret = process.env.CDP_WALLET_SECRET!
 
 if (!cdpApiKeyId || !cdpApiKeySecret) {
   console.error("❌ Missing CDP credentials in environment variables")
-  console.error("   Required: CDP_API_KEY_ID and CDP_API_KEY_SECRET")
+  console.error("   Required: CDP_API_KEY_ID, CDP_API_KEY_SECRET, CDP_WALLET_SECRET")
+  process.exit(1)
+}
+
+if (!cdpWalletSecret) {
+  console.error("❌ Missing CDP_WALLET_SECRET in environment variables")
+  console.error("   This is required for signing transactions with bot wallets")
+  console.error("   Get it from: https://portal.cdp.coinbase.com/")
   process.exit(1)
 }
 
@@ -45,27 +53,31 @@ process.env.COINBASE_API_KEY_ID = cdpApiKeyId
 process.env.COINBASE_API_KEY_SECRET = cdpApiKeySecret
 process.env.CDP_API_KEY_ID = cdpApiKeyId
 process.env.CDP_API_KEY_SECRET = cdpApiKeySecret
+process.env.CDP_WALLET_SECRET = cdpWalletSecret
 
 // Initialize CDP Client (OLD SDK - same as Vercel)
-// CdpClient should auto-load from environment variables
+// CRITICAL: Explicitly pass credentials to constructor (auto-load doesn't work in Railway)
 let cdp: CdpClient
 
 try {
-  cdp = new CdpClient()
+  cdp = new CdpClient({
+    apiKeyId: cdpApiKeyId,
+    apiKeySecret: cdpApiKeySecret,
+    walletSecret: cdpWalletSecret,
+  })
   console.log("✅ CDP Client configured successfully (Old SDK)")
   console.log(`   API Key ID: ${cdpApiKeyId?.substring(0, 20)}...`)
+  console.log(`   Wallet Secret: ${cdpWalletSecret ? '[SET]' : '[NOT SET]'}`)
   console.log(`   SDK: @coinbase/cdp-sdk (same as Vercel)`)
-  console.log(`   Env vars set: COINBASE_API_KEY_ID, CDP_API_KEY_ID`)
 } catch (error: any) {
   console.error("❌ Failed to configure CDP Client:", error.message)
   process.exit(1)
 }
 
-// Use public RPC endpoint for read-only operations (more reliable, no auth required)
-// CDP SDK will be used for write operations (gasless swaps)
+// Use CDP RPC endpoint (same as NEXT_PUBLIC_BASE_RPC_URL in Vercel/Railway)
 const publicClient = createPublicClient({
   chain: base,
-  transport: http("https://mainnet.base.org"),
+  transport: http(process.env.NEXT_PUBLIC_BASE_RPC_URL || "https://mainnet.base.org"),
 })
 
 // ============================================
@@ -215,7 +227,6 @@ async function executeSwap(
   amountWei: bigint
 ): Promise<{ success: boolean; txHash?: string; error?: string }> {
   try {
-    console.log(`   📊 [STEP 1/5] Fetching 0x swap quote...`)
     const zeroXApiKey = process.env.ZEROX_API_KEY!
     
     // Step 1: Get Quote
@@ -238,8 +249,8 @@ async function executeSwap(
     const transaction = quote.transaction
     const allowanceTarget = quote.allowanceTarget || transaction.to
 
-    // Step 2: Check Allowance (using public RPC - no auth required)
-    console.log(`   📊 [STEP 2/5] Checking WETH allowance via public RPC...`)
+    // Step 2: Check Allowance
+    console.log(`   📊 [STEP 2/5] Checking WETH allowance...`)
     const currentAllowance = await publicClient.readContract({
       address: WETH_ADDRESS,
       abi: WETH_ABI,
@@ -587,7 +598,7 @@ async function startWorker() {
     console.log(`⏱️  Polling interval: ${POLLING_INTERVAL_MS / 1000}s`)
     console.log(`💾 Database: ${supabaseUrl}`)
     console.log(`🔗 Chain: Base (8453)`)
-    console.log(`🌐 RPC: https://mainnet.base.org (public, no auth required)`)
+    console.log(`🌐 RPC: ${process.env.NEXT_PUBLIC_BASE_RPC_URL}`)
     console.log("=================================================\n")
     
     // Initial poll
