@@ -29,13 +29,21 @@ const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY!
 const supabase = createClient(supabaseUrl, supabaseKey)
 
 // IMPORTANT: Use same credentials as Vercel API routes
-// Old SDK uses: CDP_API_KEY_ID and CDP_API_KEY_SECRET (NOT CDP_API_KEY_NAME and CDP_API_KEY_PRIVATE_KEY)
+// Old SDK uses: CDP_API_KEY_ID and CDP_API_KEY_SECRET
 const cdpApiKeyId = process.env.CDP_API_KEY_ID!
 const cdpApiKeySecret = process.env.CDP_API_KEY_SECRET!
 
+if (!cdpApiKeyId || !cdpApiKeySecret) {
+  console.error("❌ Missing CDP credentials in environment variables")
+  console.error("   Required: CDP_API_KEY_ID and CDP_API_KEY_SECRET")
+  console.error("   Get from cdp_api_key.json:")
+  console.error("   - CDP_API_KEY_ID = json['id']")
+  console.error("   - CDP_API_KEY_SECRET = json['privateKey']")
+  process.exit(1)
+}
+
 // Initialize CDP Client (OLD SDK - same as Vercel)
-// The CdpClient constructor automatically reads from environment variables
-// Reference: https://docs.cdp.coinbase.com/server-wallets/v2/introduction/quickstart
+// CdpClient auto-loads from environment variables
 let cdp: CdpClient
 
 try {
@@ -45,9 +53,7 @@ try {
   console.log(`   SDK: @coinbase/cdp-sdk (same as Vercel)`)
 } catch (error: any) {
   console.error("❌ Failed to configure CDP Client:", error.message)
-  console.error("   API Key ID:", cdpApiKeyId?.substring(0, 50))
-  console.error("   API Key Secret:", cdpApiKeySecret ? "[SET]" : "[NOT SET]")
-  console.error("   Make sure CDP_API_KEY_ID and CDP_API_KEY_SECRET are set in Railway variables")
+  console.error("   Make sure CDP_API_KEY_ID and CDP_API_KEY_SECRET are set correctly")
   process.exit(1)
 }
 
