@@ -215,6 +215,7 @@ async function executeSwap(
   amountWei: bigint
 ): Promise<{ success: boolean; txHash?: string; error?: string }> {
   try {
+    console.log(`   📊 [STEP 1/5] Fetching 0x swap quote...`)
     const zeroXApiKey = process.env.ZEROX_API_KEY!
     
     // Step 1: Get Quote
@@ -232,21 +233,23 @@ async function executeSwap(
     })
     const quote = await response.json()
     if (!response.ok) throw new Error(quote.message || "0x API Error")
+    console.log(`   ✅ [STEP 1/5] 0x quote received successfully`)
 
     const transaction = quote.transaction
     const allowanceTarget = quote.allowanceTarget || transaction.to
 
     // Step 2: Check Allowance (using public RPC - no auth required)
-    console.log(`   🔍 Checking WETH allowance via public RPC...`)
+    console.log(`   📊 [STEP 2/5] Checking WETH allowance via public RPC...`)
     const currentAllowance = await publicClient.readContract({
       address: WETH_ADDRESS,
       abi: WETH_ABI,
       functionName: "allowance",
       args: [botWalletAddress as Address, allowanceTarget as Address],
     })
-    console.log(`   ✅ Allowance check successful: ${formatEther(currentAllowance)} WETH`)
+    console.log(`   ✅ [STEP 2/5] Allowance: ${formatEther(currentAllowance)} WETH`)
 
     // CRITICAL: Get CDP accounts - this is where auth error may occur
+    console.log(`   📊 [STEP 3/5] Retrieving CDP accounts...`)
     let ownerAccount: any
     let smartAccount: any
     
@@ -269,12 +272,14 @@ async function executeSwap(
         address: botWalletAddress as Address,
       })
       console.log(`   ✅ Smart Account retrieved`)
+      console.log(`   ✅ [STEP 3/5] CDP accounts ready`)
     } catch (smartAccountError: any) {
       console.error(`   ❌ Failed to get Smart Account: ${smartAccountError.message}`)
       throw smartAccountError
     }
 
     if (currentAllowance < amountWei) {
+      console.log(`   📊 [STEP 4/5] Approving WETH spend...`)
       const approveData = encodeFunctionData({
         abi: WETH_ABI,
         functionName: "approve",
@@ -287,9 +292,13 @@ async function executeSwap(
         isSponsored: true,
       })
       await (smartAccount as any).waitForUserOperation({ userOpHash: op.hash || op, network: "base" })
+      console.log(`   ✅ [STEP 4/5] WETH approved`)
+    } else {
+      console.log(`   ✅ [STEP 4/5] WETH already approved, skipping`)
     }
 
-    // Step 3: Execute Swap
+    // Step 5: Execute Swap
+    console.log(`   📊 [STEP 5/5] Executing swap transaction...`)
     const swapOp = await (smartAccount as any).sendUserOperation({
       network: "base",
       calls: [{ to: transaction.to as Address, data: transaction.data as Hex, value: BigInt(0) }],
@@ -298,6 +307,7 @@ async function executeSwap(
 
     const receipt = await (smartAccount as any).waitForUserOperation({ userOpHash: swapOp.hash || swapOp, network: "base" })
     const txHash = receipt.transactionHash || swapOp.hash || String(swapOp)
+    console.log(`   ✅ [STEP 5/5] Swap executed! TX: ${txHash.substring(0, 10)}...`)
 
     // Log to Supabase
     await supabase.from("bot_logs").insert({
@@ -313,6 +323,10 @@ async function executeSwap(
 
     return { success: true, txHash }
   } catch (error: any) {
+    console.error(`   ❌ [ERROR] Swap execution failed:`)
+    console.error(`   Error message: ${error.message}`)
+    console.error(`   Error type: ${error.constructor.name}`)
+    console.error(`   Stack trace: ${error.stack?.split('\n').slice(0, 3).join('\n')}`)
     return { success: false, error: error.message }
   }
 }
