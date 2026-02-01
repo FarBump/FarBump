@@ -33,13 +33,21 @@ export const dynamic = "force-dynamic"
  */
 export async function POST(request: NextRequest) {
   try {
+    console.log("🔍 [UPDATE-WALLET] Step 1: Received request to update wallet")
     const body = await request.json()
     const { initData, wallet_address, privy_user_id } = body
+
+    console.log("🔍 [UPDATE-WALLET] Step 1: Request body:", {
+      has_initData: !!initData,
+      wallet_address: wallet_address,
+      privy_user_id: privy_user_id,
+    })
 
     // =============================================
     // 1. Validate Request Body
     // =============================================
     if (!initData) {
+      console.error("❌ [UPDATE-WALLET] Step 1: Missing initData")
       return NextResponse.json(
         {
           success: false,
@@ -73,8 +81,10 @@ export async function POST(request: NextRequest) {
     }
 
     // Validate wallet address format
+    console.log("🔍 [UPDATE-WALLET] Step 1: Validating wallet address format...")
     const normalizedWalletAddress = wallet_address.toLowerCase()
     if (!/^0x[a-fA-F0-9]{40}$/.test(normalizedWalletAddress)) {
+      console.error("❌ [UPDATE-WALLET] Step 1: Invalid wallet address format:", wallet_address)
       return NextResponse.json(
         {
           success: false,
@@ -84,14 +94,16 @@ export async function POST(request: NextRequest) {
         { status: 400 }
       )
     }
+    console.log("✅ [UPDATE-WALLET] Step 1: Wallet address format valid:", normalizedWalletAddress)
 
     // =============================================
     // 2. Verify Telegram initData
     // =============================================
+    console.log("🔍 [UPDATE-WALLET] Step 2: Verifying initData with HMAC-SHA256...")
     const botToken = process.env.TELEGRAM_BOT_TOKEN
 
     if (!botToken) {
-      console.error("❌ TELEGRAM_BOT_TOKEN not configured in environment variables")
+      console.error("❌ [UPDATE-WALLET] Step 2: TELEGRAM_BOT_TOKEN not configured")
       return NextResponse.json(
         {
           success: false,
@@ -106,7 +118,7 @@ export async function POST(request: NextRequest) {
     const verification = verifyTelegramInitData(initData, botToken)
 
     if (!verification.isValid) {
-      console.warn("⚠️ Invalid initData:", verification.error)
+      console.warn("⚠️ [UPDATE-WALLET] Step 2: Invalid initData:", verification.error)
       return NextResponse.json(
         {
           success: false,
@@ -116,11 +128,14 @@ export async function POST(request: NextRequest) {
         { status: 401 }
       )
     }
+    console.log("✅ [UPDATE-WALLET] Step 2: initData verification successful!")
 
     // =============================================
-    // 3. Extract Telegram ID
+    // 3. Extract Telegram ID and User Data
     // =============================================
+    console.log("🔍 [UPDATE-WALLET] Step 3: Extracting Telegram ID and user data...")
     if (!verification.data) {
+      console.error("❌ [UPDATE-WALLET] Step 3: Verification data is null")
       return NextResponse.json(
         {
           success: false,
@@ -134,6 +149,7 @@ export async function POST(request: NextRequest) {
     const telegramId = extractTelegramId(verification.data)
 
     if (!telegramId) {
+      console.error("❌ [UPDATE-WALLET] Step 3: Could not extract telegram_id")
       return NextResponse.json(
         {
           success: false,
@@ -144,20 +160,30 @@ export async function POST(request: NextRequest) {
       )
     }
 
+    // Extract user data for database
+    const { extractUserData } = await import("@/lib/telegram-initdata-verify")
+    const userData = extractUserData(verification.data)
+    console.log("✅ [UPDATE-WALLET] Step 3: Telegram ID and user data extracted:", {
+      telegram_id: telegramId,
+      username: userData.username,
+      first_name: userData.first_name,
+    })
+
     // =============================================
     // 4. Update Database
     // =============================================
+    console.log("🔍 [UPDATE-WALLET] Step 4: Checking existing user mapping in Supabase...")
     const supabase = createSupabaseServiceClient()
 
     // Check if user mapping exists
     const { data: existingData, error: checkError } = await supabase
       .from("telegram_user_mappings")
-      .select("id, telegram_id")
+      .select("id, telegram_id, wallet_address, privy_user_id")
       .eq("telegram_id", telegramId)
       .single()
 
     if (checkError && checkError.code !== "PGRST116") {
-      console.error("❌ Error checking user mapping:", checkError)
+      console.error("❌ [UPDATE-WALLET] Step 4: Error checking user mapping:", checkError)
       return NextResponse.json(
         {
           success: false,
@@ -168,14 +194,28 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // Upsert user mapping
+    if (checkError?.code === "PGRST116") {
+      console.log("ℹ️ [UPDATE-WALLET] Step 4: User not found in database, will INSERT new record")
+    } else {
+      console.log("ℹ️ [UPDATE-WALLET] Step 4: User found in database, will UPDATE existing record:", {
+        existing_wallet: existingData?.wallet_address,
+        existing_privy_id: existingData?.privy_user_id,
+      })
+    }
+
+    // Upsert user mapping (INSERT if not exists, UPDATE if exists)
+    console.log("🔍 [UPDATE-WALLET] Step 5: Upserting to Supabase database...")
     const { data, error } = await supabase
       .from("telegram_user_mappings")
       .upsert(
         {
           telegram_id: telegramId,
+          telegram_username: userData.username || null,
           wallet_address: normalizedWalletAddress,
           privy_user_id: privy_user_id,
+          first_name: userData.first_name || null,
+          last_name: userData.last_name || null,
+          photo_url: userData.photo_url || null,
           is_active: true,
           last_login_at: new Date().toISOString(),
         },
@@ -187,7 +227,8 @@ export async function POST(request: NextRequest) {
       .single()
 
     if (error) {
-      console.error("❌ Error updating user mapping:", error)
+      console.error("❌ [UPDATE-WALLET] Step 5: Error upserting user mapping:", error)
+      console.error("❌ [UPDATE-WALLET] Step 5: Error details:", JSON.stringify(error, null, 2))
       return NextResponse.json(
         {
           success: false,
@@ -198,10 +239,12 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    console.log("✅ Wallet address updated:", {
+    console.log("✅ [UPDATE-WALLET] Step 5: Database upsert successful!")
+    console.log("✅ [UPDATE-WALLET] Final result:", {
       telegram_id: telegramId,
       wallet_address: normalizedWalletAddress,
       privy_user_id: privy_user_id,
+      database_record: data,
     })
 
     return NextResponse.json({

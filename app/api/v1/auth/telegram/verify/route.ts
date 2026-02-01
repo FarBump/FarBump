@@ -71,10 +71,11 @@ export async function GET(request: NextRequest) {
     // =============================================
     // 2. Verify Telegram initData
     // =============================================
+    console.log("🔍 [VERIFY] Step 1: Starting initData verification...")
     const botToken = process.env.TELEGRAM_BOT_TOKEN
 
     if (!botToken) {
-      console.error("❌ TELEGRAM_BOT_TOKEN not configured in environment variables")
+      console.error("❌ [VERIFY] TELEGRAM_BOT_TOKEN not configured in environment variables")
       return NextResponse.json(
         {
           success: false,
@@ -85,11 +86,12 @@ export async function GET(request: NextRequest) {
       )
     }
 
+    console.log("🔍 [VERIFY] Step 2: Verifying initData with HMAC-SHA256...")
     // Verify initData using HMAC-SHA256
     const verification = verifyTelegramInitData(initData, botToken)
 
     if (!verification.isValid) {
-      console.warn("⚠️ Invalid initData:", verification.error)
+      console.warn("⚠️ [VERIFY] Invalid initData:", verification.error)
       return NextResponse.json(
         {
           success: false,
@@ -100,7 +102,10 @@ export async function GET(request: NextRequest) {
       )
     }
 
+    console.log("✅ [VERIFY] Step 2: initData verification successful!")
+
     if (!verification.data) {
+      console.error("❌ [VERIFY] Verification data is null")
       return NextResponse.json(
         {
           success: false,
@@ -114,9 +119,11 @@ export async function GET(request: NextRequest) {
     // =============================================
     // 3. Extract Telegram ID and User Data
     // =============================================
+    console.log("🔍 [VERIFY] Step 3: Extracting Telegram ID and user data...")
     const telegramId = extractTelegramId(verification.data)
 
     if (!telegramId) {
+      console.error("❌ [VERIFY] Could not extract telegram_id from initData")
       return NextResponse.json(
         {
           success: false,
@@ -127,12 +134,20 @@ export async function GET(request: NextRequest) {
       )
     }
 
+    console.log("✅ [VERIFY] Step 3: Telegram ID extracted:", telegramId)
+
     // Extract additional user data
     const userData = extractUserData(verification.data)
+    console.log("✅ [VERIFY] Step 3: User data extracted:", {
+      telegram_id: telegramId,
+      username: userData.username,
+      first_name: userData.first_name,
+    })
 
     // =============================================
     // 4. Query Database for User Data
     // =============================================
+    console.log("🔍 [VERIFY] Step 4: Querying Supabase database...")
     const supabase = createSupabaseServiceClient()
 
     const { data: dbData, error } = await supabase
@@ -145,6 +160,8 @@ export async function GET(request: NextRequest) {
     if (error) {
       // If no record found, user hasn't logged in via Privy yet
       if (error.code === "PGRST116") {
+        console.log("ℹ️ [VERIFY] Step 4: User not found in database (telegram_id:", telegramId, ")")
+        console.log("ℹ️ [VERIFY] Step 4: User needs to login via Privy first")
         return NextResponse.json({
           success: true,
           is_valid: false,
@@ -157,7 +174,7 @@ export async function GET(request: NextRequest) {
         })
       }
 
-      console.error("❌ Error querying Telegram user mapping:", error)
+      console.error("❌ [VERIFY] Step 4: Error querying Telegram user mapping:", error)
       return NextResponse.json(
         {
           success: false,
@@ -169,6 +186,7 @@ export async function GET(request: NextRequest) {
     }
 
     if (!dbData) {
+      console.log("ℹ️ [VERIFY] Step 4: User not found in database (dbData is null)")
       return NextResponse.json({
         success: true,
         is_valid: false,
@@ -177,6 +195,12 @@ export async function GET(request: NextRequest) {
         message: "User has not logged in to FarBump via Privy. Please login first.",
       })
     }
+
+    console.log("✅ [VERIFY] Step 4: User found in database:", {
+      telegram_id: telegramId,
+      wallet_address: dbData.wallet_address,
+      privy_user_id: dbData.privy_user_id,
+    })
 
     // =============================================
     // 5. Return Success Response

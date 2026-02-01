@@ -25,7 +25,9 @@ export function verifyTelegramInitData(
   botToken: string
 ): { isValid: boolean; data?: Record<string, string>; error?: string } {
   try {
+    console.log("🔍 [VERIFY-UTIL] Starting initData verification...")
     if (!initData || !botToken) {
+      console.error("❌ [VERIFY-UTIL] Missing required parameters")
       return {
         isValid: false,
         error: "Missing required parameters: initData and botToken",
@@ -70,12 +72,21 @@ export function verifyTelegramInitData(
     // Compare hashes
     const isValid = calculatedHash === providedHash
 
+    console.log("🔍 [VERIFY-UTIL] Hash comparison:", {
+      calculatedHash: calculatedHash.substring(0, 16) + "...",
+      providedHash: providedHash.substring(0, 16) + "...",
+      isValid,
+    })
+
     if (!isValid) {
+      console.error("❌ [VERIFY-UTIL] Hash mismatch - initData may be tampered with")
       return {
         isValid: false,
         error: "Invalid hash - initData may be tampered with",
       }
     }
+
+    console.log("✅ [VERIFY-UTIL] Hash verification successful!")
 
     // Parse user data from initData
     const data: Record<string, string> = {}
