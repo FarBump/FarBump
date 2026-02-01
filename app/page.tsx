@@ -25,6 +25,7 @@ import { useCreditBalance } from "@/hooks/use-credit-balance"
 import { useBotSession } from "@/hooks/use-bot-session"
 import { useDistributeCredits } from "@/hooks/use-distribute-credits"
 import { useTelegramPair } from "@/hooks/use-telegram-pair"
+import { useTelegramMiniAppAuth } from "@/hooks/use-telegram-miniapp-auth"
 // Removed useBotWallets import - using manual state management instead
 import { parseUnits } from "viem"
 import { toast } from "sonner"
@@ -470,10 +471,21 @@ export default function BumpBotDashboard() {
     status: distributionStatus,
   } = useDistributeCredits()
 
-  // Telegram pairing hook
+  // Telegram pairing hook (for standard Telegram OAuth via Privy)
   // Automatically pairs Telegram ID with Privy user after Telegram login
   // This allows ClawdBumpbot to check if user has logged in via Telegram
   const { isPaired, isPairing, error: telegramPairError } = useTelegramPair()
+
+  // Telegram Mini App authentication hook
+  // Handles initData verification and wallet update for Telegram Mini App
+  const {
+    isTelegramWebApp,
+    isVerified: isTelegramVerified,
+    telegramId: telegramMiniAppId,
+    walletAddress: telegramWalletAddress,
+    isLoading: isTelegramLoading,
+    error: telegramError,
+  } = useTelegramMiniAppAuth()
 
   // Extract Telegram account data from Privy user object
   // Check for Telegram account using Privy's recommended approach
