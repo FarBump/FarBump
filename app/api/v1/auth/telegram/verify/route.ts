@@ -57,6 +57,9 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url)
     const initData = searchParams.get("initData")
 
+    console.log("📥 [VERIFY] Incoming initData:", initData ? `${initData.substring(0, 100)}...` : "null")
+    console.log("📥 [VERIFY] Full initData length:", initData?.length || 0)
+
     if (!initData) {
       return NextResponse.json(
         {
@@ -87,8 +90,14 @@ export async function GET(request: NextRequest) {
     }
 
     console.log("🔍 [VERIFY] Step 2: Verifying initData with HMAC-SHA256...")
+    console.log("🔍 [VERIFY] Step 2: Bot token exists:", !!botToken)
     // Verify initData using HMAC-SHA256
     const verification = verifyTelegramInitData(initData, botToken)
+
+    console.log("🔍 [VERIFY] HMAC Verification Result:", {
+      isValid: verification.isValid,
+      error: verification.error || null,
+    })
 
     if (!verification.isValid) {
       console.warn("⚠️ [VERIFY] Invalid initData:", verification.error)
@@ -148,6 +157,9 @@ export async function GET(request: NextRequest) {
     // 4. Query Database for User Data
     // =============================================
     console.log("🔍 [VERIFY] Step 4: Querying Supabase database...")
+    console.log("🔍 [VERIFY] Searching for Telegram ID in Supabase:", telegramId)
+    console.log("🔍 [VERIFY] Using SUPABASE_SERVICE_ROLE_KEY:", !!process.env.SUPABASE_SERVICE_ROLE_KEY)
+    
     const supabase = createSupabaseServiceClient()
 
     const { data: dbData, error } = await supabase
@@ -156,6 +168,12 @@ export async function GET(request: NextRequest) {
       .eq("telegram_id", telegramId)
       .eq("is_active", true)
       .single()
+    
+    console.log("🔍 [VERIFY] Database query result:", {
+      has_data: !!dbData,
+      error_code: error?.code,
+      error_message: error?.message,
+    })
 
     if (error) {
       // If no record found, user hasn't logged in via Privy yet

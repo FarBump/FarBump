@@ -77,11 +77,16 @@ export function useTelegramMiniAppAuth() {
       const data = await response.json()
       console.log("✅ [FRONTEND] Verify response received:", data)
 
+      // Always set telegram_id from response (whether user is logged in or not)
+      if (data.telegram_id) {
+        console.log("✅ [FRONTEND] Telegram ID extracted from verify response:", data.telegram_id)
+        setTelegramId(data.telegram_id)
+      }
+
       if (data.is_valid && data.smart_account_address) {
         // User sudah login - ada di database
         console.log("✅ [FRONTEND] User is verified and logged in")
         setIsVerified(true)
-        setTelegramId(data.telegram_id)
         setWalletAddress(data.smart_account_address)
         setPrivyUserId(data.privy_user_id)
         console.log("✅ [FRONTEND] Telegram user verified:", {
@@ -93,7 +98,6 @@ export function useTelegramMiniAppAuth() {
         // User belum login - belum ada di database
         console.log("ℹ️ [FRONTEND] User not logged in yet, waiting for Privy login...")
         setIsVerified(false)
-        setTelegramId(data.telegram_id)
         console.log("ℹ️ [FRONTEND] Telegram user not logged in yet:", {
           telegram_id: data.telegram_id,
         })
@@ -170,6 +174,7 @@ export function useTelegramMiniAppAuth() {
 
   // Watch for Privy wallet creation and update database
   useEffect(() => {
+    console.log("🔍 [FRONTEND] ============================================")
     console.log("🔍 [FRONTEND] Watching for Privy wallet creation...", {
       ready,
       authenticated,
@@ -208,10 +213,77 @@ export function useTelegramMiniAppAuth() {
       return
     }
 
-    console.log("🚀 [FRONTEND] Calling updateWalletToDatabase...")
-    // Update wallet to database
-    updateWalletToDatabase(currentWalletAddress, user.id)
-  }, [ready, authenticated, user, initData, walletAddress, isVerified, updateWalletToDatabase])
+    // Extract Telegram ID from initData
+    if (!telegramId) {
+      console.warn("⚠️ [FRONTEND] Telegram ID not available, cannot upsert wallet")
+      return
+    }
+
+    console.log("🚀 [FRONTEND] Privy login success, sending data to backend...", {
+      wallet: currentWalletAddress,
+      tgId: telegramId,
+      privyId: user.id,
+    })
+
+    // Call new upsert endpoint
+    upsertWalletToDatabase(telegramId, currentWalletAddress, user.id)
+  }, [ready, authenticated, user, initData, walletAddress, isVerified, telegramId])
+
+  // New function to upsert wallet using simpler endpoint
+  const upsertWalletToDatabase = useCallback(
+    async (tgId: string, walletAddr: string, privyId: string) => {
+      console.log("🔍 [FRONTEND] upsertWalletToDatabase called:", {
+        telegram_id: tgId,
+        wallet_address: walletAddr,
+        privy_user_id: privyId,
+      })
+
+      try {
+        console.log("🔍 [FRONTEND] Sending request to /api/v1/auth/telegram/upsert-wallet...")
+        console.log("🔍 [FRONTEND] Request payload (snake_case for database):", {
+          telegram_id: tgId,
+          wallet_address: walletAddr,
+          privy_user_id: privyId,
+        })
+        
+        const response = await fetch("/api/v1/auth/telegram/upsert-wallet", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            // Use snake_case to match database column names exactly
+            telegram_id: String(tgId), // Ensure string type (database: TEXT)
+            wallet_address: walletAddr.toLowerCase(), // Normalize to lowercase
+            privy_user_id: String(privyId), // Ensure string type (database: TEXT)
+          }),
+        })
+
+        if (!response.ok) {
+          const errorData = await response.json()
+          console.error("❌ [FRONTEND] Upsert wallet request failed:", errorData)
+          throw new Error(errorData.message || "Failed to upsert wallet")
+        }
+
+        const data = await response.json()
+        console.log("✅ [FRONTEND] Wallet address upserted to database:", {
+          telegram_id: data.data?.telegram_id,
+          wallet_address: data.data?.wallet_address,
+          privy_user_id: data.data?.privy_user_id,
+        })
+
+        // Update local state
+        setWalletAddress(walletAddr)
+        setPrivyUserId(privyId)
+        setIsVerified(true)
+        console.log("✅ [FRONTEND] Local state updated")
+      } catch (err: any) {
+        console.error("❌ [FRONTEND] Error upserting wallet to database:", err)
+        setError(err.message || "Failed to upsert wallet address")
+      }
+    },
+    []
+  )
 
   return {
     isTelegramWebApp,
