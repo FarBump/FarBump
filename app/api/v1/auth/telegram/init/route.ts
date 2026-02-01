@@ -9,7 +9,22 @@ export const dynamic = "force-dynamic"
  * 
  * Telegram Authentication Bridge Endpoint
  * 
- * This endpoint handles the initial Telegram authentication flow:
+ * ⚠️ IMPORTANT: This endpoint is for Telegram Login Widget STANDARD (not Privy)
+ * 
+ * Privy Telegram OAuth does NOT use this endpoint.
+ * Privy handles Telegram OAuth automatically - no custom endpoints needed.
+ * 
+ * This endpoint is only useful if you want to implement
+ * a custom Telegram Login Widget (not using Privy).
+ * 
+ * For Privy Telegram OAuth:
+ * - Privy handles all OAuth flow automatically
+ * - User clicks "Login via Telegram" → Privy opens OAuth popup
+ * - User logs in at Telegram OAuth page (no message sent)
+ * - Privy handles callback automatically
+ * - User data available via usePrivy() hook
+ * 
+ * This endpoint handles the Telegram Login Widget STANDARD flow:
  * 1. Extracts telegram_id and telegram_username from query parameters
  * 2. Stores Telegram details in a secure, short-lived session cookie
  * 3. Redirects user to frontend login page with telegram_id as query parameter

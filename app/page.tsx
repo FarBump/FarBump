@@ -24,6 +24,7 @@ import { isAddress, createWalletClient, http, custom, formatEther } from "viem"
 import { useCreditBalance } from "@/hooks/use-credit-balance"
 import { useBotSession } from "@/hooks/use-bot-session"
 import { useDistributeCredits } from "@/hooks/use-distribute-credits"
+import { useTelegramPair } from "@/hooks/use-telegram-pair"
 // Removed useBotWallets import - using manual state management instead
 import { parseUnits } from "viem"
 import { toast } from "sonner"
@@ -468,6 +469,11 @@ export default function BumpBotDashboard() {
     isSuccess: isDistributionSuccess,
     status: distributionStatus,
   } = useDistributeCredits()
+
+  // Telegram pairing hook
+  // Automatically pairs Telegram ID with Privy user after Telegram login
+  // This allows ClawdBumpbot to check if user has logged in via Telegram
+  const { isPaired, isPairing, error: telegramPairError } = useTelegramPair()
 
   // Extract user data from Privy user object (prioritize Privy user data)
   // Use user.farcaster.pfp and user.farcaster.username from Privy user object
