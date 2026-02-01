@@ -8,40 +8,30 @@ export const dynamic = "force-dynamic"
 /**
  * GET /api/v1/auth/telegram/verify
  * 
- * Verify Telegram Mini App initData and return user data
+ * Verify Telegram Mini App initData and UPSERT user data to database
  * 
- * This endpoint is used by Telegram Mini App to verify initData and get user data.
+ * This endpoint:
+ * 1. Verifies initData using HMAC-SHA256
+ * 2. Performs UPSERT to Supabase (creates or updates record)
+ * 3. Returns the upserted user data
  * 
  * Authentication:
  * - Uses Telegram initData verification (HMAC-SHA256)
  * - Validates initData using TELEGRAM_BOT_TOKEN
- * - Only returns data if telegram_id exists in database (user has logged in)
- * 
- * Security:
- * - User login auth already secure via Privy
- * - Only verified Telegram IDs (from database) can get data
- * - initData validation prevents tampering
+ * - Automatically creates/updates user record on every valid request
  * 
  * Query Parameters:
  * - initData (required): Raw initData string from window.Telegram.WebApp.initData
  * 
- * Response (if user is logged in):
+ * Response (success):
  * {
  *   "success": true,
  *   "is_valid": true,
  *   "telegram_id": "123456789",
- *   "smart_account_address": "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb",
- *   "privy_user_id": "did:privy:abc123",
  *   "telegram_username": "john_doe",
- *   "last_login_at": "2024-01-01T00:00:00Z"
- * }
- * 
- * Response (if user is not logged in):
- * {
- *   "success": true,
- *   "is_valid": false,
- *   "telegram_id": "123456789",
- *   "message": "User has not logged in to FarBump via Privy"
+ *   "last_login": "2024-01-01T00:00:00Z",
+ *   "wallet_address": "0x..." (if exists),
+ *   "privy_user_id": "did:privy:abc123" (if exists)
  * }
  * 
  * Error Responses:
@@ -61,7 +51,7 @@ export async function GET(request: NextRequest) {
     console.log("📥 [VERIFY] Full initData length:", initData?.length || 0)
 
     if (!initData) {
-      return NextResponse.json(
+      const response = NextResponse.json(
         {
           success: false,
           error: "Missing required parameter: initData",
@@ -69,6 +59,13 @@ export async function GET(request: NextRequest) {
         },
         { status: 400 }
       )
+      
+      // Add anti-cache headers
+      response.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate')
+      response.headers.set('Expires', '0')
+      response.headers.set('Surrogate-Control', 'no-store')
+      
+      return response
     }
 
     // =============================================
@@ -79,7 +76,7 @@ export async function GET(request: NextRequest) {
 
     if (!botToken) {
       console.error("❌ [VERIFY] TELEGRAM_BOT_TOKEN not configured in environment variables")
-      return NextResponse.json(
+      const response = NextResponse.json(
         {
           success: false,
           error: "Server configuration error",
@@ -87,6 +84,13 @@ export async function GET(request: NextRequest) {
         },
         { status: 500 }
       )
+      
+      // Add anti-cache headers
+      response.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate')
+      response.headers.set('Expires', '0')
+      response.headers.set('Surrogate-Control', 'no-store')
+      
+      return response
     }
 
     console.log("🔍 [VERIFY] Step 2: Verifying initData with HMAC-SHA256...")
@@ -101,7 +105,7 @@ export async function GET(request: NextRequest) {
 
     if (!verification.isValid) {
       console.warn("⚠️ [VERIFY] Invalid initData:", verification.error)
-      return NextResponse.json(
+      const response = NextResponse.json(
         {
           success: false,
           error: "Invalid initData",
@@ -109,13 +113,20 @@ export async function GET(request: NextRequest) {
         },
         { status: 401 }
       )
+      
+      // Add anti-cache headers
+      response.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate')
+      response.headers.set('Expires', '0')
+      response.headers.set('Surrogate-Control', 'no-store')
+      
+      return response
     }
 
     console.log("✅ [VERIFY] Step 2: initData verification successful!")
 
     if (!verification.data) {
       console.error("❌ [VERIFY] Verification data is null")
-      return NextResponse.json(
+      const response = NextResponse.json(
         {
           success: false,
           error: "Invalid initData",
@@ -123,6 +134,13 @@ export async function GET(request: NextRequest) {
         },
         { status: 400 }
       )
+      
+      // Add anti-cache headers
+      response.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate')
+      response.headers.set('Expires', '0')
+      response.headers.set('Surrogate-Control', 'no-store')
+      
+      return response
     }
 
     // =============================================
@@ -133,7 +151,7 @@ export async function GET(request: NextRequest) {
 
     if (!telegramId) {
       console.error("❌ [VERIFY] Could not extract telegram_id from initData")
-      return NextResponse.json(
+      const response = NextResponse.json(
         {
           success: false,
           error: "Missing telegram_id",
@@ -141,6 +159,13 @@ export async function GET(request: NextRequest) {
         },
         { status: 400 }
       )
+      
+      // Add anti-cache headers
+      response.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate')
+      response.headers.set('Expires', '0')
+      response.headers.set('Surrogate-Control', 'no-store')
+      
+      return response
     }
 
     console.log("✅ [VERIFY] Step 3: Telegram ID extracted:", telegramId)
@@ -154,93 +179,97 @@ export async function GET(request: NextRequest) {
     })
 
     // =============================================
-    // 4. Query Database for User Data
+    // 4. UPSERT to Supabase Database
     // =============================================
-    console.log("🔍 [VERIFY] Step 4: Querying Supabase database...")
-    console.log("🔍 [VERIFY] Searching for Telegram ID in Supabase:", telegramId)
+    console.log("🔍 [VERIFY] Step 4: Performing UPSERT to Supabase...")
     console.log("🔍 [VERIFY] Using SUPABASE_SERVICE_ROLE_KEY:", !!process.env.SUPABASE_SERVICE_ROLE_KEY)
     
     const supabase = createSupabaseServiceClient()
+    
+    const upsertData = {
+      telegram_id: String(telegramId),
+      telegram_username: userData.username || null,
+      first_name: userData.first_name || null,
+      last_name: userData.last_name || null,
+      photo_url: userData.photo_url || null,
+      last_login_at: new Date().toISOString(),
+    }
+    
+    console.log("🔍 [VERIFY] Attempting to UPSERT to Supabase:", upsertData)
 
-    const { data: dbData, error } = await supabase
+    const { data: upsertedData, error: upsertError } = await supabase
       .from("telegram_user_mappings")
-      .select("wallet_address, privy_user_id, telegram_username, last_login_at, is_active")
-      .eq("telegram_id", telegramId)
-      .eq("is_active", true)
+      .upsert(upsertData, { 
+        onConflict: 'telegram_id',
+        ignoreDuplicates: false 
+      })
+      .select()
       .single()
     
-    console.log("🔍 [VERIFY] Database query result:", {
-      has_data: !!dbData,
-      error_code: error?.code,
-      error_message: error?.message,
+    console.log("🔍 [VERIFY] UPSERT result:", {
+      success: !upsertError,
+      has_data: !!upsertedData,
+      error_code: upsertError?.code,
+      error_message: upsertError?.message,
     })
 
-    if (error) {
-      // If no record found, user hasn't logged in via Privy yet
-      if (error.code === "PGRST116") {
-        console.log("ℹ️ [VERIFY] Step 4: User not found in database (telegram_id:", telegramId, ")")
-        console.log("ℹ️ [VERIFY] Step 4: User needs to login via Privy first")
-        return NextResponse.json({
-          success: true,
-          is_valid: false,
-          telegram_id: telegramId,
-          telegram_username: userData.username,
-          first_name: userData.first_name,
-          last_name: userData.last_name,
-          photo_url: userData.photo_url,
-          message: "User has not logged in to FarBump via Privy. Please login first.",
-        })
-      }
-
-      console.error("❌ [VERIFY] Step 4: Error querying Telegram user mapping:", error)
-      return NextResponse.json(
+    if (upsertError) {
+      console.error("❌ [VERIFY] Supabase Error during UPSERT:", upsertError)
+      const response = NextResponse.json(
         {
           success: false,
           error: "Database error",
-          message: error.message || "Failed to query user data",
+          message: upsertError.message || "Failed to save user data to database",
+          details: upsertError,
         },
         { status: 500 }
       )
+      
+      // Add anti-cache headers
+      response.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate')
+      response.headers.set('Expires', '0')
+      response.headers.set('Surrogate-Control', 'no-store')
+      
+      return response
     }
 
-    if (!dbData) {
-      console.log("ℹ️ [VERIFY] Step 4: User not found in database (dbData is null)")
-      return NextResponse.json({
-        success: true,
-        is_valid: false,
-        telegram_id: telegramId,
-        telegram_username: userData.username,
-        message: "User has not logged in to FarBump via Privy. Please login first.",
-      })
-    }
-
-    console.log("✅ [VERIFY] Step 4: User found in database:", {
-      telegram_id: telegramId,
-      wallet_address: dbData.wallet_address,
-      privy_user_id: dbData.privy_user_id,
+    console.log("✅ [VERIFY] Step 4: UPSERT successful:", {
+      telegram_id: upsertedData.telegram_id,
+      username: upsertedData.telegram_username,
+      last_login: upsertedData.last_login_at,
     })
 
     // =============================================
-    // 5. Return Success Response
+    // 5. Return Success Response with Anti-Cache Headers
     // =============================================
-    console.log("✅ Telegram user verified:", {
-      telegram_id: telegramId,
-      wallet_address: dbData.wallet_address,
-      privy_user_id: dbData.privy_user_id,
+    console.log("✅ Telegram user verified and data saved:", {
+      telegram_id: upsertedData.telegram_id,
+      wallet_address: upsertedData.wallet_address,
+      privy_user_id: upsertedData.privy_user_id,
     })
 
-    return NextResponse.json({
+    const response = NextResponse.json({
       success: true,
       is_valid: true,
-      telegram_id: telegramId,
-      smart_account_address: dbData.wallet_address,
-      privy_user_id: dbData.privy_user_id,
-      telegram_username: dbData.telegram_username || userData.username || null,
-      last_login_at: dbData.last_login_at,
+      telegram_id: upsertedData.telegram_id,
+      telegram_username: upsertedData.telegram_username,
+      first_name: upsertedData.first_name,
+      last_name: upsertedData.last_name,
+      photo_url: upsertedData.photo_url,
+      last_login: upsertedData.last_login_at,
+      wallet_address: upsertedData.wallet_address || null,
+      privy_user_id: upsertedData.privy_user_id || null,
     })
+    
+    // Add anti-cache headers to prevent 304 Not Modified
+    response.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate')
+    response.headers.set('Expires', '0')
+    response.headers.set('Surrogate-Control', 'no-store')
+    
+    return response
   } catch (error: any) {
     console.error("❌ Error in Telegram verify endpoint:", error)
-    return NextResponse.json(
+    const response = NextResponse.json(
       {
         success: false,
         error: "Internal server error",
@@ -248,5 +277,12 @@ export async function GET(request: NextRequest) {
       },
       { status: 500 }
     )
+    
+    // Add anti-cache headers
+    response.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate')
+    response.headers.set('Expires', '0')
+    response.headers.set('Surrogate-Control', 'no-store')
+    
+    return response
   }
 }

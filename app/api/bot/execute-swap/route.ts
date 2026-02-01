@@ -736,8 +736,8 @@ export async function POST(request: NextRequest) {
       
       // Build quote parameters based on attempt
       // Using WETH as sellToken (ERC20 token)
-      const quoteParams = new URLSearchParams({
-        chainId: "8453", // Base Mainnet
+    const quoteParams = new URLSearchParams({
+      chainId: "8453", // Base Mainnet
         sellToken: WETH_ADDRESS.toLowerCase(), // WETH contract address
         buyToken: token_address.toLowerCase(), // Target token (ensure lowercase)
         sellAmount: amountWei.toString(), // Amount in wei
@@ -767,7 +767,7 @@ export async function POST(request: NextRequest) {
         },
       })
 
-      if (!quoteResponse.ok) {
+    if (!quoteResponse.ok) {
         try {
           quoteError = await quoteResponse.json()
           requestId = quoteError.request_id || quoteError.requestId || null
@@ -1703,12 +1703,12 @@ export async function POST(request: NextRequest) {
             created_at: new Date().toISOString(),
           })
 
-          // Update log with error
-          if (logEntry) {
-            await supabase
-              .from("bot_logs")
-              .update({
-                status: "error",
+      // Update log with error
+      if (logEntry) {
+        await supabase
+          .from("bot_logs")
+          .update({
+            status: "error",
                 message: `[Bot #${walletIndex + 1}] Swap failed: ${swapError.message}. All wallets depleted - session stopped.`,
                 error_details: {
                   error: swapError.message,
