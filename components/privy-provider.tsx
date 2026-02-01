@@ -37,6 +37,21 @@ export function PrivyProvider({ children }: PrivyProviderProps) {
     <PrivyProviderBase
       appId={PRIVY_APP_ID}
       config={{
+        /**
+         * Login Methods Configuration
+         * 
+         * Telegram Login:
+         * - Telegram is included in loginMethods array
+         * - Bot credentials (token & handle) are configured in Privy Dashboard
+         *   (Settings → Login Methods → Socials → Telegram)
+         * - Domain must be configured in BotFather using /setdomain
+         * - Privy SDK automatically handles Telegram OAuth flow
+         * 
+         * Important:
+         * - Bot token and bot handle are NOT stored in frontend code
+         * - They are configured in Privy Dashboard (server-side)
+         * - Frontend only needs "telegram" in loginMethods array
+         */
         loginMethods: ["farcaster", "wallet", "telegram"],
         appearance: {
           theme: "light",

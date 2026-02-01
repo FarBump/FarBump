@@ -475,26 +475,49 @@ export default function BumpBotDashboard() {
   // This allows ClawdBumpbot to check if user has logged in via Telegram
   const { isPaired, isPairing, error: telegramPairError } = useTelegramPair()
 
-  // Extract user data from Privy user object (prioritize Privy user data)
-  // Use user.farcaster.pfp and user.farcaster.username from Privy user object
-  const username = user?.farcaster?.username 
-    ? `@${user.farcaster.username}` 
-    : privyUser?.farcaster?.username 
-    ? `@${privyUser.farcaster.username}` 
-    : farcasterUser?.username 
-    ? `@${farcasterUser.username}` 
+  // Extract Telegram account data from Privy user object
+  // Check for Telegram account using Privy's recommended approach
+  let telegramAccount = user?.telegram
+  if (!telegramAccount) {
+    telegramAccount = user?.linkedAccounts?.find(
+      (account: any) => account.type === "telegram"
+    )
+  }
+
+  // Extract Telegram user data
+  const telegramUsername = telegramAccount 
+    ? ((telegramAccount as any).username 
+        ? `@${(telegramAccount as any).username}` 
+        : (telegramAccount as any).first_name || null)
     : null
+
+  const telegramPhotoUrl = telegramAccount 
+    ? ((telegramAccount as any).photo_url || null)
+    : null
+
+  // Extract user data from Privy user object (prioritize Privy user data)
+  // Priority: Telegram > Farcaster
+  // Use Telegram data if available, otherwise fallback to Farcaster
+  const username = telegramUsername ||
+    (user?.farcaster?.username 
+      ? `@${user.farcaster.username}` 
+      : privyUser?.farcaster?.username 
+      ? `@${privyUser.farcaster.username}` 
+      : farcasterUser?.username 
+      ? `@${farcasterUser.username}` 
+      : null)
 
   const userFid = user?.farcaster?.fid?.toString() || 
     privyUser?.farcaster?.fid?.toString() || 
     farcasterUser?.fid?.toString() || 
     null
 
-  // Use user.farcaster.pfp from Privy user object with fallback
+  // Use Telegram photo if available, otherwise fallback to Farcaster pfp
   // pfp can be a string URL or an object with url property
-  const userAvatar = (typeof user?.farcaster?.pfp === 'string' 
-    ? user.farcaster.pfp 
-    : (user?.farcaster?.pfp as any)?.url) ||
+  const userAvatar = telegramPhotoUrl ||
+    (typeof user?.farcaster?.pfp === 'string' 
+      ? user.farcaster.pfp 
+      : (user?.farcaster?.pfp as any)?.url) ||
     (user?.farcaster as any)?.profilePicture ||
     (typeof privyUser?.farcaster?.pfp === 'string'
       ? privyUser.farcaster.pfp
@@ -1274,17 +1297,47 @@ export default function BumpBotDashboard() {
                   )
                 ) : (
                   // State 1: Not Connected
-                  <Button
-                    size="sm"
-                    onClick={handleConnect}
-                    disabled={isConnecting || !privyReady || !sdkReady}
-                    className="h-8 px-2.5 py-1.5 bg-primary text-primary-foreground hover:bg-primary/90 font-medium text-xs shadow-lg shadow-primary/50"
-                  >
-                    <div className="flex items-center gap-1.5">
-                      <User className="h-3.5 w-3.5 shrink-0" />
-                      <span className="whitespace-nowrap">Connect</span>
+                  // Show Telegram user info if logged in via Telegram, otherwise show Connect button
+                  authenticated && telegramAccount ? (
+                    // User logged in via Telegram but not fully connected (no wallet yet)
+                    // Show Telegram pfp and username, but button is disabled
+                    <div className="flex items-center gap-1.5 rounded-lg border border-border bg-card/50 backdrop-blur-sm px-2 py-1.5 h-8 max-w-[200px] opacity-75">
+                      <div className="relative h-5 w-5 overflow-hidden rounded-full border border-primary/20 shrink-0 bg-secondary flex items-center justify-center">
+                        {telegramPhotoUrl ? (
+                          <Image 
+                            src={telegramPhotoUrl} 
+                            alt="Telegram Avatar" 
+                            fill 
+                            className="object-cover rounded-full"
+                            unoptimized
+                            onError={() => {
+                              // Image will fallback to User icon via CSS or state
+                            }}
+                          />
+                        ) : null}
+                        {/* Fallback User icon - shown when no avatar or image fails */}
+                        {!telegramPhotoUrl && (
+                          <User className="h-3 w-3 text-muted-foreground" />
+                        )}
+                      </div>
+                      <span className="font-mono text-xs font-medium text-foreground truncate">
+                        {telegramUsername || "Telegram User"}
+                      </span>
                     </div>
-                  </Button>
+                  ) : (
+                    // Not logged in - show Connect button
+                    <Button
+                      size="sm"
+                      onClick={handleConnect}
+                      disabled={isConnecting || !privyReady || !sdkReady}
+                      className="h-8 px-2.5 py-1.5 bg-primary text-primary-foreground hover:bg-primary/90 font-medium text-xs shadow-lg shadow-primary/50"
+                    >
+                      <div className="flex items-center gap-1.5">
+                        <User className="h-3.5 w-3.5 shrink-0" />
+                        <span className="whitespace-nowrap">Connect</span>
+                      </div>
+                    </Button>
+                  )
                 )}
               </div>
             </div>
