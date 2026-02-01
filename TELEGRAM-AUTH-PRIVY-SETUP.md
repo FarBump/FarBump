@@ -23,24 +23,46 @@
 
 ### Flow yang Benar:
 1. User klik "Login via Telegram" di Privy
-2. Privy membuka popup/modal dengan Telegram OAuth page
-3. User login dengan nomor telepon di popup tersebut
-4. User akan melihat notifikasi "Kami telah mengirimmu pesan" - **ini adalah UI Telegram, bukan Privy**
-5. **Tidak ada pesan yang benar-benar dikirim** - ini adalah OAuth flow, bukan bot message
-6. Setelah login berhasil di popup, Privy akan menutup popup dan user sudah terautentikasi
+2. Privy membuka modal dengan **Telegram Login Widget**
+3. User klik widget di modal
+4. Telegram Login Widget meminta authorization
+5. User akan melihat pesan "Kami telah mengirimmu pesan" - **ini adalah pesan dari bot Telegram**
+6. **User menerima pesan konfirmasi di Telegram** dari bot
+7. User klik "Confirm" di pesan Telegram
+8. Setelah konfirmasi, Privy menutup modal dan user sudah terautentikasi
 
 ---
 
 ## ✅ **Konfigurasi yang Diperlukan**
 
-### 1. **Privy Dashboard Configuration**
+### 1. **Buat Bot Telegram di BotFather**
+
+1. Buka Telegram dan cari **@BotFather**
+2. Kirim command: `/newbot`
+3. Ikuti instruksi untuk membuat bot
+4. **Simpan Bot Token** yang diberikan
+
+### 2. **Konfigurasi Domain di BotFather**
+
+1. Kirim command: `/setdomain` ke @BotFather
+2. Pilih bot Anda
+3. Masukkan domain FarBump Anda (tanpa https://)
+   ```
+   Example: farbump.vercel.app
+   ```
+
+⚠️ **PENTING:** Telegram **TIDAK support `.xyz` domains**. Gunakan domain dengan TLD yang didukung.
+
+### 3. **Privy Dashboard Configuration**
 
 1. Login ke [Privy Dashboard](https://dashboard.privy.io/)
 2. Pilih aplikasi FarBump Anda
-3. Buka **Settings** → **Login Methods**
-4. Pastikan **Telegram** sudah diaktifkan
-5. **TIDAK perlu** mengkonfigurasi Bot Token atau Bot Username
-6. Privy akan menangani OAuth flow secara otomatis
+3. Buka **Settings** → **Login Methods** → **Socials** tab
+4. Aktifkan **Telegram**
+5. **Masukkan:**
+   - **Bot Token**: Token dari BotFather
+   - **Bot Handle**: Username bot dengan @ (contoh: `@farbump_bot`)
+6. **Save**
 
 ### 2. **Environment Variables**
 
@@ -99,8 +121,13 @@ Endpoint ini **TIDAK digunakan** oleh Privy Telegram OAuth. Endpoint ini adalah 
 
 ## 🔧 **Troubleshooting**
 
-### Masalah: "Tidak ada pesan yang diterima"
-**Solusi:** Ini normal! Privy tidak mengirim pesan. User harus login di popup Telegram OAuth.
+### Masalah: "Tidak ada pesan yang diterima" atau "Stuck di 'Kami telah mengirimmu pesan'"
+**Solusi:** 
+1. Pastikan bot token dan bot handle sudah dikonfigurasi di Privy Dashboard
+2. Pastikan domain sudah dikonfigurasi di BotFather (`/setdomain`)
+3. Pastikan user sudah start bot di Telegram (kirim `/start` ke bot)
+4. Pastikan domain bukan `.xyz` TLD
+5. Cek browser console untuk error
 
 ### Masalah: Popup tidak muncul
 **Solusi:**
